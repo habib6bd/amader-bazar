@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Digital Khata - Shop Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        @media print {
+            body * {
+                visibility: hidden;
+            }
+            #printable-modal-content, #printable-modal-content * {
+                visibility: visible;
+            }
+            #printable-modal-content {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                margin: 0;
+                padding: 0;
+                box-shadow: none !important;
+                border: none !important;
+            }
+            .no-print {
+                display: none !important;
+            }
+        }
+    </style>
+</head>
+<body class="bg-slate-50 font-sans" x-data="shopApp()">
+
+    <!-- ================= LOGIN / RESET PAGE ================= -->
+    <template x-if="!isLoggedIn">
+        <div class="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-600 to-indigo-800 p-4">
+            <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md">
+                
+                <!-- LOGIN VIEW -->
+                <template x-if="authView === 'login'">
+                    <div>
+                        <div class="text-center mb-6">
+                            <span class="text-4xl">🛒</span>
+                            <h1 class="text-2xl font-bold text-gray-800 mt-2">মেসার্স আমাদের বাজার</h1>
+                            <p class="text-sm text-gray-500">Shopkeeper Portal Login</p>
+                        </div>
+                        
+                        <form @submit.prevent="login" class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
+                                <input type="email" x-model="loginEmail" placeholder="shop@admin.com" class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                                <div class="relative">
+                                    <input :type="showLoginPassword ? 'text' : 'password'" x-model="loginPassword" placeholder="••••••••" class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none pr-10" required>
+                                    <button type="button" @click="showLoginPassword = !showLoginPassword" class="absolute inset-y-0 right-0 px-3 flex items-center text-gray-500 hover:text-gray-700 focus:outline-none">
+                                        <svg x-show="!showLoginPassword" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                        </svg>
+                                        <svg x-show="showLoginPassword" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7a10.05 10.05 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.542 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+                            <p x-text="loginError" class="text-red-500 text-sm text-center" x-show="loginError"></p>
+                            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold p-3 rounded-lg transition duration-200 shadow-lg">Login to Dashboard</button>
+                        </form>
+
+                        <div class="mt-4 flex justify-between items-center text-xs">
+                            <button @click="authView = 'reset'; resetError = ''; resetSuccess = '';" class="text-blue-600 hover:underline">Forgot Password?</button>
+                            <span class="text-gray-400">Default: shop@admin.com / admin123</span>
+                        </div>
+                    </div>
+                </template>
+
+                <!-- RESET PASSWORD VIEW -->
+                <template x-if="authView === 'reset'">
+                    <div>
+                        <div class="text-center mb-6">
+                            <span class="text-4xl">🔑</span>
+                            <h1 class="text-2xl font-bold text-gray-800 mt-2">Reset Password</h1>
+                            <p class="text-sm text-gray-500">Enter your shop email and new password</p>
+                        </div>
+                        
+                        <form @submit.prevent="resetPassword" class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Registered Email</label>
+                                <input type="email" x-model="resetEmail" placeholder="shop@admin.com" class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">New Password</label>
+                                <div class="relative">
+                                    <input :type="showResetPassword ? 'text' : 'password'" x-model="newPassword" placeholder="••••••••" class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none pr-10" required>
+                                    <button type="button" @click="showResetPassword = !showResetPassword" class="absolute inset-y-0 right-0 px-3 flex items-center text-gray-500 hover:text-gray-700 focus:outline-none">
+                                        <svg x-show="!showResetPassword" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                        </svg>
+                                        <svg x-show="showResetPassword" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7a10.05 10.05 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.542 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+                            <p x-text="resetError" class="text-red-500 text-sm text-center" x-show="resetError"></p>
+                            <p x-text="resetSuccess" class="text-green-600 text-sm text-center font-medium" x-show="resetSuccess"></p>
+                            
+                            <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold p-3 rounded-lg transition duration-200 shadow-lg">Update Password</button>
+                        </form>
+                        
+                        <div class="mt-4 text-center">
+                            <button @click="authView = 'login'" class="text-sm text-blue-600 hover:underline">Back to Login</button>
+                        </div>
+                    </div>
+                </template>
+
+            </div>
+        </div>
+    </template>
+
+    <!-- ================= DASHBOARD PAGE ================= -->
+    <template x-if="isLoggedIn">
+        <div class="min-h-screen flex flex-col relative">
+            <!-- Navbar -->
+            <nav class="bg-slate-900 text-white px-6 py-4 shadow-md flex justify-between items-center">
+                <div class="flex items-center space-x-3">
+                    <span class="text-2xl">📦</span>
+                    <h1 class="text-xl font-bold tracking-wide">মেসার্স আমাদের বাজার - Dashboard</h1>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <span class="text-sm bg-slate-800 px-3 py-1.5 rounded-lg text-slate-300" x-text="new Date().toLocaleDateString()"></span>
+                    <button @click="isLoggedIn = false" class="bg-red-600 hover:bg-red-700 px-4 py-1.5 rounded-lg text-sm font-medium transition">Logout</button>
+                </div>
+            </nav>
+
+            <div class="container mx-auto p-6 grid grid-cols-1 lg:grid-cols-3 gap-6 flex-grow">
+
+                <!-- LEFT SIDE: INTERACTIVE TOGGLE FORMS -->
+                <div class="space-y-6">
+                    
+                    <!-- Form Switcher Buttons -->
+                    <div class="flex rounded-xl bg-slate-200 p-1">
+                        <button @click="activeForm = 'sale'" :class="activeForm === 'sale' ? 'bg-white text-blue-600 shadow' : 'text-slate-600'" class="flex-1 py-2.5 rounded-lg font-semibold text-sm transition">Customer Sale</button>
+                        <button @click="activeForm = 'dealer'" :class="activeForm === 'dealer' ? 'bg-white text-green-600 shadow' : 'text-slate-600'" class="flex-1 py-2.5 rounded-lg font-semibold text-sm transition">Dealer Purchase</button>
+                    </div>
+
+                    <!-- Record Customer Sale Form -->
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100" x-show="activeForm === 'sale'" x-transition>
+                        <h2 class="text-lg font-bold mb-4 text-blue-600 flex items-center gap-2">📝 Record Customer Sale</h2>
+                        <form @submit.prevent="submitSale" class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Customer Name</label>
+                                <input type="text" x-model="sale.customer_name" placeholder="e.g. Rahim Ahmed" class="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm" required>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Item Name</label>
+                                <input type="text" x-model="sale.item_name" placeholder="e.g. Rice 5kg" class="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm" required>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Quantity</label>
+                                <input type="number" x-model="sale.quantity" placeholder="1" class="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm" required>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Total Price (Tk)</label>
+                                <input type="number" step="0.01" x-model="sale.total_price" placeholder="0.00" class="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm" required>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Date</label>
+                                <input type="date" x-model="sale.date" class="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm" required>
+                            </div>
+                            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold p-3 rounded-lg shadow transition">Save & Generate Receipt</button>
+                        </form>
+                    </div>
+
+                    <!-- Record Dealer Purchase Form -->
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100" x-show="activeForm === 'dealer'" x-transition>
+                        <h2 class="text-lg font-bold mb-4 text-green-600 flex items-center gap-2">🚚 Record Dealer Purchase</h2>
+                        <form @submit.prevent="submitDealer" class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Dealer Name</label>
+                                <input type="text" x-model="dealer.dealer_name" placeholder="e.g. City Wholesale" class="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none text-sm" required>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Item Name</label>
+                                <input type="text" x-model="dealer.item_name" placeholder="e.g. Rice 5kg" class="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none text-sm" required>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Quantity Bought</label>
+                                <input type="number" x-model="dealer.quantity" placeholder="50" class="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none text-sm" required>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Total Cost (Tk)</label>
+                                <input type="number" step="0.01" x-model="dealer.total_cost" placeholder="0.00" class="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none text-sm" required>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Date</label>
+                                <input type="date" x-model="dealer.date" class="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none text-sm" required>
+                            </div>
+                            <button type="submit" class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold p-3 rounded-lg shadow transition">Save Dealer Batch</button>
+                        </form>
+                    </div>
+
+                </div>
+
+                <!-- RIGHT SIDE: TABLES & RECORDS -->
+                <div class="lg:col-span-2 space-y-6">
+                    
+                    <!-- Inventory Stock -->
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                        <h2 class="text-md font-bold text-slate-800 mb-4">📋 Inventory Stock Levels</h2>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse">
+                                <thead>
+                                    <tr class="bg-slate-100 text-slate-600 text-xs uppercase tracking-wider">
+                                        <th class="p-3 rounded-l-lg">Item</th>
+                                        <th class="p-3">In Stock</th>
+                                        <th class="p-3">Cost Price</th>
+                                        <th class="p-3 rounded-r-lg">Selling Price</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100 text-sm">
+                                    <template x-for="item in inventory">
+                                        <tr>
+                                            <td class="p-3 font-medium text-slate-800" x-text="item.item_name"></td>
+                                            <td class="p-3 font-bold" :class="item.quantity < 5 ? 'text-red-500' : 'text-emerald-600'" x-text="item.quantity"></td>
+                                            <td class="p-3 text-slate-600" x-text="item.cost_price"></td>
+                                            <td class="p-3 text-slate-600" x-text="item.selling_price"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Customer Sales History -->
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                        <h2 class="text-md font-bold text-slate-800 mb-4">🛍️ Customer Sales History</h2>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse">
+                                <thead>
+                                    <tr class="bg-slate-100 text-slate-600 text-xs uppercase tracking-wider">
+                                        <th class="p-3 rounded-l-lg">Date</th>
+                                        <th class="p-3">Customer</th>
+                                        <th class="p-3">Item</th>
+                                        <th class="p-3">Qty</th>
+                                        <th class="p-3">Total</th>
+                                        <th class="p-3 rounded-r-lg">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100 text-sm">
+                                    <template x-for="s in sales">
+                                        <tr>
+                                            <td class="p-3 text-slate-600" x-text="s.date"></td>
+                                            <td class="p-3 font-medium text-slate-800" x-text="s.customer_name"></td>
+                                            <td class="p-3 text-slate-600" x-text="s.item_name"></td>
+                                            <td class="p-3 text-slate-600" x-text="s.quantity"></td>
+                                            <td class="p-3 font-semibold text-blue-600" x-text="s.total_price"></td>
+                                            <td class="p-3 space-x-2">
+                                                <button @click="showReceiptModal(s)" class="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition border border-slate-300">Show Receipt</button>
+                                                <button @click="printReceipt(s)" class="bg-blue-50 hover:bg-blue-100 text-blue-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition border border-blue-200">Print Receipt</button>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- RECEIPT MODAL POPUP -->
+            <div x-show="isReceiptOpen" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" x-transition.opacity>
+                <div class="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 relative max-h-[90vh] overflow-y-auto">
+                    
+                    <!-- Printable Receipt Box -->
+                    <div id="printable-modal-content" class="bg-white p-4 text-slate-800 border border-slate-300 rounded-lg">
+                        <div class="text-center border-b-2 border-slate-800 pb-3 mb-4">
+                            <p class="text-xs italic text-slate-500">বিসমিল্লাহির রাহমানির রাহিম</p>
+                            <h1 class="text-2xl font-extrabold text-blue-900 mt-1">মেসার্স আমাদের বাজার</h1>
+                            <p class="text-xs font-medium text-slate-600 mt-1">প্রোপ্রাইটর: মোঃ নাজমুল আলম (মোবাইল: 01756-093662)</p>
+                            <p class="text-[11px] text-slate-500 mt-1">এখানে সিরামিকের প্লেট, ডিনার সেট, প্রেসার কুকার, গ্লাস, কাচের জগ, মেলামাইন সেট, ফ্রাইপেন, ফ্লোর কার্পেট, ওয়ালমেট এবং প্লাস্টিকের যাবতীয় মালামাল পাইকারী ও খুচরা বিক্রয় করা হয়।</p>
+                        </div>
+                        
+                        <div class="flex justify-between items-center text-xs mb-4 bg-slate-50 p-2.5 rounded border border-slate-200">
+                            <div><span class="font-semibold text-slate-500">Customer:</span> <span class="font-bold text-slate-800" x-text="currentReceipt.customer_name"></span></div>
+                            <div><span class="font-semibold text-slate-500">Date:</span> <span class="font-bold text-slate-800" x-text="currentReceipt.date"></span></div>
+                        </div>
+
+                        <table class="w-full text-xs border-collapse mb-6">
+                            <thead>
+                                <tr class="bg-slate-800 text-white">
+                                    <th class="py-2 px-3 text-left rounded-l">Item Name</th>
+                                    <th class="py-2 px-3 text-center">Quantity</th>
+                                    <th class="py-2 px-3 text-right rounded-r">Price (Tk)</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-200">
+                                <tr>
+                                    <td class="py-3 px-3 font-medium text-slate-800" x-text="currentReceipt.item_name"></td>
+                                    <td class="py-3 px-3 text-center text-slate-600" x-text="currentReceipt.quantity"></td>
+                                    <td class="py-3 px-3 text-right font-semibold text-slate-800" x-text="currentReceipt.total_price"></td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <div class="border-t-2 border-slate-800 pt-3 flex justify-between items-center text-base font-bold mb-8">
+                            <span>Total Amount:</span>
+                            <span class="text-blue-900" x-text="currentReceipt.total_price + ' Tk'"></span>
+                        </div>
+
+                        <div class="flex justify-between items-end pt-6 mt-6 text-xs text-slate-600">
+                            <div class="text-center"><div class="border-t border-slate-400 w-32 pt-1">Customer Signature</div></div>
+                            <div class="text-center"><div class="border-t border-slate-400 w-32 pt-1">Authorized Signature</div></div>
+                        </div>
+
+                        <div class="text-center bg-blue-900 text-white text-[11px] py-2 px-3 mt-6 rounded font-medium">
+                            ঠিকানা: তাজুল ইসলাম সুপার মার্কেট, ইটাখোলা মোড়, গাজীপুর রোড, শিবপুর, নরসিংদী।
+                        </div>
+                    </div>
+
+                    <!-- Modal Actions (Hidden during print) -->
+                    <div class="mt-6 flex justify-end space-x-3 no-print">
+                        <button @click="isReceiptOpen = false" class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-semibold transition">Close</button>
+                        <button @click="window.print()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold shadow transition">Print Now</button>
+                    </div>
+
+                </div>
+            </div>
+
+        </div>
+    </template>
+
+    <script>
+        function shopApp() {
+            return {
+                isLoggedIn: false,
+                authView: 'login',
+                loginEmail: '',
+                loginPassword: '',
+                loginError: '',
+                showLoginPassword: false,
+                
+                resetEmail: '',
+                newPassword: '',
+                resetError: '',
+                resetSuccess: '',
+                showResetPassword: false,
+
+                activeForm: 'sale',
+                inventory: [],
+                sales: [],
+                purchases: [],
+                
+                sale: { customer_name: '', item_name: '', quantity: '', total_price: '', date: new Date().toISOString().split('T')[0] },
+                dealer: { dealer_name: '', item_name: '', quantity: '', total_cost: '', date: new Date().toISOString().split('T')[0] },
+                
+                isReceiptOpen: false,
+                currentReceipt: {},
+
+                async login() {
+                    try {
+                        const res = await fetch('/api/login', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ email: this.loginEmail, password: this.loginPassword })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            this.isLoggedIn = true;
+                            this.loadData();
+                        } else {
+                            this.loginError = data.message;
+                        }
+                    } catch (err) {
+                        this.loginError = "Connection error. Try again.";
+                    }
+                },
+
+                async resetPassword() {
+                    try {
+                        const res = await fetch('/api/reset-password', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ email: this.resetEmail, new_password: this.newPassword })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            this.resetSuccess = "Password updated successfully in database! You can login now.";
+                            this.resetError = '';
+                            setTimeout(() => { this.authView = 'login'; }, 2000);
+                        } else {
+                            this.resetError = data.message;
+                            this.resetSuccess = '';
+                        }
+                    } catch (err) {
+                        this.resetError = "Connection error. Try again.";
+                    }
+                },
+
+                async loadData() {
+                    const res = await fetch('/api/data');
+                    const data = await res.json();
+                    this.inventory = data.inventory;
+                    this.sales = data.sales;
+                    this.purchases = data.purchases;
+                },
+
+                async submitSale() {
+                    await fetch('/api/sales', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(this.sale)
+                    });
+                    this.loadData();
+                    this.sale = { customer_name: '', item_name: '', quantity: '', total_price: '', date: new Date().toISOString().split('T')[0] };
+                },
+
+                async submitDealer() {
+                    await fetch('/api/dealer', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(this.dealer)
+                    });
+                    this.loadData();
+                    this.dealer = { dealer_name: '', item_name: '', quantity: '', total_cost: '', date: new Date().toISOString().split('T')[0] };
+                },
+
+                showReceiptModal(item) {
+                    this.currentReceipt = item;
+                    this.isReceiptOpen = true;
+                },
+
+                printReceipt(item) {
+                    this.currentReceipt = item;
+                    this.isReceiptOpen = true;
+                    // Automatically trigger print dialog shortly after the modal opens
+                    setTimeout(() => {
+                        window.print();
+                    }, 300);
+                }
+            }
+        }
+    </script>
+</body>
+</html>
