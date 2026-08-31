@@ -13,7 +13,9 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Initialize SQLite Database
-const db = new sqlite3.Database('./shop.db', (err) => {
+// Resolved against this file, not the current working directory — otherwise
+// starting the server from elsewhere silently creates a second, empty database.
+const db = new sqlite3.Database(path.join(__dirname, 'shop.db'), (err) => {
   if (err) console.error('Error opening database', err.message);
   else console.log('Connected to the SQLite database.');
 });
@@ -97,9 +99,15 @@ app.post('/api/reset-password', (req, res) => {
 
 // API: Get Dashboard Stats & Lists
 app.get('/api/data', (req, res) => {
-  db.all("SELECT * FROM inventory", [], (err, inventory) => {
-    db.all("SELECT * FROM sales ORDER BY id DESC", [], (err, sales) => {
-      db.all("SELECT * FROM dealer_purchases ORDER BY id DESC", [], (err, purchases) => {
+  db.all("SELECT * FROM inventory ORDER BY item_name COLLATE NOCASE", [], (invErr, inventory) => {
+    if (invErr) return res.status(500).json({ error: invErr.message });
+
+    db.all("SELECT * FROM sales ORDER BY id DESC", [], (salesErr, sales) => {
+      if (salesErr) return res.status(500).json({ error: salesErr.message });
+
+      db.all("SELECT * FROM dealer_purchases ORDER BY id DESC", [], (purchErr, purchases) => {
+        if (purchErr) return res.status(500).json({ error: purchErr.message });
+
         res.json({ inventory, sales, purchases });
       });
     });

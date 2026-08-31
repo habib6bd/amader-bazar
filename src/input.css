@@ -1,0 +1,190 @@
+@import "tailwindcss";
+
+/* Tailwind v4 scans these for utility classes. */
+@source "../public/index.html";
+@source "../public/js/**/*.js";
+
+/* ---------------------------------------------------------------------------
+   Fonts — vendored locally (see scripts/vendor.js) so receipts render and
+   print identically on every machine, with no network at runtime.
+   --------------------------------------------------------------------------- */
+@font-face {
+  font-family: "Noto Sans Bengali";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/noto-sans-bengali-bengali-400-normal.woff2") format("woff2");
+  unicode-range: U+0951-0952, U+0964-0965, U+0980-09FE, U+1CD0, U+1CD2, U+1CD5-1CD6,
+    U+1CD8, U+1CE1, U+1CEA, U+1CED, U+1CF2, U+1CF5-1CF7, U+200C-200D, U+20B9, U+25CC,
+    U+A8F1;
+}
+@font-face {
+  font-family: "Noto Sans Bengali";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("../fonts/noto-sans-bengali-bengali-600-normal.woff2") format("woff2");
+  unicode-range: U+0951-0952, U+0964-0965, U+0980-09FE, U+1CD0, U+1CD2, U+1CD5-1CD6,
+    U+1CD8, U+1CE1, U+1CEA, U+1CED, U+1CF2, U+1CF5-1CF7, U+200C-200D, U+20B9, U+25CC,
+    U+A8F1;
+}
+@font-face {
+  font-family: "Noto Sans Bengali";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("../fonts/noto-sans-bengali-bengali-700-normal.woff2") format("woff2");
+  unicode-range: U+0951-0952, U+0964-0965, U+0980-09FE, U+1CD0, U+1CD2, U+1CD5-1CD6,
+    U+1CD8, U+1CE1, U+1CEA, U+1CED, U+1CF2, U+1CF5-1CF7, U+200C-200D, U+20B9, U+25CC,
+    U+A8F1;
+}
+@font-face {
+  font-family: "Noto Sans Bengali";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/noto-sans-bengali-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Noto Sans Bengali";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("../fonts/noto-sans-bengali-latin-600-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Noto Sans Bengali";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("../fonts/noto-sans-bengali-latin-700-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
+@theme {
+  --font-sans: "Noto Sans Bengali", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Alpine elements carrying x-cloak stay hidden until Alpine boots, so the raw
+   template never flashes on a slow load. */
+[x-cloak] {
+  display: none !important;
+}
+
+/* ---------------------------------------------------------------------------
+   Receipt — screen preview.
+   The on-screen card mirrors A4 proportions so what the shopkeeper sees in the
+   modal is what comes out of the printer.
+   --------------------------------------------------------------------------- */
+#receipt-paper {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Breathing room between the item table and the totals block. Deliberately a
+   fixed gap rather than a stretching one: the printed sheet should look like
+   the on-screen preview, not like the same content pulled apart to fill A4. */
+.receipt-spacer {
+  flex: 0 0 auto;
+  height: 1.5rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Receipt — print.
+
+   The old rules used `visibility: hidden`, which hides ink but keeps layout
+   space, and positioned the receipt absolutely inside a `fixed` + scrollable
+   ancestor. That combination is what produced the blank/overflowing second
+   page. Here the receipt modal is a direct child of <body>, so everything else
+   can simply be removed from the layout with `display: none`.
+
+   Scoped to body.receipt-open so a stray Ctrl+P on the dashboard does not
+   print an empty receipt.
+   --------------------------------------------------------------------------- */
+@page {
+  size: A4 portrait;
+  /* Modest page margin because the sheet keeps its own inner padding, exactly
+     as it appears on screen. */
+  margin: 10mm;
+}
+
+@media print {
+  html,
+  body {
+    height: auto !important;
+    background: #fff !important;
+  }
+
+  body.receipt-open > *:not(#receipt-modal) {
+    display: none !important;
+  }
+
+  /* Undo the overlay: no fixed positioning, no dim backdrop, no padding. */
+  #receipt-modal {
+    display: block !important;
+    position: static !important;
+    inset: auto !important;
+    z-index: auto !important;
+    opacity: 1 !important;
+    background: none !important;
+    padding: 0 !important;
+  }
+
+  /* Undo the scrolling/clipping card shell. `overflow: visible` here is the
+     fix for content being cut off at the bottom in Chrome.
+
+     The margin reset matters as much as the rest: the print viewport for A4 is
+     ~794px wide, so Tailwind's `sm:` breakpoint still matches while printing
+     and `sm:my-4` would silently add 8.4mm — enough on its own to push the
+     sheet onto a second page. */
+  #receipt-modal .modal-card {
+    max-width: none !important;
+    max-height: none !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* The sheet keeps the border, padding and type scale it has on screen, so
+     the print is the preview — no separate print typography to drift out of
+     sync. It sizes to its content rather than stretching to fill A4: a short
+     receipt should look compact, not pulled apart with a gap in the middle.
+     A4 printable height here is 277mm, far more than a receipt needs. */
+  #receipt-paper {
+    min-height: 0;
+    box-shadow: none !important;
+    /* Without this, browsers drop background fills by default and the dark
+       table header / blue address bar print as white-on-white. */
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  /* Never split these across pages. */
+  thead,
+  tr,
+  .receipt-head,
+  .receipt-meta,
+  .totals-block,
+  .signature-block,
+  .address-bar {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+}

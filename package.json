@@ -4,14 +4,25 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "npm run build && node server.js",
+    "build": "npm run vendor && npm run build:css",
+    "vendor": "node scripts/vendor.js",
+    "build:css": "tailwindcss -i src/input.css -o public/css/app.css --minify",
+    "watch:css": "tailwindcss -i src/input.css -o public/css/app.css --watch"
   },
   "dependencies": {
+    "alpinejs": "^3.17.0",
     "express": "^4.22.2",
     "sqlite3": "^5.1.7"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": ""
+  "description": "",
+  "devDependencies": {
+    "@fontsource/noto-sans-bengali": "^5.3.0",
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
+  }
 }
