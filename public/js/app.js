@@ -304,6 +304,27 @@ function shopApp() {
       return paisa ? `${words} and ${twoDigitWords(paisa)} Paisa Only` : `${words} Only`;
     },
 
+    /* Turns a failed response into something the shopkeeper can act on.
+
+       The case worth naming: if the server process is still running a build
+       from before these routes existed, Express answers with an HTML 404 page.
+       res.json() then throws, leaving no `error` field, and the old code fell
+       back to a blank "could not save" that gave no clue the real fix was to
+       restart the server. */
+    async describeFailure(res, fallback) {
+      const body = await res.text().catch(() => '');
+      try {
+        const data = JSON.parse(body);
+        if (data && data.error) return data.error;
+      } catch {
+        /* not JSON — handled below */
+      }
+      if (res.status === 404 && /<!DOCTYPE|<html/i.test(body)) {
+        return 'This server does not have the products API yet — restart the app on the shop PC, then try again.';
+      }
+      return `${fallback} (server said ${res.status})`;
+    },
+
     notify(message, type = 'success') {
       this.toast = { show: true, message, type };
       clearTimeout(this.toastTimer);
@@ -806,11 +827,33 @@ function shopApp() {
       };
     },
 
+    /* The prices on this form are per piece; these three show what that comes
+       to across the quantity entered, so "300" can never be mistaken for the
+       total paid for the whole batch. */
     get productMargin() {
       const cost = Number(this.product.cost_price);
       const sell = Number(this.product.selling_price);
       if (!Number.isFinite(cost) || !Number.isFinite(sell)) return 0;
       return sell - cost;
+    },
+
+    get productQty() {
+      const q = Number(this.product.quantity);
+      return Number.isFinite(q) ? q : 0;
+    },
+
+    get productTotalCost() {
+      const cost = Number(this.product.cost_price);
+      return Number.isFinite(cost) ? cost * this.productQty : 0;
+    },
+
+    get productTotalSale() {
+      const sell = Number(this.product.selling_price);
+      return Number.isFinite(sell) ? sell * this.productQty : 0;
+    },
+
+    get productTotalProfit() {
+      return this.productMargin * this.productQty;
     },
 
     async submitProduct() {
@@ -834,13 +877,13 @@ function shopApp() {
             }),
           }
         );
-        const data = await res.json().catch(() => ({}));
         // Left open on failure on purpose: a duplicate barcode has to be
         // readable and fixable where it was typed.
         if (!res.ok) {
-          this.productError = data.error || 'Could not save the product.';
+          this.productError = await this.describeFailure(res, 'Could not save the product.');
           return;
         }
+        const data = await res.json().catch(() => ({}));
 
         await this.loadData();
         this.closeProduct();
@@ -863,9 +906,8 @@ function shopApp() {
       this.savingProduct = true;
       try {
         const res = await fetch(`/api/inventory/${this.product.id}`, { method: 'DELETE' });
-        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          this.productError = data.error || 'Could not delete the product.';
+          this.productError = await this.describeFailure(res, 'Could not delete the product.');
           return;
         }
         await this.loadData();

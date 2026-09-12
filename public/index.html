@@ -235,7 +235,7 @@
                                                class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
                                     </div>
                                     <div>
-                                        <label for="sale-rate" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Price / Unit (৳)</label>
+                                        <label for="sale-rate" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Price <span class="normal-case font-normal text-slate-400">(per piece)</span></label>
                                         <input id="sale-rate" type="number" min="0" step="0.01" x-model="sale.unit_price" placeholder="0.00"
                                                class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
                                     </div>
@@ -315,12 +315,12 @@
                                 </div>
                                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                     <div>
-                                        <label for="dealer-buy" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Buying Price / Unit (৳)</label>
+                                        <label for="dealer-buy" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Buying Price <span class="normal-case font-normal text-slate-400">(per piece)</span></label>
                                         <input id="dealer-buy" type="number" min="0" step="0.01" x-model="dealer.cost_price" placeholder="0.00"
                                                class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base sm:text-sm transition" required>
                                     </div>
                                     <div>
-                                        <label for="dealer-sell" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Selling Price / Unit (৳)</label>
+                                        <label for="dealer-sell" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Selling Price <span class="normal-case font-normal text-slate-400">(per piece)</span></label>
                                         <input id="dealer-sell" type="number" min="0" step="0.01" x-model="dealer.selling_price" placeholder="0.00"
                                                class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base sm:text-sm transition" required>
                                     </div>
@@ -329,11 +329,11 @@
                                 <!-- What this batch costs and what it stands to earn, before saving. -->
                                 <div class="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5 space-y-1.5">
                                     <div class="flex items-baseline justify-between">
-                                        <span class="text-xs font-semibold uppercase tracking-wide text-amber-800">Total Cost</span>
+                                        <span class="text-xs font-semibold uppercase tracking-wide text-amber-800">Total Cost (<span class="tabular-nums" x-text="dealer.quantity || 0"></span> pcs)</span>
                                         <span class="text-base font-bold text-amber-900 tabular-nums" x-text="fmt(dealerTotalCost)"></span>
                                     </div>
                                     <div class="flex items-baseline justify-between">
-                                        <span class="text-xs font-semibold uppercase tracking-wide text-brand-800">Expected Profit</span>
+                                        <span class="text-xs font-semibold uppercase tracking-wide text-brand-800">Expected Profit (all sold)</span>
                                         <span class="text-base font-bold tabular-nums"
                                               :class="dealerExpectedProfit < 0 ? 'text-red-600' : 'text-brand-800'"
                                               x-text="fmt(dealerExpectedProfit)"></span>
@@ -894,23 +894,46 @@
                     </div>
                 </div>
 
+                <!-- Both prices are for ONE piece. The totals below multiply them out
+                     by the quantity, so there is no ambiguity about whether the figure
+                     typed here is per piece or for the whole batch. -->
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label for="prod-cost" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Buying Price (৳)</label>
+                        <label for="prod-cost" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Buying Price <span class="normal-case font-normal text-slate-400">(per piece)</span></label>
                         <input id="prod-cost" type="number" min="0" step="0.01" x-model="product.cost_price" placeholder="0.00"
                                class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
                     </div>
                     <div>
-                        <label for="prod-sell" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Selling Price (৳)</label>
+                        <label for="prod-sell" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Selling Price <span class="normal-case font-normal text-slate-400">(per piece)</span></label>
                         <input id="prod-sell" type="number" min="0" step="0.01" x-model="product.selling_price" placeholder="0.00"
                                class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
                     </div>
                 </div>
 
-                <div class="flex items-baseline justify-between rounded-lg bg-brand-50 border border-brand-100 px-3 py-2.5">
-                    <span class="text-xs font-semibold uppercase tracking-wide text-brand-800">Margin / unit</span>
-                    <span class="text-base font-bold tabular-nums"
-                          :class="productMargin < 0 ? 'text-red-600' : 'text-brand-900'" x-text="fmt(productMargin)"></span>
+                <div class="rounded-lg bg-brand-50 border border-brand-100 px-3 py-2.5 space-y-1.5">
+                    <div class="flex items-baseline justify-between">
+                        <span class="text-xs font-semibold uppercase tracking-wide text-brand-800">Profit / piece</span>
+                        <span class="text-base font-bold tabular-nums"
+                              :class="productMargin < 0 ? 'text-red-600' : 'text-brand-900'" x-text="fmt(productMargin)"></span>
+                    </div>
+                    <div class="border-t border-brand-200 pt-1.5 space-y-1 text-xs">
+                        <div class="flex items-baseline justify-between text-slate-600">
+                            <span>Total buying (<span class="tabular-nums" x-text="productQty"></span> pcs)</span>
+                            <span class="tabular-nums font-semibold" x-text="fmt(productTotalCost)"></span>
+                        </div>
+                        <div class="flex items-baseline justify-between text-slate-600">
+                            <span>Total selling (<span class="tabular-nums" x-text="productQty"></span> pcs)</span>
+                            <span class="tabular-nums font-semibold" x-text="fmt(productTotalSale)"></span>
+                        </div>
+                        <div class="flex items-baseline justify-between">
+                            <span class="font-semibold text-brand-800">Total profit if all sold</span>
+                            <span class="tabular-nums font-bold"
+                                  :class="productTotalProfit < 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(productTotalProfit)"></span>
+                        </div>
+                    </div>
+                    <p class="text-xs text-red-600" x-show="productMargin < 0" x-cloak>
+                        Selling price is below the buying price.
+                    </p>
                 </div>
 
                 <p class="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
