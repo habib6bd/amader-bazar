@@ -100,6 +100,23 @@ async function migrate() {
   // Both print nothing, but the distinction is worth keeping in the data.
   await addColumnIfMissing('sales', 'warranty_months', 'INTEGER');
 
+  /* Profit snapshots, both taken from the product at the moment of sale.
+
+     cost_price is what makes profit history stable: restocking a product at a
+     new buying price must not retroactively change what earlier sales earned.
+     list_price is the selling price the shop had set at the time, kept so a
+     sale made below it can be shown as a discount — the agent is allowed to
+     come down from the set price, and the gap is worth seeing.
+
+     Both nullable: sales recorded before this existed, and sales of an item
+     that is not in inventory, have neither. */
+  await addColumnIfMissing('sales', 'cost_price', 'REAL');
+  await addColumnIfMissing('sales', 'list_price', 'REAL');
+
+  // Optional private note on a sale — "paid half, rest due next week". Shown in
+  // the dashboard only; deliberately never rendered on the customer's invoice.
+  await addColumnIfMissing('sales', 'comment', 'TEXT');
+
   // TEXT, not INTEGER: an INTEGER column would eat the leading zeros off an
   // EAN-13, and Code 39 barcodes are alphanumeric.
   await addColumnIfMissing('inventory', 'barcode', 'TEXT');
@@ -133,9 +150,9 @@ db.serialize(() => {
   )`);
 
   // `sale_time` rather than `time`, because TIME is an SQL function name.
-  // `warranty_months` is snapshotted from the product at the moment of sale —
-  // see POST /api/sales — so editing a product later never rewrites an invoice
-  // that has already been issued.
+  // warranty_months, cost_price and list_price are all snapshotted from the
+  // product at the moment of sale — see POST /api/sales — so editing a product
+  // later never rewrites an invoice already issued, nor the profit already made.
   db.run(`CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     customer_name TEXT NOT NULL,
@@ -145,7 +162,10 @@ db.serialize(() => {
     total_price REAL NOT NULL,
     date TEXT NOT NULL,
     sale_time TEXT,
-    warranty_months INTEGER
+    warranty_months INTEGER,
+    cost_price REAL,
+    list_price REAL,
+    comment TEXT
   )`);
 
   db.run(`CREATE TABLE IF NOT EXISTS dealer_purchases (
@@ -293,6 +313,181 @@ app.post('/api/dealer', (req, res) => {
       });
     }
   );
+});
+
+/* ===========================================================================
+   Products (inventory)
+
+   Until these existed, a product could only be created as a side effect of a
+   dealer purchase, and a typo'd name, a wrong price or a miscounted stock
+   level could never be corrected except by editing shop.db by hand.
+   =========================================================================== */
+
+// Shared shape check for POST and PUT, so both agree on what a product is.
+// Returns { error } or { item }.
+function validateItem(body = {}) {
+  const item_name = String(body.item_name ?? '').trim();
+  if (!item_name) return { error: 'Item name is required.' };
+  if (item_name.length > 120) return { error: 'Item name is too long (max 120 characters).' };
+
+  const quantity = Number(body.quantity);
+  if (!Number.isInteger(quantity) || quantity < 0) {
+    return { error: 'Quantity must be a whole number, zero or more.' };
+  }
+
+  const cost_price = Number(body.cost_price);
+  const selling_price = Number(body.selling_price);
+  if (!Number.isFinite(cost_price) || cost_price < 0) {
+    return { error: 'Buying price must be a number, zero or more.' };
+  }
+  if (!Number.isFinite(selling_price) || selling_price < 0) {
+    return { error: 'Selling price must be a number, zero or more.' };
+  }
+
+  const warranty_months =
+    body.warranty_months === '' || body.warranty_months == null ? 0 : Number(body.warranty_months);
+  if (!Number.isInteger(warranty_months) || warranty_months < 0 || warranty_months > 600) {
+    return { error: 'Warranty must be a whole number of months between 0 and 600.' };
+  }
+
+  // Normalised to NULL when blank so the partial unique index never sees an
+  // empty string, and so many barcode-less products can coexist.
+  const raw = String(body.barcode ?? '').trim();
+  const barcode = raw === '' ? null : raw;
+  if (barcode && !/^[0-9A-Za-z-]{4,64}$/.test(barcode)) {
+    return { error: 'Barcode must be 4–64 letters, digits or hyphens, with no spaces.' };
+  }
+
+  return { item: { item_name, quantity, cost_price, selling_price, warranty_months, barcode } };
+}
+
+// Name and barcode must each identify one product. Name uniqueness is checked
+// here rather than with a second unique index because a UNIQUE ... COLLATE
+// NOCASE index would fail to create if the live database already held a
+// case-variant pair — and that failure would be silent.
+async function findConflict(item, excludeId = null) {
+  const params = excludeId ? [item.item_name, excludeId] : [item.item_name];
+  const byName = await get(
+    `SELECT id FROM inventory WHERE item_name = ? COLLATE NOCASE${excludeId ? ' AND id != ?' : ''}`,
+    params
+  );
+  if (byName) return `An item named "${item.item_name}" already exists.`;
+
+  if (item.barcode) {
+    const byCode = await get(
+      `SELECT item_name FROM inventory WHERE barcode = ?${excludeId ? ' AND id != ?' : ''}`,
+      excludeId ? [item.barcode, excludeId] : [item.barcode]
+    );
+    if (byCode) return `That barcode is already on "${byCode.item_name}".`;
+  }
+  return null;
+}
+
+// API: Create a product
+app.post('/api/inventory', async (req, res) => {
+  const { error, item } = validateItem(req.body);
+  if (error) return res.status(400).json({ error });
+
+  try {
+    const conflict = await findConflict(item);
+    if (conflict) return res.status(409).json({ error: conflict });
+
+    const result = await run(
+      `INSERT INTO inventory (item_name, quantity, cost_price, selling_price, barcode, warranty_months)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [item.item_name, item.quantity, item.cost_price, item.selling_price, item.barcode, item.warranty_months]
+    );
+    res.json({ id: result.lastID });
+  } catch (err) {
+    // The partial index is the actual guarantee; the pre-check above only
+    // exists to produce a message a shopkeeper can act on.
+    if (String(err.code).startsWith('SQLITE_CONSTRAINT')) {
+      return res.status(409).json({ error: 'That barcode is already used by another product.' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Update a product, cascading a rename through its history
+app.put('/api/inventory/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  const { error, item } = validateItem(req.body);
+  if (error) return res.status(400).json({ error });
+
+  try {
+    const existing = await get(`SELECT * FROM inventory WHERE id = ?`, [id]);
+    if (!existing) return res.status(404).json({ error: 'That product no longer exists.' });
+
+    const conflict = await findConflict(item, id);
+    if (conflict) return res.status(409).json({ error: conflict });
+
+    const oldName = existing.item_name;
+    const renamed = oldName !== item.item_name;
+    const fields = [
+      item.item_name,
+      item.quantity,
+      item.cost_price,
+      item.selling_price,
+      item.barcode,
+      item.warranty_months,
+      id,
+    ];
+    const updateItem = `UPDATE inventory
+         SET item_name = ?, quantity = ?, cost_price = ?, selling_price = ?,
+             barcode = ?, warranty_months = ?
+       WHERE id = ?`;
+
+    if (!renamed) {
+      await run(updateItem, fields);
+      return res.json({ success: true, renamed: 0 });
+    }
+
+    /* item_name is the only link between a product and its history, so a
+       rename has to carry the history with it or the past sales are orphaned
+       on a string nothing explains.
+
+       Note this deliberately does change what an already-issued invoice
+       reprints — which is the opposite of the warranty and cost snapshots
+       above, and for a reason: a rename is a *correction* (the typo was on the
+       customer's copy too), whereas a price or warranty change is a new
+       decision that must not rewrite a promise already made.
+
+       BEGIN IMMEDIATE, not plain BEGIN: it takes the write lock up front, so
+       the transaction cannot fail at COMMIT time after partial work. */
+    await run('BEGIN IMMEDIATE');
+    try {
+      await run(updateItem, fields);
+      const s = await run(`UPDATE sales SET item_name = ? WHERE item_name = ?`, [item.item_name, oldName]);
+      const p = await run(`UPDATE dealer_purchases SET item_name = ? WHERE item_name = ?`, [item.item_name, oldName]);
+      await run('COMMIT');
+      res.json({ success: true, renamed: s.changes + p.changes });
+    } catch (txErr) {
+      await run('ROLLBACK').catch(() => {});
+      throw txErr;
+    }
+  } catch (err) {
+    if (String(err.code).startsWith('SQLITE_CONSTRAINT')) {
+      return res.status(409).json({ error: 'That barcode is already used by another product.' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Delete a product
+//
+// Allowed even when sales reference it. The commonest reason to delete is a
+// typo'd product auto-created by a dealer purchase, which always has history
+// attached — refusing those would block the very case this exists for. Nothing
+// on a printed invoice is lost: each sale snapshots the name, price, cost and
+// warranty it was issued with. The UI confirms with the reference count first.
+app.delete('/api/inventory/:id', async (req, res) => {
+  try {
+    const result = await run(`DELETE FROM inventory WHERE id = ?`, [Number(req.params.id)]);
+    if (result.changes === 0) return res.status(404).json({ error: 'That product no longer exists.' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.listen(PORT, () => {
