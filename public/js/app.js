@@ -16,14 +16,6 @@ function todayLocal() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-// Local wall-clock time as HH:MM (24h), which is what <input type="time">
-// reads and writes. The invoice renders it back as 12-hour with AM/PM.
-function nowLocalTime() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 // ---------------------------------------------------------------- numbers
 const ONES = [
   '', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
@@ -96,6 +88,10 @@ function writeSession(active) {
 
 // The form collects a price per unit, matching the invoice's "Price/ Unit"
 // column; the amount is derived from it rather than typed twice.
+//
+// No sale_time here on purpose — the server stamps it at the moment of insert.
+// A value seeded on the client would be the time the form was created, not the
+// time of the sale.
 function blankSale() {
   return {
     customer_name: '',
@@ -104,7 +100,6 @@ function blankSale() {
     quantity: '',
     unit_price: '',
     date: todayLocal(),
-    sale_time: nowLocalTime(),
   };
 }
 
@@ -174,7 +169,6 @@ function shopApp() {
 
     // ------------------------------------------------------------- helpers
     today: todayLocal,
-    nowTime: nowLocalTime,
 
     fmt(n) {
       const v = Number(n);
@@ -413,6 +407,7 @@ function shopApp() {
           headers: { 'Content-Type': 'application/json' },
           // total_price stays the stored figure; the form's unit price is
           // what the shopkeeper types, so it is multiplied out here.
+          // sale_time is absent deliberately — the server stamps it.
           body: JSON.stringify({
             customer_name: this.sale.customer_name,
             customer_contact: this.sale.customer_contact,
@@ -420,7 +415,6 @@ function shopApp() {
             quantity: this.sale.quantity,
             total_price: this.saleAmount,
             date: this.sale.date,
-            sale_time: this.sale.sale_time,
           }),
         });
         const data = await res.json().catch(() => ({}));

@@ -223,17 +223,12 @@
                                     <span class="text-xs font-semibold uppercase tracking-wide text-brand-800">Amount</span>
                                     <span class="text-base font-bold text-brand-900 tabular-nums" x-text="fmt(saleAmount)"></span>
                                 </div>
-                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                    <div>
-                                        <label for="sale-date" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Date</label>
-                                        <input id="sale-date" type="date" x-model="sale.date"
-                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
-                                    </div>
-                                    <div>
-                                        <label for="sale-time" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Time</label>
-                                        <input id="sale-time" type="time" x-model="sale.sale_time"
-                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
-                                    </div>
+                                <!-- No Time field: the server stamps the time of sale on save, so
+                                     it can never be the stale value a pre-filled input would hold. -->
+                                <div>
+                                    <label for="sale-date" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Date</label>
+                                    <input id="sale-date" type="date" x-model="sale.date"
+                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
                                 </div>
                                 <button type="submit" :disabled="savingSale"
                                         class="nb-press w-full min-h-[48px] bg-brand-700 hover:bg-brand-800 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold p-3 rounded-lg shadow transition">
