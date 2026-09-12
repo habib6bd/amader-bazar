@@ -257,12 +257,28 @@ app.get('/api/data', (req, res) => {
 // is the untrustworthy source here, and a PC with a wrong clock should not be
 // able to stamp an invoice.
 app.post('/api/sales', async (req, res) => {
-  const { customer_name, customer_contact, item_name, quantity, total_price, date } = req.body;
+  const { customer_name, customer_contact, item_name, quantity, total_price, date, comment } = req.body;
 
   try {
+    /* Snapshot what the product was worth at this moment.
+
+       Exact match, not COLLATE NOCASE, because the stock decrement below
+       matches exactly too — two different notions of "the same product" in one
+       request would let a sale inherit a cost while never reducing stock.
+
+       An item that is not in inventory leaves all three NULL, which is a real
+       path: the item field is free text. NULL renders as no warranty line and
+       excludes the sale from profit, which is right — the shop cannot cost, or
+       honour a warranty on, something it has no record of. */
+    const product = await get(
+      `SELECT cost_price, selling_price, warranty_months FROM inventory WHERE item_name = ?`,
+      [item_name]
+    );
+
     const result = await run(
-      `INSERT INTO sales (customer_name, customer_contact, item_name, quantity, total_price, date, sale_time)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO sales (customer_name, customer_contact, item_name, quantity, total_price,
+                          date, sale_time, warranty_months, cost_price, list_price, comment)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         customer_name,
         customer_contact || null,
@@ -271,6 +287,10 @@ app.post('/api/sales', async (req, res) => {
         total_price,
         date,
         nowLocalTime(),
+        product ? product.warranty_months : null,
+        product ? product.cost_price : null,
+        product ? product.selling_price : null,
+        String(comment ?? '').trim() || null,
       ]
     );
     const saleId = result.lastID;
@@ -288,31 +308,104 @@ app.post('/api/sales', async (req, res) => {
   }
 });
 
-// API: Record Dealer Purchase
-app.post('/api/dealer', (req, res) => {
-  const { dealer_name, item_name, quantity, total_cost, date } = req.body;
+/* API: Record Dealer Purchase — the shop's product-entry path.
 
-  db.run(
-    `INSERT INTO dealer_purchases (dealer_name, item_name, quantity, total_cost, date) VALUES (?, ?, ?, ?, ?)`,
-    [dealer_name, item_name, quantity, total_cost, date],
-    function(err) {
-      if (err) return res.status(400).json({ error: err.message });
+   This is where stock comes in, so it is also where prices are set: the form
+   takes a buying price and a selling price per unit, and both are written onto
+   the product. Restocking therefore *updates* the product's prices rather than
+   leaving them frozen at whatever the first-ever purchase implied, which is
+   what used to happen (selling price was guessed as cost × 1.2 once, and could
+   never be changed). Earlier sales keep their own snapshotted cost_price, so
+   correcting prices here never rewrites profit already earned.
 
-      db.get(`SELECT * FROM inventory WHERE item_name = ?`, [item_name], (err, row) => {
-        if (row) {
-          db.run(`UPDATE inventory SET quantity = quantity + ? WHERE item_name = ?`, [quantity, item_name], () => {
-            res.json({ id: this.lastID });
-          });
-        } else {
-          const unitCost = total_cost / quantity;
-          db.run(`INSERT INTO inventory (item_name, quantity, cost_price, selling_price) VALUES (?, ?, ?, ?)`, 
-            [item_name, quantity, unitCost, unitCost * 1.2], () => {
-            res.json({ id: this.lastID });
-          });
-        }
-      });
+   total_cost stays the stored figure on dealer_purchases, derived here from
+   quantity × buying price so there is one source of truth. */
+app.post('/api/dealer', async (req, res) => {
+  const { dealer_name, item_name, quantity, date, barcode, warranty_months } = req.body;
+
+  const name = String(item_name ?? '').trim();
+  const dealer = String(dealer_name ?? '').trim();
+  const qty = Number(quantity);
+
+  if (!dealer) return res.status(400).json({ error: 'Dealer name is required.' });
+  if (!name) return res.status(400).json({ error: 'Item name is required.' });
+  if (!Number.isInteger(qty) || qty <= 0) {
+    return res.status(400).json({ error: 'Quantity must be a whole number, one or more.' });
+  }
+
+  // A page cached from before this change still posts total_cost and no prices.
+  // Derive the unit cost from it rather than rejecting the sale of a shop that
+  // has not reloaded yet.
+  const legacyTotal = Number(req.body.total_cost);
+  const cost = Number.isFinite(Number(req.body.cost_price))
+    ? Number(req.body.cost_price)
+    : Number.isFinite(legacyTotal)
+      ? legacyTotal / qty
+      : NaN;
+  if (!Number.isFinite(cost) || cost < 0) {
+    return res.status(400).json({ error: 'Buying price must be a number, zero or more.' });
+  }
+
+  try {
+    const existing = await get(`SELECT * FROM inventory WHERE item_name = ?`, [name]);
+
+    // Falls back to the product's current price, then to the old cost × 1.2
+    // guess for a brand-new item whose page did not send one.
+    const sell = Number.isFinite(Number(req.body.selling_price))
+      ? Number(req.body.selling_price)
+      : existing
+        ? existing.selling_price
+        : cost * 1.2;
+    if (!Number.isFinite(sell) || sell < 0) {
+      return res.status(400).json({ error: 'Selling price must be a number, zero or more.' });
     }
-  );
+
+    const code = String(barcode ?? '').trim() || null;
+    if (code && !/^[0-9A-Za-z-]{4,64}$/.test(code)) {
+      return res.status(400).json({ error: 'Barcode must be 4–64 letters, digits or hyphens, with no spaces.' });
+    }
+    if (code) {
+      // The scan fills the item name in the form, so by submit time the two
+      // agree. If they do not, the barcode belongs to something else and
+      // silently moving it would be worse than refusing.
+      const owner = await get(`SELECT item_name FROM inventory WHERE barcode = ? AND item_name != ?`, [code, name]);
+      if (owner) return res.status(409).json({ error: `That barcode is already on "${owner.item_name}".` });
+    }
+
+    const warranty = Number.isFinite(Number(warranty_months)) ? Number(warranty_months) : existing?.warranty_months ?? 0;
+    if (!Number.isInteger(warranty) || warranty < 0 || warranty > 600) {
+      return res.status(400).json({ error: 'Warranty must be a whole number of months between 0 and 600.' });
+    }
+
+    const totalCost = cost * qty;
+    const purchase = await run(
+      `INSERT INTO dealer_purchases (dealer_name, item_name, quantity, total_cost, date) VALUES (?, ?, ?, ?, ?)`,
+      [dealer, name, qty, totalCost, date]
+    );
+
+    if (existing) {
+      await run(
+        `UPDATE inventory
+            SET quantity = quantity + ?, cost_price = ?, selling_price = ?,
+                warranty_months = ?, barcode = COALESCE(?, barcode)
+          WHERE id = ?`,
+        [qty, cost, sell, warranty, code, existing.id]
+      );
+    } else {
+      await run(
+        `INSERT INTO inventory (item_name, quantity, cost_price, selling_price, barcode, warranty_months)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [name, qty, cost, sell, code, warranty]
+      );
+    }
+
+    res.json({ id: purchase.lastID });
+  } catch (err) {
+    if (String(err.code).startsWith('SQLITE_CONSTRAINT')) {
+      return res.status(409).json({ error: 'That barcode is already used by another product.' });
+    }
+    res.status(400).json({ error: err.message });
+  }
 });
 
 /* ===========================================================================

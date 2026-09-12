@@ -100,11 +100,59 @@ function blankSale() {
     quantity: '',
     unit_price: '',
     date: todayLocal(),
+    comment: '',
   };
 }
 
+// Dealer purchases are how stock and prices both enter the shop, so the form
+// carries the product's full detail, not just a total cost.
 function blankDealer() {
-  return { dealer_name: '', item_name: '', quantity: '', total_cost: '', date: todayLocal() };
+  return {
+    dealer_name: '',
+    barcode: '',
+    item_name: '',
+    quantity: '',
+    cost_price: '',
+    selling_price: '',
+    warranty_months: '',
+    date: todayLocal(),
+  };
+}
+
+function blankProduct() {
+  return {
+    id: null,
+    item_name: '',
+    barcode: '',
+    quantity: '',
+    cost_price: '',
+    selling_price: '',
+    warranty_months: 0,
+  };
+}
+
+/* Adds N months to a YYYY-MM-DD date, clamping to the end of the target month
+   so 31 Jan + 1 month is 28 Feb (29 in a leap year) rather than spilling into
+   March. Used for warranty expiry.
+
+   new Date(y, mo, 0) is the last day of month `mo`: the constructor's month
+   argument is 0-based, so `mo` names the *following* month and day 0 steps back
+   one day from it. Leap years included, with no lookup table. Building from
+   numbers also avoids the UTC parsing trap that todayLocal() warns about. */
+function addMonths(dateStr, months) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || '');
+  // Guarded against null explicitly: Number(null) is 0, which is finite, so a
+  // missing warranty would otherwise return the sale date unchanged.
+  if (!m || months == null || months === '') return '';
+  const n = Number(months);
+  if (!Number.isFinite(n) || n <= 0) return '';
+
+  const total = Number(m[1]) * 12 + (Number(m[2]) - 1) + n;
+  const year = Math.floor(total / 12);
+  const month = (total % 12) + 1;
+  const lastDay = new Date(year, month, 0).getDate();
+  const pad = (x) => String(x).padStart(2, '0');
+  return `${year}-${pad(month)}-${pad(Math.min(Number(m[3]), lastDay))}`;
 }
 
 function shopApp() {
@@ -146,6 +194,24 @@ function shopApp() {
     dealer: blankDealer(),
     savingSale: false,
     savingDealer: false,
+
+    // Barcode scanning. A USB scanner types the code then presses Enter, so
+    // there is no need to detect fast typing — see scanBarcode().
+    scanCode: '',
+    unknownBarcode: '',
+    dealerScanCode: '',
+
+    // Product manager
+    isProductOpen: false,
+    productMode: 'add',
+    product: blankProduct(),
+    savingProduct: false,
+    productError: '',
+    confirmDelete: false,
+
+    // Sales date filter. Empty strings mean "all time".
+    dateFrom: '',
+    dateTo: '',
 
     isReceiptOpen: false,
     currentReceipt: {},
@@ -255,6 +321,136 @@ function shopApp() {
       return qty * unit;
     },
 
+    /* ------------------------------------------------------------- warranty */
+
+    // "Warranty: 12 months (valid to 10-09-2027)", or '' when there is none.
+    // Reads the sale's own snapshot, so editing the product later never changes
+    // what an already-issued invoice says.
+    warrantyText(row) {
+      const n = Number(row?.warranty_months);
+      if (!Number.isFinite(n) || n <= 0) return '';
+      const unit = n === 1 ? 'month' : 'months';
+      const until = addMonths(row.date, n);
+      return until
+        ? `Warranty: ${n} ${unit} (valid to ${this.fmtDateDMY(until)})`
+        : `Warranty: ${n} ${unit}`;
+    },
+
+    /* --------------------------------------------------------------- profit
+
+       Two different questions, deliberately kept apart:
+
+       Expected profit is what the stock on hand is worth if it all sells at the
+       price set on entry — a projection, useful before anything is sold.
+
+       Actual profit is what sales really earned, using the cost snapshotted
+       onto each sale. It can be lower than expected because the agent is
+       allowed to come down from the set price; that gap is the discount. */
+
+    // Per-unit margin set at entry.
+    itemMargin(item) {
+      return Number(item?.selling_price || 0) - Number(item?.cost_price || 0);
+    },
+
+    // Profit sitting in the stock room if everything sells at the set price.
+    get expectedProfit() {
+      return this.inventory.reduce(
+        (sum, i) => sum + this.itemMargin(i) * Number(i.quantity || 0),
+        0
+      );
+    },
+
+    get stockValue() {
+      return this.inventory.reduce(
+        (sum, i) => sum + Number(i.cost_price || 0) * Number(i.quantity || 0),
+        0
+      );
+    },
+
+    // What a sale actually earned. Sales with no cost snapshot (recorded before
+    // this existed, or of an item never in inventory) return null rather than 0
+    // — the shop does not know what they cost, and guessing zero would inflate
+    // profit to the full sale price.
+    saleProfit(row) {
+      // The null check has to come first: Number(null) is 0, which is finite,
+      // so testing only isFinite would treat "cost unknown" as "cost nothing"
+      // and report the entire sale price as profit.
+      if (row?.cost_price == null || row.cost_price === '') return null;
+      const cost = Number(row.cost_price);
+      if (!Number.isFinite(cost)) return null;
+      return Number(row.total_price || 0) - cost * Number(row.quantity || 0);
+    },
+
+    // Amount given away against the set price, or 0. Same null-before-isFinite
+    // reasoning as above.
+    saleDiscount(row) {
+      if (row?.list_price == null || row.list_price === '') return 0;
+      const list = Number(row.list_price);
+      if (!Number.isFinite(list)) return 0;
+      const atList = list * Number(row.quantity || 0);
+      const diff = atList - Number(row.total_price || 0);
+      return diff > 0 ? diff : 0;
+    },
+
+    // Sum of saleProfit over a list, skipping the unknowns.
+    profitOf(rows) {
+      return rows.reduce((sum, r) => sum + (this.saleProfit(r) ?? 0), 0);
+    },
+
+    // True when some row in the list has no cost snapshot, so the totals above
+    // are understated and the UI should say so rather than quietly mislead.
+    hasUnknownCost(rows) {
+      return rows.some((r) => this.saleProfit(r) === null);
+    },
+
+    /* ---------------------------------------------------------- date filter */
+
+    setDateRange(preset) {
+      const d = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const iso = (x) => `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}`;
+
+      if (preset === 'all') {
+        this.dateFrom = '';
+        this.dateTo = '';
+      } else if (preset === 'today') {
+        this.dateFrom = this.dateTo = iso(d);
+      } else if (preset === 'week') {
+        // Week starts Saturday, as the Bangladeshi working week does.
+        const back = (d.getDay() + 1) % 7;
+        const start = new Date(d);
+        start.setDate(d.getDate() - back);
+        this.dateFrom = iso(start);
+        this.dateTo = iso(d);
+      } else if (preset === 'month') {
+        this.dateFrom = iso(new Date(d.getFullYear(), d.getMonth(), 1));
+        this.dateTo = iso(d);
+      }
+      this.salesLimit = PAGE_SIZE;
+    },
+
+    get isDateFiltered() {
+      return Boolean(this.dateFrom || this.dateTo);
+    },
+
+    // Both bounds inclusive. YYYY-MM-DD sorts lexicographically, so plain
+    // string comparison is correct and avoids constructing dates per row.
+    inDateRange(row) {
+      if (this.dateFrom && (row.date || '') < this.dateFrom) return false;
+      if (this.dateTo && (row.date || '') > this.dateTo) return false;
+      return true;
+    },
+
+    get rangeLabel() {
+      if (!this.isDateFiltered) return 'All time';
+      if (this.dateFrom && this.dateTo) {
+        return this.dateFrom === this.dateTo
+          ? this.fmtDate(this.dateFrom)
+          : `${this.fmtDate(this.dateFrom)} — ${this.fmtDate(this.dateTo)}`;
+      }
+      return this.dateFrom ? `From ${this.fmtDate(this.dateFrom)}` : `Up to ${this.fmtDate(this.dateTo)}`;
+    },
+
     // -------------------------------------------------------- derived stats
     get todaysSales() {
       const t = todayLocal();
@@ -282,24 +478,52 @@ function shopApp() {
     },
 
     // ------------------------------------------------------ filtered lists
+    // Matches the barcode too, which makes this a second scanning surface: the
+    // shopkeeper can scan into the search box to check stock and price without
+    // starting a sale. Being a plain search input outside any <form>, the
+    // scanner's trailing Enter does nothing here.
     get filteredInventory() {
       const q = this.invSearch.trim().toLowerCase();
       if (!q) return this.inventory;
-      return this.inventory.filter((i) => (i.item_name || '').toLowerCase().includes(q));
+      return this.inventory.filter(
+        (i) =>
+          (i.item_name || '').toLowerCase().includes(q) ||
+          String(i.barcode || '').toLowerCase().includes(q)
+      );
     },
 
     get filteredSales() {
       const q = this.saleSearch.trim().toLowerCase();
-      if (!q) return this.sales;
-      return this.sales.filter(
-        (s) =>
+      return this.sales.filter((s) => {
+        if (!this.inDateRange(s)) return false;
+        if (!q) return true;
+        return (
           (s.customer_name || '').toLowerCase().includes(q) ||
           (s.item_name || '').toLowerCase().includes(q)
-      );
+        );
+      });
     },
 
     get visibleSales() {
       return this.filteredSales.slice(0, this.salesLimit);
+    },
+
+    // Totals for whatever the filter currently shows — the answer to "how much
+    // did I sell on this day".
+    get rangeRevenue() {
+      return this.filteredSales.reduce((sum, s) => sum + Number(s.total_price || 0), 0);
+    },
+
+    get rangeProfit() {
+      return this.profitOf(this.filteredSales);
+    },
+
+    get rangeDiscount() {
+      return this.filteredSales.reduce((sum, s) => sum + this.saleDiscount(s), 0);
+    },
+
+    get rangeHasUnknownCost() {
+      return this.hasUnknownCost(this.filteredSales);
     },
 
     get filteredPurchases() {
@@ -415,6 +639,7 @@ function shopApp() {
             quantity: this.sale.quantity,
             total_price: this.saleAmount,
             date: this.sale.date,
+            comment: this.sale.comment,
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -422,6 +647,8 @@ function shopApp() {
 
         await this.loadData();
         this.sale = blankSale();
+        this.scanCode = '';
+        this.unknownBarcode = '';
         this.notify('Sale saved — invoice ready.');
 
         // The button promises an invoice, so actually open one.
@@ -448,11 +675,206 @@ function shopApp() {
 
         await this.loadData();
         this.dealer = blankDealer();
-        this.notify('Dealer purchase saved — stock updated.');
+        this.dealerScanCode = '';
+        this.notify('Purchase saved — stock and prices updated.');
       } catch (err) {
         this.notify(err.message || 'Could not save the purchase.', 'error');
       } finally {
         this.savingDealer = false;
+      }
+    },
+
+    // Live totals under the dealer form, so a wrong price is caught before it
+    // is written onto the product.
+    get dealerTotalCost() {
+      const qty = Number(this.dealer.quantity);
+      const cost = Number(this.dealer.cost_price);
+      if (!Number.isFinite(qty) || !Number.isFinite(cost)) return 0;
+      return qty * cost;
+    },
+
+    get dealerExpectedProfit() {
+      const qty = Number(this.dealer.quantity);
+      const cost = Number(this.dealer.cost_price);
+      const sell = Number(this.dealer.selling_price);
+      if (!Number.isFinite(qty) || !Number.isFinite(cost) || !Number.isFinite(sell)) return 0;
+      return (sell - cost) * qty;
+    },
+
+    /* ------------------------------------------------------ barcode scanning
+
+       A USB handheld scanner behaves as a keyboard: it types the code and
+       presses Enter. Because the handler fires on Enter rather than watching
+       for fast keystrokes, no debounce or timing heuristic is needed.
+
+       The markup binds @keydown.enter.prevent.stop — .prevent is essential, not
+       decorative: these inputs sit inside a <form>, and Enter's default action
+       there is to submit it, which would save a half-empty record. */
+
+    findByBarcode(code) {
+      const wanted = String(code || '').trim();
+      if (!wanted) return null;
+      return this.inventory.find((i) => String(i.barcode || '').trim() === wanted) || null;
+    },
+
+    // Sale form: fill the line from the scanned product.
+    scanBarcode() {
+      const code = String(this.scanCode || '').trim();
+      if (!code) return;
+
+      const item = this.findByBarcode(code);
+      if (!item) {
+        // Keep the code on screen and selected so a re-scan overwrites it, and
+        // offer the product form rather than leaving a dead end.
+        this.unknownBarcode = code;
+        this.$refs.scanInput?.select();
+        this.notify(`No product with barcode ${code}.`, 'error');
+        return;
+      }
+
+      this.unknownBarcode = '';
+      this.scanCode = '';
+      // Taken from the inventory row verbatim, which is the point: the stock
+      // decrement and the cost/warranty snapshot both match on item_name, and a
+      // hand-typed name can drift from it where a scanned one cannot.
+      this.sale.item_name = item.item_name;
+      this.sale.unit_price = item.selling_price;
+      if (!this.sale.quantity) this.sale.quantity = 1;
+
+      this.notify(`${item.item_name} — ${this.fmt(item.selling_price)}`);
+      this.$nextTick(() => {
+        this.$refs.saleQty?.focus();
+        this.$refs.saleQty?.select();
+      });
+    },
+
+    // Dealer form: a known code fills the product being restocked; an unknown
+    // one is simply kept, since this form is also how new products are created.
+    scanDealerBarcode() {
+      const code = String(this.dealerScanCode || '').trim();
+      if (!code) return;
+      this.dealer.barcode = code;
+
+      const item = this.findByBarcode(code);
+      if (item) {
+        this.dealer.item_name = item.item_name;
+        this.dealer.cost_price = item.cost_price;
+        this.dealer.selling_price = item.selling_price;
+        this.dealer.warranty_months = item.warranty_months ?? 0;
+        this.notify(`Restocking ${item.item_name}.`);
+        this.$nextTick(() => this.$refs.dealerQty?.focus());
+      } else {
+        this.notify(`New barcode ${code} — fill in the product details.`);
+        this.$nextTick(() => this.$refs.dealerItem?.focus());
+      }
+      this.dealerScanCode = '';
+    },
+
+    /* ------------------------------------------------------- product manager */
+
+    openAddProduct(prefill = {}) {
+      this.product = { ...blankProduct(), ...prefill };
+      this.productMode = 'add';
+      this.productError = '';
+      this.confirmDelete = false;
+      this.isProductOpen = true;
+    },
+
+    // Spread, never the live row: binding x-model straight to an inventory
+    // object would edit the table behind the modal as you type, and leave the
+    // changes there even if you cancel.
+    openEditProduct(item) {
+      this.product = { ...blankProduct(), ...item };
+      this.productMode = 'edit';
+      this.productError = '';
+      this.confirmDelete = false;
+      this.isProductOpen = true;
+    },
+
+    closeProduct() {
+      this.isProductOpen = false;
+      this.confirmDelete = false;
+    },
+
+    // How many records would be left referring to this product by name.
+    // Counted locally from data already loaded — no endpoint needed.
+    productUsage(name) {
+      const n = String(name || '');
+      return {
+        sales: this.sales.filter((s) => s.item_name === n).length,
+        purchases: this.purchases.filter((p) => p.item_name === n).length,
+      };
+    },
+
+    get productMargin() {
+      const cost = Number(this.product.cost_price);
+      const sell = Number(this.product.selling_price);
+      if (!Number.isFinite(cost) || !Number.isFinite(sell)) return 0;
+      return sell - cost;
+    },
+
+    async submitProduct() {
+      if (this.savingProduct) return;
+      this.savingProduct = true;
+      this.productError = '';
+      try {
+        const editing = this.productMode === 'edit';
+        const res = await fetch(
+          editing ? `/api/inventory/${this.product.id}` : '/api/inventory',
+          {
+            method: editing ? 'PUT' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              item_name: this.product.item_name,
+              barcode: this.product.barcode,
+              quantity: this.product.quantity,
+              cost_price: this.product.cost_price,
+              selling_price: this.product.selling_price,
+              warranty_months: this.product.warranty_months,
+            }),
+          }
+        );
+        const data = await res.json().catch(() => ({}));
+        // Left open on failure on purpose: a duplicate barcode has to be
+        // readable and fixable where it was typed.
+        if (!res.ok) {
+          this.productError = data.error || 'Could not save the product.';
+          return;
+        }
+
+        await this.loadData();
+        this.closeProduct();
+        this.notify(
+          data.renamed
+            ? `Product updated — ${data.renamed} history record(s) renamed too.`
+            : editing
+              ? 'Product updated.'
+              : 'Product added.'
+        );
+      } catch (err) {
+        this.productError = 'Connection error. Try again.';
+      } finally {
+        this.savingProduct = false;
+      }
+    },
+
+    async deleteProduct() {
+      if (this.savingProduct) return;
+      this.savingProduct = true;
+      try {
+        const res = await fetch(`/api/inventory/${this.product.id}`, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          this.productError = data.error || 'Could not delete the product.';
+          return;
+        }
+        await this.loadData();
+        this.closeProduct();
+        this.notify('Product deleted. Past sales and invoices are unchanged.');
+      } catch (err) {
+        this.productError = 'Connection error. Try again.';
+      } finally {
+        this.savingProduct = false;
       }
     },
 

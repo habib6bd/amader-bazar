@@ -438,6 +438,16 @@
   text-align: right;
 }
 
+/* Warranty under the item name. A sub-line rather than a sixth column, because
+   the column widths above are fixed percentages and "Item name" is the only one
+   holding prose — it is the column a new one would squeeze. */
+.inv-item-warranty {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.62rem;
+  color: var(--inv-muted);
+}
+
 /* Keeps a one-line invoice from collapsing to a sliver: the item block always
    occupies a sensible share of the sheet, as a pre-printed pad would. */
 .inv-fill-row td {

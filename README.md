@@ -273,29 +273,65 @@ Two safeguards, both at the bottom of `input.css` and both worth keeping:
 SQLite, created automatically on first run at `shop.db` next to `server.js`.
 
 ```sql
-inventory(id, item_name, quantity, cost_price, selling_price)
-sales(id, customer_name, customer_contact, item_name, quantity, total_price, date, sale_time)
+inventory(id, item_name, quantity, cost_price, selling_price, barcode, warranty_months)
+sales(id, customer_name, customer_contact, item_name, quantity, total_price,
+      date, sale_time, warranty_months, cost_price, list_price, comment)
 dealer_purchases(id, dealer_name, item_name, quantity, total_cost, date)
 admin(id, email, password)
+
+CREATE UNIQUE INDEX idx_inventory_barcode ON inventory(barcode)
+  WHERE barcode IS NOT NULL AND barcode != '';
 ```
 
 `date` columns hold `YYYY-MM-DD` text and `sale_time` holds `HH:MM` (24-hour); both are
-local wall-clock values, never UTC. `customer_contact` and `sale_time` are nullable —
-sales recorded before the invoice redesign have neither, and print an em dash. Money is
-`REAL`, and only the line **total** is stored: `Price/ Unit` on the invoice is
-`total_price / quantity`.
+local wall-clock values, never UTC. Money is `REAL`, and only the line **total** is stored:
+`Price/ Unit` on the invoice is `total_price / quantity`.
 
-A database created before those two columns existed is migrated in place on startup by
-`addColumnIfMissing()` in [`server.js`](server.js) — no manual step, no data loss. On first run, if `admin` is empty,
-`shop@admin.com` / `admin123` is inserted ([`server.js:85`](server.js#L85)).
+### What a sale snapshots, and why
 
-**Items are linked by their `item_name` string.** There are no foreign keys and no unique
-constraint, so `"Dinner Set"` and `"dinner set"` are two different products. The item field
-on both forms offers an autocomplete list of existing stock — use it to stay consistent.
+`sales.warranty_months`, `sales.cost_price` and `sales.list_price` are copied from the
+product **at the moment of sale** rather than joined at render time. Restocking a product
+at a new price, or changing its warranty, must never rewrite an invoice already issued or
+profit already earned — the customer's paper copy and a reprint have to agree.
 
-Recording a dealer purchase for an unknown item creates the inventory row automatically,
-setting `selling_price` to **cost × 1.2** ([`server.js:178`](server.js#L178)). Adjust that
-markup there if 20% is not right for you.
+All three are nullable, and the distinction matters: `NULL` means *unknown* (recorded
+before this existed, or an item that was never in inventory), while `0` means *known to be
+zero*. Profit calculations skip `NULL` rows rather than treating them as costing nothing,
+and the dashboard says so instead of quietly understating the figure.
+
+`sales.comment` is an optional private note. It shows in the sales history and is
+deliberately **never rendered on the invoice**.
+
+### Barcodes
+
+`inventory.barcode` is `TEXT`, not `INTEGER` — an integer column would eat the leading
+zeros off an EAN-13, and Code 39 is alphanumeric. Uniqueness comes from a **partial unique
+index**, because SQLite cannot `ADD COLUMN ... UNIQUE`. The `WHERE` clause is what lets
+many barcode-less products coexist: NULLs are already distinct in a unique index, but a
+second empty string would collide. Blank input is normalised to `NULL` server-side too.
+
+A `PRAGMA index_list(inventory)` line is logged at boot. That is the only cheap proof the
+index exists — without it, a failed creation would be invisible until two products ended
+up sharing a code. Don't remove it.
+
+### Migrations
+
+Existing databases are migrated in place on startup by `migrate()` in
+[`server.js`](server.js) — no manual step, no data loss. It is **awaited**, not
+callback-driven, and that is load-bearing: node-sqlite3 defaults to parallelize mode, so
+the barcode index would otherwise be issued before the column it references existed. On
+first run, if `admin` is empty, `shop@admin.com` / `admin123` is inserted.
+
+**Items are linked by their `item_name` string.** There are no foreign keys, so renaming a
+product cascades the new name through `sales` and `dealer_purchases` in a transaction —
+see [`PUT /api/inventory/:id`](#api-reference). Name uniqueness is enforced in application
+code (case-insensitively) rather than by an index, because a `UNIQUE ... COLLATE NOCASE`
+index could silently fail to create on a database that already held a case-variant pair.
+
+Recording a dealer purchase sets the product's buying and selling price from the form, so
+restocking **updates** prices rather than freezing them at whatever the first purchase
+implied. Earlier sales keep their own snapshotted `cost_price`, so correcting a price never
+changes profit already booked.
 
 ---
 
@@ -309,11 +345,34 @@ All endpoints are JSON. **None of them require authentication** — see
 | `POST` | `/api/login` | `{email, password}` | `{success, message}`; `401` if wrong |
 | `POST` | `/api/reset-password` | `{email, new_password}` | `{success, message}` |
 | `GET` | `/api/data` | — | `{inventory, sales, purchases}` |
-| `POST` | `/api/sales` | `{customer_name, customer_contact?, item_name, quantity, total_price, date, sale_time?}` | `{id}` |
-| `POST` | `/api/dealer` | `{dealer_name, item_name, quantity, total_cost, date}` | `{id}` |
+| `POST` | `/api/sales` | `{customer_name, customer_contact?, item_name, quantity, total_price, date, comment?}` | `{id}` |
+| `POST` | `/api/dealer` | `{dealer_name, item_name, quantity, cost_price, selling_price, date, barcode?, warranty_months?}` | `{id}` |
+| `POST` | `/api/inventory` | `{item_name, quantity, cost_price, selling_price, barcode?, warranty_months?}` | `{id}`; `400` invalid, `409` duplicate |
+| `PUT` | `/api/inventory/:id` | same as POST | `{success, renamed}`; `404`/`400`/`409` |
+| `DELETE` | `/api/inventory/:id` | — | `{success}`; `404` if gone |
 
-`POST /api/sales` also decrements `inventory.quantity` for the matching `item_name`.
-`POST /api/dealer` increments it, or creates the item if it does not exist.
+**`POST /api/sales`** stamps `sale_time` itself from the server clock — a client-sent value
+is ignored outright, since the browser's copy is stale the moment the form sits open. It
+also snapshots the product's cost, list price and warranty, then decrements
+`inventory.quantity` for the matching `item_name`. A backdated `date` still gets today's
+clock time.
+
+**`POST /api/dealer`** adds stock and writes the prices onto the product, creating it if it
+does not exist. `total_cost` on the purchase row is derived as `quantity × cost_price`. A
+page cached from before this change still posts `total_cost`, and the unit cost is derived
+from it rather than rejected.
+
+**`PUT /api/inventory/:id`** returns `renamed`: the number of `sales` and `dealer_purchases`
+rows whose `item_name` was updated to follow the rename. The rename runs in a
+`BEGIN IMMEDIATE` transaction and rolls back as a unit. This is the one place where an
+already-issued invoice's text does change — deliberately, because a rename is a
+*correction* (the typo was on the customer's copy too), unlike a price or warranty change,
+which is a new decision that must not rewrite a promise already made.
+
+**`DELETE /api/inventory/:id`** removes only the stock record. Sales and purchases keep
+their own `item_name` and reprint unchanged. It is allowed even when history references the
+product, because the commonest reason to delete is a typo'd item auto-created by a dealer
+purchase — which always has history attached.
 
 ---
 
@@ -397,11 +456,24 @@ None of these are theoretical. Each was confirmed against the running app.
 `shop.db` **is your entire business record** and is gitignored, so it is never in a commit.
 Nothing else in this repository is irreplaceable — this file is.
 
-Back it up with SQLite's own command, which is safe to run while the server is live
+Back it up with SQLite's own copy command, which is safe to run while the server is live
 (copying the file with `cp` while a write is in progress can produce a corrupt copy):
 
 ```bash
 sqlite3 shop.db ".backup '/path/to/backups/shop-$(date +%F).db'"
+```
+
+**If the `sqlite3` command is not installed** — it usually isn't on a plain shop PC — use
+the driver already bundled with the app. `VACUUM INTO` is the same safe online copy:
+
+```bash
+node -e "new (require('sqlite3').Database)('shop.db').run(\"VACUUM INTO '/path/to/backups/shop-$(date +%F).db'\")"
+```
+
+Either way, verify the copy rather than assuming it worked:
+
+```bash
+node -e "new (require('sqlite3').Database)('BACKUP.db').get('PRAGMA integrity_check',(e,r)=>console.log(r))"
 ```
 
 Run it from `cron` daily and keep the copies somewhere other than the shop's computer.
@@ -417,9 +489,18 @@ Deliberate scope choices, not defects. Worth knowing before you build on this.
   invoice header table, so an invoice can only ever show a single line. The item table is
   already numbered and laid out for more; adding them needs a schema change (an `invoices`
   table with `invoice_items` referencing it).
-- **No discount, VAT or paid/due lines.** The totals block is Sub Total and Total only.
-- **No editing or deleting.** A mistyped sale can only be corrected directly in the
-  database. There are no `PUT`/`DELETE` endpoints.
+- **No discount, VAT or paid/due lines on the invoice.** The totals block is Sub Total and
+  Total only. A sale made below the set price is recorded and shown as a discount in the
+  dashboard, but the invoice prints only what was actually charged.
+- **Sales cannot be edited or deleted.** *Products* now can, but a mistyped sale still has
+  to be corrected directly in the database — there is no `PUT`/`DELETE` for `/api/sales`.
+- **Profit is per sale, not per unit of stock sold.** It compares the sale total against
+  the cost snapshotted at the time, which is the product's current buying price — not the
+  cost of the specific units that left the shelf. With one price per product rather than
+  per batch, FIFO/weighted-average costing is out of scope.
+- **Profit excludes sales with no recorded cost.** The five sales that predate this feature
+  have no `cost_price`, so they are skipped rather than counted as pure profit. The
+  dashboard says when that is happening.
 - **Stock can go negative.** Selling more than you have is not blocked
   ([`server.js:153`](server.js#L153)); the quantity just goes below zero.
 - **Selling an unknown item still records the sale.** The stock update matches nothing and
