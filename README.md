@@ -394,14 +394,14 @@ None of these are theoretical. Each was confirmed against the running app.
       middleware in front of `/api/data`, `/api/sales` and `/api/dealer`.
 
 - [ ] **Anyone who knows the admin email can take over the account.**
-      `POST /api/reset-password` ([`server.js:101`](server.js#L101)) changes the password
+      `POST /api/reset-password` ([`server.js:213`](server.js#L213)) changes the password
       with no verification of any kind — no old password, no email confirmation, no token.
       **Fix:** delete the public reset endpoint and replace it with a change-password form
       behind the login that requires the current password. If self-service reset is
       genuinely needed, it must go through an emailed single-use token.
 
 - [ ] **Passwords are stored and compared in plain text**
-      ([`server.js:85`](server.js#L85), [`server.js:93`](server.js#L93)). Anyone who gets
+      ([`server.js:190`](server.js#L190), [`server.js:203`](server.js#L203)). Anyone who gets
       the `shop.db` file gets the password. **Fix:** hash with `bcrypt`
       (cost 12). Migrate the existing password on the owner's next successful login.
 
@@ -502,7 +502,7 @@ Deliberate scope choices, not defects. Worth knowing before you build on this.
   have no `cost_price`, so they are skipped rather than counted as pure profit. The
   dashboard says when that is happening.
 - **Stock can go negative.** Selling more than you have is not blocked
-  ([`server.js:153`](server.js#L153)); the quantity just goes below zero.
+  ([`server.js:300`](server.js#L300)); the quantity just goes below zero.
 - **Selling an unknown item still records the sale.** The stock update matches nothing and
   silently does nothing, so the sale exists with no corresponding inventory row.
 - **Items are matched by exact string**, so a typo creates a second product.
