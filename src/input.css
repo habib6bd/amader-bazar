@@ -72,6 +72,33 @@
 @theme {
   --font-sans: "Noto Sans Bengali", ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  /* NetBazar brand scale, built out from the invoice green.
+     `brand-500` (#8cc63f) is the exact green on the printed pad, so the screen
+     and the paper stay the same colour. It is far too light to carry white
+     text (2.05:1), so interactive surfaces use the darker end:
+
+       brand-700 on white text — 4.9:1   buttons, primary actions   (AA)
+       brand-800 as text on white — 7.4:1  headings, figures, links (AAA)
+       brand-950                          the navbar
+
+     The hue swings from yellow-green toward true green as it darkens, which
+     is what keeps the dark shades from going olive. */
+  --color-brand-50: #f5fbeb;
+  --color-brand-100: #e8f5d3;
+  --color-brand-200: #d2eaac;
+  --color-brand-300: #b6dc7c;
+  --color-brand-400: #9ed155;
+  --color-brand-500: #8cc63f;
+  --color-brand-600: #6ea82c;
+  --color-brand-700: #4f7d1f;
+  --color-brand-800: #3d5f19;
+  --color-brand-900: #33501a;
+  --color-brand-950: #1a2b0d;
+
+  /* Motion. One duration and one easing shared by every animation below, so
+     the interface moves as a single system rather than a pile of one-offs. */
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* Alpine elements carrying x-cloak stay hidden until Alpine boots, so the raw
@@ -81,21 +108,425 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Receipt — screen preview.
-   The on-screen card mirrors A4 proportions so what the shopkeeper sees in the
-   modal is what comes out of the printer.
+   Motion.
+
+   Everything here is entrance or feedback: content settling into place once,
+   and controls acknowledging a press. Nothing loops, nothing moves while the
+   shopkeeper is trying to read a figure.
+
+   Two hard rules, enforced at the bottom of this file:
+     - `prefers-reduced-motion` switches all of it off;
+     - printing switches all of it off, so a sheet can never be captured
+       mid-animation.
    --------------------------------------------------------------------------- */
-#receipt-paper {
-  display: flex;
-  flex-direction: column;
+@keyframes nb-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
-/* Breathing room between the item table and the totals block. Deliberately a
-   fixed gap rather than a stretching one: the printed sheet should look like
-   the on-screen preview, not like the same content pulled apart to fill A4. */
-.receipt-spacer {
-  flex: 0 0 auto;
-  height: 1.5rem;
+@keyframes nb-pop {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes nb-toast {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 16px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@keyframes nb-sweep {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* Content settling in. The stagger is small on purpose — this is a till, not
+   a landing page; the last card lands within a quarter second. */
+.nb-rise {
+  animation: nb-rise 0.42s var(--ease-out-soft) both;
+}
+
+.nb-stagger > * {
+  animation: nb-rise 0.42s var(--ease-out-soft) both;
+}
+
+.nb-stagger > *:nth-child(1) { animation-delay: 0.02s; }
+.nb-stagger > *:nth-child(2) { animation-delay: 0.07s; }
+.nb-stagger > *:nth-child(3) { animation-delay: 0.12s; }
+.nb-stagger > *:nth-child(4) { animation-delay: 0.17s; }
+
+/* Panels that swap in place (the sale/dealer forms, the invoice sheet). */
+.nb-pop {
+  animation: nb-pop 0.28s var(--ease-out-soft) both;
+}
+
+.nb-toast {
+  animation: nb-toast 0.32s var(--ease-out-soft) both;
+}
+
+/* Cards lift slightly under the cursor, and settle back on touch/press. */
+.nb-lift {
+  transition:
+    transform 0.18s var(--ease-out-soft),
+    box-shadow 0.18s var(--ease-out-soft),
+    border-color 0.18s var(--ease-out-soft);
+}
+
+.nb-lift:hover {
+  transform: translateY(-2px);
+}
+
+/* Buttons give way under the press — the cheapest possible "it registered". */
+.nb-press {
+  transition:
+    transform 0.12s var(--ease-out-soft),
+    background-color 0.18s var(--ease-out-soft),
+    box-shadow 0.18s var(--ease-out-soft),
+    color 0.18s var(--ease-out-soft);
+}
+
+.nb-press:active:not(:disabled) {
+  transform: scale(0.975);
+}
+
+/* Table rows warm up under the cursor rather than snapping. */
+.nb-row {
+  transition: background-color 0.15s var(--ease-out-soft);
+}
+
+/* Loading placeholder: a sweep across the text instead of a blinking block. */
+.nb-loading {
+  background: linear-gradient(90deg, #94a3b8 20%, #cbd5e1 40%, #94a3b8 60%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: nb-sweep 1.6s linear infinite;
+}
+
+/* The low-stock card is the one thing allowed to keep asking for attention,
+   and only when something is actually low. */
+.nb-alert {
+  position: relative;
+}
+
+.nb-alert::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  border: 1px solid #f87171;
+  opacity: 0;
+  animation: nb-alert-ring 2.6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes nb-alert-ring {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+/* Respect the OS setting. Entrances collapse to their finished state rather
+   than being removed, so nothing is left invisible. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .nb-lift:hover,
+  .nb-press:active {
+    transform: none !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Invoice — the printable money receipt.
+
+   Written as plain CSS rather than utility classes on purpose: the sheet has
+   to come out of the printer at fixed proportions with exact colours, and one
+   named block is easier to keep in sync with the shop's paper stationery than
+   a long class string spread across the markup.
+   --------------------------------------------------------------------------- */
+:root {
+  /* Same value as --color-brand-500: screen and paper share one green. */
+  --inv-green: var(--color-brand-500, #8cc63f);
+  --inv-line: #8f8f8f;
+  --inv-line-soft: #c9c9c9;
+  --inv-ink: #1f2937;
+  --inv-muted: #4b5563;
+}
+
+.inv-paper {
+  background: #fff;
+  color: var(--inv-ink);
+  padding: 6px 2px 2px;
+}
+
+.inv-title {
+  text-align: center;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  margin-bottom: 0.6rem;
+}
+
+.inv-sheet {
+  border: 1px solid var(--inv-line);
+}
+
+/* ---- masthead: logo | shop identity ---- */
+.inv-head {
+  display: grid;
+  grid-template-columns: 32% 1fr;
+  border-bottom: 1px solid var(--inv-line);
+}
+
+.inv-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.7rem 0.5rem;
+  border-right: 1px solid var(--inv-line);
+}
+
+.inv-org {
+  padding: 0.7rem 0.85rem;
+  text-align: right;
+}
+
+.inv-org-name {
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
+
+.inv-org-line {
+  font-size: 0.68rem;
+  line-height: 1.5;
+  color: var(--inv-muted);
+}
+
+/* ---- two-column bands (Bill To | Invoice Details) ---- */
+.inv-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.inv-bars > * {
+  background: var(--inv-green);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.3rem 0.75rem;
+}
+
+.inv-bars > *:last-child {
+  text-align: right;
+}
+
+/* The party row is the only split band with a visible divider — the green
+   bars above it read as one continuous strip, as on the printed pad. */
+.inv-parties > * + *,
+.inv-footer > * + *,
+.inv-sign > * + * {
+  border-left: 1px solid var(--inv-line);
+}
+
+.inv-parties > * {
+  padding: 0.6rem 0.75rem;
+  min-height: 4.2rem;
+}
+
+.inv-party-name {
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.inv-party-line {
+  font-size: 0.72rem;
+  color: var(--inv-muted);
+  margin-top: 0.3rem;
+}
+
+.inv-meta {
+  text-align: right;
+  font-size: 0.72rem;
+  color: var(--inv-muted);
+}
+
+.inv-meta p + p {
+  margin-top: 0.3rem;
+}
+
+.inv-meta strong {
+  color: var(--inv-ink);
+  font-weight: 600;
+}
+
+/* ---- item lines ---- */
+.inv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.72rem;
+  border-top: 1px solid var(--inv-line);
+}
+
+.inv-table thead th {
+  background: var(--inv-green);
+  color: #fff;
+  font-weight: 700;
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+}
+
+.inv-table tbody td {
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--inv-line-soft);
+  vertical-align: top;
+}
+
+.inv-table th + th,
+.inv-table td + td {
+  border-left: 1px solid var(--inv-line-soft);
+}
+
+.inv-table .col-idx {
+  width: 7%;
+  text-align: center;
+}
+
+.inv-table .col-qty {
+  width: 15%;
+  text-align: center;
+}
+
+.inv-table .col-rate,
+.inv-table .col-amount {
+  width: 18%;
+  text-align: right;
+}
+
+/* Keeps a one-line invoice from collapsing to a sliver: the item block always
+   occupies a sensible share of the sheet, as a pre-printed pad would. */
+.inv-fill-row td {
+  height: 3.6rem;
+  border-bottom: 1px solid var(--inv-line);
+}
+
+/* ---- totals ---- */
+.inv-footer > * {
+  padding: 0.6rem 0.75rem;
+}
+
+.inv-words-label,
+.inv-terms-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--inv-muted);
+}
+
+.inv-words-value {
+  font-size: 0.74rem;
+  font-weight: 600;
+  margin-top: 0.25rem;
+}
+
+.inv-total-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.74rem;
+  color: var(--inv-muted);
+}
+
+.inv-total-line + .inv-total-line {
+  margin-top: 0.35rem;
+}
+
+.inv-total-line.is-grand {
+  margin-top: 0.5rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--inv-line);
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: var(--inv-ink);
+}
+
+/* ---- terms and signature ---- */
+.inv-sign {
+  border-top: 1px solid var(--inv-line);
+}
+
+.inv-sign > * {
+  padding: 0.6rem 0.75rem;
+}
+
+.inv-terms-list {
+  margin-top: 0.3rem;
+  font-size: 0.68rem;
+  color: var(--inv-muted);
+  line-height: 1.6;
+}
+
+.inv-signature {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: center;
+  min-height: 4.5rem;
+}
+
+.inv-signature-name {
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.inv-signature-rule {
+  border-top: 1px solid var(--inv-line);
+  padding-top: 0.25rem;
+  font-size: 0.68rem;
+  color: var(--inv-muted);
+}
+
+.inv-thanks {
+  text-align: center;
+  font-size: 0.68rem;
+  color: var(--inv-muted);
+  margin-top: 0.5rem;
 }
 
 /* ---------------------------------------------------------------------------
@@ -165,6 +596,8 @@
      A4 printable height here is 277mm, far more than a receipt needs. */
   #receipt-paper {
     min-height: 0;
+    border: 0 !important;
+    padding: 0 !important;
     box-shadow: none !important;
     /* Without this, browsers drop background fills by default and the dark
        table header / blue address bar print as white-on-white. */
@@ -175,13 +608,34 @@
   /* Never split these across pages. */
   thead,
   tr,
-  .receipt-head,
-  .receipt-meta,
-  .totals-block,
-  .signature-block,
-  .address-bar {
+  .inv-head,
+  .inv-bars,
+  .inv-parties,
+  .inv-footer,
+  .inv-sign {
     break-inside: avoid;
     page-break-inside: avoid;
+  }
+
+  /* The print path fires two animation frames after the modal opens, which is
+     sooner than any entrance here finishes. Without this reset a sheet could
+     be captured half-faded or a few pixels off. */
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  #receipt-modal,
+  #receipt-modal .modal-card,
+  #receipt-paper {
+    transform: none !important;
+    opacity: 1 !important;
+  }
+
+  .nb-alert::after {
+    display: none !important;
   }
 
   .no-print {

@@ -1,5 +1,5 @@
 {
-  "name": "shop-manager",
+  "name": "netbazar",
   "version": "1.0.0",
   "type": "module",
   "main": "server.js",
@@ -19,7 +19,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "NetBazar shop ledger — sales, stock and printable A4 invoices.",
   "devDependencies": {
     "@fontsource/noto-sans-bengali": "^5.3.0",
     "@tailwindcss/cli": "^4.3.3",

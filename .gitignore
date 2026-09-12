@@ -1,4 +1,5 @@
 node_modules/
 shop.db
+shop.db.bak-*
 .DS_Store
 *.log

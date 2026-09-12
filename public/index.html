@@ -3,11 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#0f172a">
-    <title>Digital Khata — মেসার্স আমাদের বাজার</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%9B%92</text></svg>">
+    <meta name="theme-color" content="#8cc63f">
+    <title>NetBazar — Shop Manager</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%238cc63f%22/><text x=%2250%22 y=%2274%22 text-anchor=%22middle%22 font-size=%2262%22 font-weight=%22bold%22 fill=%22white%22 font-family=%22Arial%22>N</text></svg>">
     <!-- Local assets only: the shop keeps working with no internet. -->
     <link rel="stylesheet" href="/css/app.css">
+    <script defer src="/js/shop-config.js"></script>
     <script defer src="/js/app.js"></script>
     <script defer src="/vendor/alpine.min.js"></script>
 </head>
@@ -15,15 +16,15 @@
 
     <!-- ================= LOGIN / RESET PAGE ================= -->
     <template x-if="!isLoggedIn">
-        <div class="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-800 p-4 sm:p-6">
+        <div class="min-h-screen flex items-center justify-center bg-gradient-to-br from-brand-600 via-brand-800 to-brand-950 p-4 sm:p-6">
             <div class="bg-white p-6 sm:p-8 rounded-2xl shadow-2xl w-full max-w-md">
 
                 <!-- LOGIN VIEW -->
                 <template x-if="authView === 'login'">
                     <div>
                         <div class="text-center mb-6">
-                            <span class="text-4xl">🛒</span>
-                            <h1 class="text-xl sm:text-2xl font-bold text-slate-800 mt-2">মেসার্স আমাদের বাজার</h1>
+                            <svg class="mx-auto h-14 w-14 drop-shadow-sm" viewBox="0 0 60 64" role="img" aria-label="NetBazar"><rect x="2" y="4" width="56" height="56" rx="13" fill="#8cc63f"/><g fill="none" stroke="#ffffff" stroke-width="4.5" stroke-linecap="round"><path d="M12 30 A26 26 0 0 1 48 30"/><path d="M18 37 A18 18 0 0 1 42 37"/><path d="M24 44 A10 10 0 0 1 36 44"/></g><circle cx="30" cy="49" r="2.8" fill="#ffffff"/></svg>
+                            <h1 class="text-xl sm:text-2xl font-bold text-slate-800 mt-2" x-text="shop.name"></h1>
                             <p class="text-sm text-slate-500 mt-1">Shopkeeper Portal Login</p>
                         </div>
 
@@ -31,16 +32,16 @@
                             <div>
                                 <label for="login-email" class="block text-sm font-medium text-slate-700 mb-1.5">Email Address</label>
                                 <input id="login-email" type="email" x-model="loginEmail" placeholder="shop@admin.com" autocomplete="username"
-                                       class="w-full p-3 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition" required>
+                                       class="w-full p-3 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition" required>
                             </div>
                             <div>
                                 <label for="login-password" class="block text-sm font-medium text-slate-700 mb-1.5">Password</label>
                                 <div class="relative">
                                     <input id="login-password" :type="showLoginPassword ? 'text' : 'password'" x-model="loginPassword" placeholder="••••••••" autocomplete="current-password"
-                                           class="w-full p-3 pr-12 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition" required>
+                                           class="w-full p-3 pr-12 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition" required>
                                     <button type="button" @click="showLoginPassword = !showLoginPassword"
                                             :aria-label="showLoginPassword ? 'Hide password' : 'Show password'"
-                                            class="absolute inset-y-0 right-0 px-3.5 flex items-center text-slate-500 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-r-lg">
+                                            class="absolute inset-y-0 right-0 px-3.5 flex items-center text-slate-500 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-r-lg">
                                         <svg x-show="!showLoginPassword" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
@@ -53,13 +54,13 @@
                             </div>
                             <p x-text="loginError" class="text-red-600 text-sm text-center" x-show="loginError" x-cloak></p>
                             <button type="submit" :disabled="loggingIn"
-                                    class="w-full min-h-[48px] bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold p-3 rounded-lg transition shadow-lg shadow-blue-600/20">
+                                    class="nb-press w-full min-h-[48px] bg-brand-700 hover:bg-brand-800 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold p-3 rounded-lg transition shadow-lg shadow-brand-700/30">
                                 <span x-text="loggingIn ? 'Signing in…' : 'Login to Dashboard'"></span>
                             </button>
                         </form>
 
                         <div class="mt-5 flex flex-wrap gap-2 justify-between items-center text-xs">
-                            <button @click="authView = 'reset'; resetError = ''; resetSuccess = '';" class="text-blue-600 hover:underline py-1">Forgot Password?</button>
+                            <button @click="authView = 'reset'; resetError = ''; resetSuccess = '';" class="text-brand-800 hover:underline py-1">Forgot Password?</button>
                             <span class="text-slate-400">Default: shop@admin.com / admin123</span>
                         </div>
                     </div>
@@ -78,16 +79,16 @@
                             <div>
                                 <label for="reset-email" class="block text-sm font-medium text-slate-700 mb-1.5">Registered Email</label>
                                 <input id="reset-email" type="email" x-model="resetEmail" placeholder="shop@admin.com" autocomplete="username"
-                                       class="w-full p-3 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition" required>
+                                       class="w-full p-3 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition" required>
                             </div>
                             <div>
                                 <label for="reset-password" class="block text-sm font-medium text-slate-700 mb-1.5">New Password</label>
                                 <div class="relative">
                                     <input id="reset-password" :type="showResetPassword ? 'text' : 'password'" x-model="newPassword" placeholder="••••••••" autocomplete="new-password"
-                                           class="w-full p-3 pr-12 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition" required>
+                                           class="w-full p-3 pr-12 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition" required>
                                     <button type="button" @click="showResetPassword = !showResetPassword"
                                             :aria-label="showResetPassword ? 'Hide password' : 'Show password'"
-                                            class="absolute inset-y-0 right-0 px-3.5 flex items-center text-slate-500 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 rounded-r-lg">
+                                            class="absolute inset-y-0 right-0 px-3.5 flex items-center text-slate-500 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-r-lg">
                                         <svg x-show="!showResetPassword" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
@@ -99,16 +100,16 @@
                                 </div>
                             </div>
                             <p x-text="resetError" class="text-red-600 text-sm text-center" x-show="resetError" x-cloak></p>
-                            <p x-text="resetSuccess" class="text-emerald-600 text-sm text-center font-medium" x-show="resetSuccess" x-cloak></p>
+                            <p x-text="resetSuccess" class="text-brand-800 text-sm text-center font-medium" x-show="resetSuccess" x-cloak></p>
 
                             <button type="submit" :disabled="resetting"
-                                    class="w-full min-h-[48px] bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold p-3 rounded-lg transition shadow-lg shadow-emerald-600/20">
+                                    class="nb-press w-full min-h-[48px] bg-brand-700 hover:bg-brand-800 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold p-3 rounded-lg transition shadow-lg shadow-brand-700/30">
                                 <span x-text="resetting ? 'Updating…' : 'Update Password'"></span>
                             </button>
                         </form>
 
                         <div class="mt-5 text-center">
-                            <button @click="authView = 'login'" class="text-sm text-blue-600 hover:underline py-1">Back to Login</button>
+                            <button @click="authView = 'login'" class="text-sm text-brand-800 hover:underline py-1">Back to Login</button>
                         </div>
                     </div>
                 </template>
@@ -122,18 +123,18 @@
         <div class="min-h-screen flex flex-col">
 
             <!-- Navbar -->
-            <nav class="bg-slate-900 text-white shadow-md sticky top-0 z-40">
+            <nav class="bg-brand-950 text-white shadow-md sticky top-0 z-40">
                 <div class="mx-auto max-w-7xl px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
                     <div class="flex items-center gap-2.5 min-w-0">
-                        <span class="text-2xl shrink-0">📦</span>
+                        <svg class="h-8 w-8 shrink-0" viewBox="0 0 60 64" role="img" aria-label="NetBazar"><rect x="2" y="4" width="56" height="56" rx="13" fill="#8cc63f"/><g fill="none" stroke="#ffffff" stroke-width="4.5" stroke-linecap="round"><path d="M12 30 A26 26 0 0 1 48 30"/><path d="M18 37 A18 18 0 0 1 42 37"/><path d="M24 44 A10 10 0 0 1 36 44"/></g><circle cx="30" cy="49" r="2.8" fill="#ffffff"/></svg>
                         <h1 class="text-base sm:text-lg lg:text-xl font-bold tracking-wide truncate">
-                            মেসার্স আমাদের বাজার
-                            <span class="hidden sm:inline font-normal text-slate-400">— Dashboard</span>
+                            <span x-text="shop.name"></span>
+                            <span class="hidden sm:inline font-normal text-brand-300">— Dashboard</span>
                         </h1>
                     </div>
                     <div class="flex items-center gap-2 sm:gap-3 shrink-0">
-                        <span class="hidden sm:inline-flex text-xs sm:text-sm bg-slate-800 px-3 py-1.5 rounded-lg text-slate-300" x-text="fmtDate(today())"></span>
-                        <button @click="logout()" class="min-h-[40px] bg-red-600 hover:bg-red-700 px-3 sm:px-4 py-2 rounded-lg text-sm font-medium transition">Logout</button>
+                        <span class="hidden sm:inline-flex text-xs sm:text-sm bg-brand-900 px-3 py-1.5 rounded-lg text-brand-100" x-text="fmtDate(today())"></span>
+                        <button @click="logout()" class="nb-press min-h-[40px] bg-red-600 hover:bg-red-700 px-3 sm:px-4 py-2 rounded-lg text-sm font-medium">Logout</button>
                     </div>
                 </div>
             </nav>
@@ -141,23 +142,24 @@
             <main class="mx-auto w-full max-w-7xl px-4 sm:px-6 py-5 sm:py-6 flex-grow space-y-5 sm:space-y-6">
 
                 <!-- Summary stat cards -->
-                <section class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4" aria-label="Summary">
-                    <div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+                <section class="nb-stagger grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4" aria-label="Summary">
+                    <div class="nb-lift bg-white rounded-2xl border border-slate-200 p-4 shadow-sm hover:shadow-md hover:border-brand-300">
                         <p class="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500">Today's Sales</p>
                         <p class="mt-1.5 text-lg sm:text-2xl font-bold text-slate-900 tabular-nums" x-text="fmt(todaysRevenue)"></p>
                         <p class="text-xs text-slate-500 mt-0.5"><span x-text="todaysSales.length"></span> transaction(s)</p>
                     </div>
-                    <div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+                    <div class="nb-lift bg-white rounded-2xl border border-slate-200 p-4 shadow-sm hover:shadow-md hover:border-brand-300">
                         <p class="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500">Total Revenue</p>
-                        <p class="mt-1.5 text-lg sm:text-2xl font-bold text-blue-700 tabular-nums" x-text="fmt(totalRevenue)"></p>
+                        <p class="mt-1.5 text-lg sm:text-2xl font-bold text-brand-800 tabular-nums" x-text="fmt(totalRevenue)"></p>
                         <p class="text-xs text-slate-500 mt-0.5"><span x-text="sales.length"></span> sale(s) recorded</p>
                     </div>
-                    <div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+                    <div class="nb-lift bg-white rounded-2xl border border-slate-200 p-4 shadow-sm hover:shadow-md hover:border-brand-300">
                         <p class="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500">Dealer Spend</p>
-                        <p class="mt-1.5 text-lg sm:text-2xl font-bold text-emerald-700 tabular-nums" x-text="fmt(dealerSpend)"></p>
+                        <p class="mt-1.5 text-lg sm:text-2xl font-bold text-amber-700 tabular-nums" x-text="fmt(dealerSpend)"></p>
                         <p class="text-xs text-slate-500 mt-0.5"><span x-text="purchases.length"></span> purchase(s)</p>
                     </div>
-                    <div class="bg-white rounded-2xl border p-4 shadow-sm" :class="lowStockItems.length ? 'border-red-200 bg-red-50' : 'border-slate-200'">
+                    <div class="nb-lift bg-white rounded-2xl border p-4 shadow-sm hover:shadow-md"
+                         :class="lowStockItems.length ? 'border-red-200 bg-red-50 nb-alert' : 'border-slate-200 hover:border-brand-300'">
                         <p class="text-[11px] sm:text-xs font-semibold uppercase tracking-wider" :class="lowStockItems.length ? 'text-red-600' : 'text-slate-500'">Low Stock</p>
                         <p class="mt-1.5 text-lg sm:text-2xl font-bold tabular-nums" :class="lowStockItems.length ? 'text-red-600' : 'text-slate-900'" x-text="lowStockItems.length"></p>
                         <p class="text-xs mt-0.5" :class="lowStockItems.length ? 'text-red-500' : 'text-slate-500'">item(s) below 5 units</p>
@@ -171,26 +173,31 @@
 
                         <div class="flex rounded-xl bg-slate-200 p-1" role="tablist">
                             <button role="tab" :aria-selected="activeForm === 'sale'" @click="activeForm = 'sale'"
-                                    :class="activeForm === 'sale' ? 'bg-white text-blue-600 shadow' : 'text-slate-600 hover:text-slate-800'"
-                                    class="flex-1 min-h-[44px] py-2.5 rounded-lg font-semibold text-sm transition">Customer Sale</button>
+                                    :class="activeForm === 'sale' ? 'bg-white text-brand-800 shadow' : 'text-slate-600 hover:text-slate-800'"
+                                    class="nb-press flex-1 min-h-[44px] py-2.5 rounded-lg font-semibold text-sm">Customer Sale</button>
                             <button role="tab" :aria-selected="activeForm === 'dealer'" @click="activeForm = 'dealer'"
-                                    :class="activeForm === 'dealer' ? 'bg-white text-emerald-600 shadow' : 'text-slate-600 hover:text-slate-800'"
-                                    class="flex-1 min-h-[44px] py-2.5 rounded-lg font-semibold text-sm transition">Dealer Purchase</button>
+                                    :class="activeForm === 'dealer' ? 'bg-white text-amber-700 shadow' : 'text-slate-600 hover:text-slate-800'"
+                                    class="nb-press flex-1 min-h-[44px] py-2.5 rounded-lg font-semibold text-sm">Dealer Purchase</button>
                         </div>
 
                         <!-- Customer sale -->
-                        <div class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200" x-show="activeForm === 'sale'" x-transition.opacity>
-                            <h2 class="text-base sm:text-lg font-bold mb-4 text-blue-600 flex items-center gap-2">📝 Record Customer Sale</h2>
+                        <div class="nb-pop bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200" x-show="activeForm === 'sale'">
+                            <h2 class="text-base sm:text-lg font-bold mb-4 text-brand-800 flex items-center gap-2">📝 Record Customer Sale</h2>
                             <form @submit.prevent="submitSale" class="space-y-4">
                                 <div>
                                     <label for="sale-customer" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Customer Name</label>
-                                    <input id="sale-customer" type="text" x-model="sale.customer_name" placeholder="e.g. Rahim Ahmed"
-                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-base sm:text-sm transition" required>
+                                    <input id="sale-customer" type="text" x-model="sale.customer_name" placeholder="e.g. S.A Net City"
+                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
+                                </div>
+                                <div>
+                                    <label for="sale-contact" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Contact No. <span class="normal-case font-normal text-slate-400">(optional)</span></label>
+                                    <input id="sale-contact" type="tel" inputmode="tel" x-model="sale.customer_contact" placeholder="e.g. 01961350466"
+                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
                                 </div>
                                 <div>
                                     <label for="sale-item" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Item Name</label>
-                                    <input id="sale-item" type="text" x-model="sale.item_name" placeholder="e.g. Dinner Set" list="inventory-items"
-                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-base sm:text-sm transition" required>
+                                    <input id="sale-item" type="text" x-model="sale.item_name" placeholder="e.g. Wi-Fi Router" list="inventory-items"
+                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
                                     <datalist id="inventory-items">
                                         <template x-for="item in inventory" :key="'dl-' + item.id">
                                             <option :value="item.item_name"></option>
@@ -201,59 +208,73 @@
                                     <div>
                                         <label for="sale-qty" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Quantity</label>
                                         <input id="sale-qty" type="number" min="1" step="1" x-model="sale.quantity" placeholder="1"
-                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-base sm:text-sm transition" required>
+                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
                                     </div>
                                     <div>
-                                        <label for="sale-total" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Total Price (৳)</label>
-                                        <input id="sale-total" type="number" min="0" step="0.01" x-model="sale.total_price" placeholder="0.00"
-                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-base sm:text-sm transition" required>
+                                        <label for="sale-rate" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Price / Unit (৳)</label>
+                                        <input id="sale-rate" type="number" min="0" step="0.01" x-model="sale.unit_price" placeholder="0.00"
+                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
                                     </div>
                                 </div>
-                                <div>
-                                    <label for="sale-date" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Date</label>
-                                    <input id="sale-date" type="date" x-model="sale.date"
-                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-base sm:text-sm transition" required>
+
+                                <!-- Quantity × price, shown before saving so a typo is caught here
+                                     rather than on the printed invoice. -->
+                                <div class="flex items-baseline justify-between rounded-lg bg-brand-50 border border-brand-100 px-3 py-2.5">
+                                    <span class="text-xs font-semibold uppercase tracking-wide text-brand-800">Amount</span>
+                                    <span class="text-base font-bold text-brand-900 tabular-nums" x-text="fmt(saleAmount)"></span>
+                                </div>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    <div>
+                                        <label for="sale-date" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Date</label>
+                                        <input id="sale-date" type="date" x-model="sale.date"
+                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
+                                    </div>
+                                    <div>
+                                        <label for="sale-time" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Time</label>
+                                        <input id="sale-time" type="time" x-model="sale.sale_time"
+                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
+                                    </div>
                                 </div>
                                 <button type="submit" :disabled="savingSale"
-                                        class="w-full min-h-[48px] bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold p-3 rounded-lg shadow transition">
-                                    <span x-text="savingSale ? 'Saving…' : 'Save & Generate Receipt'"></span>
+                                        class="nb-press w-full min-h-[48px] bg-brand-700 hover:bg-brand-800 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold p-3 rounded-lg shadow transition">
+                                    <span x-text="savingSale ? 'Saving…' : 'Save & Generate Invoice'"></span>
                                 </button>
                             </form>
                         </div>
 
                         <!-- Dealer purchase -->
-                        <div class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200" x-show="activeForm === 'dealer'" x-transition.opacity x-cloak>
-                            <h2 class="text-base sm:text-lg font-bold mb-4 text-emerald-600 flex items-center gap-2">🚚 Record Dealer Purchase</h2>
+                        <div class="nb-pop bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200" x-show="activeForm === 'dealer'" x-cloak>
+                            <h2 class="text-base sm:text-lg font-bold mb-4 text-amber-700 flex items-center gap-2">🚚 Record Dealer Purchase</h2>
                             <form @submit.prevent="submitDealer" class="space-y-4">
                                 <div>
                                     <label for="dealer-name" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Dealer Name</label>
                                     <input id="dealer-name" type="text" x-model="dealer.dealer_name" placeholder="e.g. City Wholesale"
-                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none text-base sm:text-sm transition" required>
+                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base sm:text-sm transition" required>
                                 </div>
                                 <div>
                                     <label for="dealer-item" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Item Name</label>
-                                    <input id="dealer-item" type="text" x-model="dealer.item_name" placeholder="e.g. Dinner Set" list="inventory-items"
-                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none text-base sm:text-sm transition" required>
+                                    <input id="dealer-item" type="text" x-model="dealer.item_name" placeholder="e.g. Wi-Fi Router" list="inventory-items"
+                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base sm:text-sm transition" required>
                                 </div>
                                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                     <div>
                                         <label for="dealer-qty" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Quantity Bought</label>
                                         <input id="dealer-qty" type="number" min="1" step="1" x-model="dealer.quantity" placeholder="50"
-                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none text-base sm:text-sm transition" required>
+                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base sm:text-sm transition" required>
                                     </div>
                                     <div>
                                         <label for="dealer-cost" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Total Cost (৳)</label>
                                         <input id="dealer-cost" type="number" min="0" step="0.01" x-model="dealer.total_cost" placeholder="0.00"
-                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none text-base sm:text-sm transition" required>
+                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base sm:text-sm transition" required>
                                     </div>
                                 </div>
                                 <div>
                                     <label for="dealer-date" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Date</label>
                                     <input id="dealer-date" type="date" x-model="dealer.date"
-                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none text-base sm:text-sm transition" required>
+                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base sm:text-sm transition" required>
                                 </div>
                                 <button type="submit" :disabled="savingDealer"
-                                        class="w-full min-h-[48px] bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold p-3 rounded-lg shadow transition">
+                                        class="nb-press w-full min-h-[48px] bg-amber-700 hover:bg-amber-800 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold p-3 rounded-lg shadow transition">
                                     <span x-text="savingDealer ? 'Saving…' : 'Save Dealer Batch'"></span>
                                 </button>
                             </form>
@@ -264,14 +285,14 @@
                     <div class="lg:col-span-2 space-y-5 sm:space-y-6">
 
                         <!-- Inventory -->
-                        <section class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
+                        <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
                             <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
                                 <h2 class="text-sm sm:text-base font-bold text-slate-800">📋 Inventory Stock Levels</h2>
                                 <input type="search" x-model="invSearch" placeholder="Search item…" aria-label="Search inventory"
-                                       class="w-full sm:w-52 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition">
+                                       class="w-full sm:w-52 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
                             </div>
 
-                            <p x-show="loading" class="text-sm text-slate-500 py-6 text-center animate-pulse">Loading stock…</p>
+                            <p x-show="loading" class="nb-loading text-sm font-semibold py-6 text-center">Loading stock…</p>
                             <p x-show="!loading && filteredInventory.length === 0" x-cloak class="text-sm text-slate-500 py-8 text-center">
                                 <span x-text="inventory.length ? 'No item matches that search.' : 'No stock yet — record a dealer purchase to add items.'"></span>
                             </p>
@@ -289,11 +310,11 @@
                                     </thead>
                                     <tbody class="divide-y divide-slate-100 text-sm">
                                         <template x-for="item in filteredInventory" :key="item.id">
-                                            <tr class="hover:bg-slate-50 transition">
+                                            <tr class="nb-row hover:bg-slate-50">
                                                 <td class="p-3 font-medium text-slate-800" x-text="item.item_name"></td>
                                                 <td class="p-3">
                                                     <span class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold tabular-nums"
-                                                          :class="isLowStock(item) ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'"
+                                                          :class="isLowStock(item) ? 'bg-red-100 text-red-700' : 'bg-brand-100 text-brand-800'"
                                                           x-text="item.quantity"></span>
                                                 </td>
                                                 <td class="p-3 text-slate-600 text-right tabular-nums" x-text="fmt(item.cost_price)"></td>
@@ -307,11 +328,11 @@
                             <!-- Mobile cards -->
                             <div class="md:hidden space-y-3" x-show="!loading && filteredInventory.length > 0" x-cloak>
                                 <template x-for="item in filteredInventory" :key="'m-' + item.id">
-                                    <div class="rounded-xl border border-slate-200 p-3.5">
+                                    <div class="nb-row rounded-xl border border-slate-200 p-3.5 hover:bg-slate-50">
                                         <div class="flex items-start justify-between gap-3">
                                             <p class="font-semibold text-slate-800" x-text="item.item_name"></p>
                                             <span class="shrink-0 inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold tabular-nums"
-                                                  :class="isLowStock(item) ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'">
+                                                  :class="isLowStock(item) ? 'bg-red-100 text-red-700' : 'bg-brand-100 text-brand-800'">
                                                 <span x-text="item.quantity"></span>&nbsp;in stock
                                             </span>
                                         </div>
@@ -325,14 +346,14 @@
                         </section>
 
                         <!-- Sales history -->
-                        <section class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
+                        <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
                             <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
                                 <h2 class="text-sm sm:text-base font-bold text-slate-800">🛍️ Customer Sales History</h2>
                                 <input type="search" x-model="saleSearch" placeholder="Search customer or item…" aria-label="Search sales"
-                                       class="w-full sm:w-60 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition">
+                                       class="w-full sm:w-60 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
                             </div>
 
-                            <p x-show="loading" class="text-sm text-slate-500 py-6 text-center animate-pulse">Loading sales…</p>
+                            <p x-show="loading" class="nb-loading text-sm font-semibold py-6 text-center">Loading sales…</p>
                             <p x-show="!loading && filteredSales.length === 0" x-cloak class="text-sm text-slate-500 py-8 text-center">
                                 <span x-text="sales.length ? 'No sale matches that search.' : 'No sales recorded yet.'"></span>
                             </p>
@@ -352,16 +373,16 @@
                                     </thead>
                                     <tbody class="divide-y divide-slate-100 text-sm">
                                         <template x-for="s in visibleSales" :key="s.id">
-                                            <tr class="hover:bg-slate-50 transition">
+                                            <tr class="nb-row hover:bg-slate-50">
                                                 <td class="p-3 text-slate-600 whitespace-nowrap" x-text="fmtDate(s.date)"></td>
                                                 <td class="p-3 font-medium text-slate-800" x-text="s.customer_name"></td>
                                                 <td class="p-3 text-slate-600" x-text="s.item_name"></td>
                                                 <td class="p-3 text-slate-600 text-center tabular-nums" x-text="s.quantity"></td>
-                                                <td class="p-3 font-semibold text-blue-700 text-right tabular-nums" x-text="fmt(s.total_price)"></td>
+                                                <td class="p-3 font-semibold text-brand-800 text-right tabular-nums" x-text="fmt(s.total_price)"></td>
                                                 <td class="p-3">
                                                     <div class="flex justify-end gap-2">
-                                                        <button @click="showReceipt(s)" class="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition border border-slate-300 whitespace-nowrap">Show</button>
-                                                        <button @click="printReceipt(s)" class="bg-blue-50 hover:bg-blue-100 text-blue-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition border border-blue-200 whitespace-nowrap">Print</button>
+                                                        <button @click="showReceipt(s)" class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 whitespace-nowrap">Show</button>
+                                                        <button @click="printReceipt(s)" class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-brand-200 whitespace-nowrap">Print</button>
                                                     </div>
                                                 </td>
                                             </tr>
@@ -373,39 +394,39 @@
                             <!-- Mobile cards -->
                             <div class="md:hidden space-y-3" x-show="!loading && filteredSales.length > 0" x-cloak>
                                 <template x-for="s in visibleSales" :key="'m-' + s.id">
-                                    <div class="rounded-xl border border-slate-200 p-3.5">
+                                    <div class="nb-row rounded-xl border border-slate-200 p-3.5 hover:bg-slate-50">
                                         <div class="flex items-start justify-between gap-3">
                                             <p class="font-semibold text-slate-800" x-text="s.customer_name"></p>
                                             <p class="shrink-0 text-xs text-slate-500" x-text="fmtDate(s.date)"></p>
                                         </div>
                                         <div class="mt-2 flex items-baseline justify-between gap-3 text-sm">
                                             <p class="text-slate-600"><span x-text="s.item_name"></span> <span class="text-slate-400">×</span> <span class="tabular-nums" x-text="s.quantity"></span></p>
-                                            <p class="font-bold text-blue-700 tabular-nums" x-text="fmt(s.total_price)"></p>
+                                            <p class="font-bold text-brand-800 tabular-nums" x-text="fmt(s.total_price)"></p>
                                         </div>
                                         <div class="mt-3 grid grid-cols-2 gap-2">
-                                            <button @click="showReceipt(s)" class="min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm font-semibold transition border border-slate-300">Show Receipt</button>
-                                            <button @click="printReceipt(s)" class="min-h-[44px] bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-sm font-semibold transition border border-blue-200">Print</button>
+                                            <button @click="showReceipt(s)" class="nb-press min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm font-semibold border border-slate-300">Show Invoice</button>
+                                            <button @click="printReceipt(s)" class="nb-press min-h-[44px] bg-brand-50 hover:bg-brand-100 text-brand-800 rounded-lg text-sm font-semibold border border-brand-200">Print</button>
                                         </div>
                                     </div>
                                 </template>
                             </div>
 
                             <div class="mt-4 text-center" x-show="filteredSales.length > visibleSales.length" x-cloak>
-                                <button @click="salesLimit += 25" class="min-h-[44px] px-5 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition">
+                                <button @click="salesLimit += 25" class="nb-press min-h-[44px] px-5 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50">
                                     Load more (<span x-text="filteredSales.length - visibleSales.length"></span> left)
                                 </button>
                             </div>
                         </section>
 
                         <!-- Dealer purchase history -->
-                        <section class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
+                        <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
                             <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
                                 <h2 class="text-sm sm:text-base font-bold text-slate-800">🚚 Dealer Purchase History</h2>
                                 <input type="search" x-model="dealerSearch" placeholder="Search dealer or item…" aria-label="Search dealer purchases"
-                                       class="w-full sm:w-60 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition">
+                                       class="w-full sm:w-60 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none transition">
                             </div>
 
-                            <p x-show="loading" class="text-sm text-slate-500 py-6 text-center animate-pulse">Loading purchases…</p>
+                            <p x-show="loading" class="nb-loading text-sm font-semibold py-6 text-center">Loading purchases…</p>
                             <p x-show="!loading && filteredPurchases.length === 0" x-cloak class="text-sm text-slate-500 py-8 text-center">
                                 <span x-text="purchases.length ? 'No purchase matches that search.' : 'No dealer purchases recorded yet.'"></span>
                             </p>
@@ -424,12 +445,12 @@
                                     </thead>
                                     <tbody class="divide-y divide-slate-100 text-sm">
                                         <template x-for="p in visiblePurchases" :key="p.id">
-                                            <tr class="hover:bg-slate-50 transition">
+                                            <tr class="nb-row hover:bg-slate-50">
                                                 <td class="p-3 text-slate-600 whitespace-nowrap" x-text="fmtDate(p.date)"></td>
                                                 <td class="p-3 font-medium text-slate-800" x-text="p.dealer_name"></td>
                                                 <td class="p-3 text-slate-600" x-text="p.item_name"></td>
                                                 <td class="p-3 text-slate-600 text-center tabular-nums" x-text="p.quantity"></td>
-                                                <td class="p-3 font-semibold text-emerald-700 text-right tabular-nums" x-text="fmt(p.total_cost)"></td>
+                                                <td class="p-3 font-semibold text-amber-700 text-right tabular-nums" x-text="fmt(p.total_cost)"></td>
                                             </tr>
                                         </template>
                                     </tbody>
@@ -439,21 +460,21 @@
                             <!-- Mobile cards -->
                             <div class="md:hidden space-y-3" x-show="!loading && filteredPurchases.length > 0" x-cloak>
                                 <template x-for="p in visiblePurchases" :key="'m-' + p.id">
-                                    <div class="rounded-xl border border-slate-200 p-3.5">
+                                    <div class="nb-row rounded-xl border border-slate-200 p-3.5 hover:bg-slate-50">
                                         <div class="flex items-start justify-between gap-3">
                                             <p class="font-semibold text-slate-800" x-text="p.dealer_name"></p>
                                             <p class="shrink-0 text-xs text-slate-500" x-text="fmtDate(p.date)"></p>
                                         </div>
                                         <div class="mt-2 flex items-baseline justify-between gap-3 text-sm">
                                             <p class="text-slate-600"><span x-text="p.item_name"></span> <span class="text-slate-400">×</span> <span class="tabular-nums" x-text="p.quantity"></span></p>
-                                            <p class="font-bold text-emerald-700 tabular-nums" x-text="fmt(p.total_cost)"></p>
+                                            <p class="font-bold text-amber-700 tabular-nums" x-text="fmt(p.total_cost)"></p>
                                         </div>
                                     </div>
                                 </template>
                             </div>
 
                             <div class="mt-4 text-center" x-show="filteredPurchases.length > visiblePurchases.length" x-cloak>
-                                <button @click="purchasesLimit += 25" class="min-h-[44px] px-5 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition">
+                                <button @click="purchasesLimit += 25" class="nb-press min-h-[44px] px-5 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50">
                                     Load more (<span x-text="filteredPurchases.length - visiblePurchases.length"></span> left)
                                 </button>
                             </div>
@@ -471,75 +492,147 @@
          not sit inside a `fixed`/`overflow` ancestor or the page gets clipped
          and spills onto a second sheet. -->
     <div id="receipt-modal" x-show="isReceiptOpen" x-cloak x-transition.opacity
-         class="fixed inset-0 bg-slate-900/60 z-50 flex items-stretch sm:items-center justify-center p-0 sm:p-4 overflow-y-auto"
-         role="dialog" aria-modal="true" aria-label="Receipt" @keydown.escape.window="closeReceipt()">
-        <div class="modal-card bg-white w-full sm:max-w-[210mm] sm:rounded-xl shadow-2xl p-4 sm:p-6 sm:my-4 flex flex-col sm:max-h-[92vh] sm:overflow-y-auto">
+         class="fixed inset-0 bg-brand-950/70 z-50 flex items-stretch sm:items-center justify-center p-0 sm:p-4 overflow-y-auto"
+         role="dialog" aria-modal="true" aria-label="Invoice" @keydown.escape.window="closeReceipt()">
+        <div class="modal-card nb-pop bg-white w-full sm:max-w-[210mm] sm:rounded-xl shadow-2xl p-4 sm:p-6 sm:my-4 flex flex-col sm:max-h-[92vh] sm:overflow-y-auto">
 
-            <!-- ---------- Printable A4 sheet ---------- -->
-            <div id="receipt-paper" class="bg-white text-slate-900 border border-slate-300 rounded-lg p-5 sm:p-8 flex-grow">
+            <!-- ---------- Printable A4 sheet ----------
+                 Laid out to match NetBazar's printed invoice pad: masthead,
+                 Bill To / Invoice Details bands, item lines, then totals. -->
+            <div id="receipt-paper" class="inv-paper">
 
-                <div class="receipt-head text-center border-b-2 border-slate-800 pb-3 mb-4">
-                    <p class="receipt-bismillah text-xs italic text-slate-500">বিসমিল্লাহির রাহমানির রাহিম</p>
-                    <h1 class="receipt-shopname text-2xl font-extrabold text-blue-900 mt-1">মেসার্স আমাদের বাজার</h1>
-                    <p class="receipt-proprietor text-xs font-medium text-slate-600 mt-1">প্রোপ্রাইটর: মোঃ নাজমুল আলম (মোবাইল: 01756-093662)</p>
-                    <p class="receipt-blurb text-[11px] text-slate-500 mt-1.5 leading-relaxed">এখানে সিরামিকের প্লেট, ডিনার সেট, প্রেসার কুকার, গ্লাস, কাচের জগ, মেলামাইন সেট, ফ্রাইপেন, ফ্লোর কার্পেট, ওয়ালমেট এবং প্লাস্টিকের যাবতীয় মালামাল পাইকারী ও খুচরা বিক্রয় করা হয়।</p>
+                <h2 class="inv-title">Invoice</h2>
+
+                <div class="inv-sheet">
+
+                    <!-- Masthead -->
+                    <div class="inv-head">
+                        <div class="inv-logo">
+                            <svg viewBox="0 0 210 64" width="176" height="54" role="img" aria-label="NetBazar logo">
+                                <rect x="2" y="4" width="56" height="56" rx="13" fill="#8cc63f"/>
+                                <g fill="none" stroke="#ffffff" stroke-width="4.5" stroke-linecap="round">
+                                    <path d="M12 30 A26 26 0 0 1 48 30"/>
+                                    <path d="M18 37 A18 18 0 0 1 42 37"/>
+                                    <path d="M24 44 A10 10 0 0 1 36 44"/>
+                                </g>
+                                <circle cx="30" cy="49" r="2.8" fill="#ffffff"/>
+                                <text x="68" y="32" font-size="21" font-weight="800" fill="#1f2937">NetBazar</text>
+                                <text x="69" y="47" font-size="8.5" letter-spacing="1.6" fill="#6b7280">SHAFIPUR BAZAR</text>
+                            </svg>
+                        </div>
+                        <div class="inv-org">
+                            <p class="inv-org-name" x-text="shop.invoiceName"></p>
+                            <p class="inv-org-line"><span x-text="shop.addressLine1"></span>, <span x-text="shop.addressLine2"></span>.</p>
+                            <p class="inv-org-line">Mob: <span x-text="shop.phones.join(', ')"></span></p>
+                            <p class="inv-org-line">Email: <span x-text="shop.email"></span></p>
+                        </div>
+                    </div>
+
+                    <!-- Band headings -->
+                    <div class="inv-split inv-bars">
+                        <div>Bill To</div>
+                        <div>Invoice Details</div>
+                    </div>
+
+                    <!-- Customer | invoice meta -->
+                    <div class="inv-split inv-parties">
+                        <div>
+                            <p class="inv-party-name" x-text="currentReceipt.customer_name || '—'"></p>
+                            <p class="inv-party-line" x-show="currentReceipt.customer_contact" x-cloak>
+                                Contact No. : <span x-text="currentReceipt.customer_contact"></span>
+                            </p>
+                        </div>
+                        <div class="inv-meta">
+                            <p>Invoice No. : <strong x-text="currentReceipt.id ?? '—'"></strong></p>
+                            <p>Date : <strong x-text="fmtDateDMY(currentReceipt.date)"></strong></p>
+                            <p>Time : <strong x-text="fmtTime(currentReceipt.sale_time)"></strong></p>
+                        </div>
+                    </div>
+
+                    <!-- Item lines. One sale is one line today; the numbered
+                         column is here so extra lines drop straight in. -->
+                    <table class="inv-table">
+                        <thead>
+                            <tr>
+                                <th class="col-idx">#</th>
+                                <th>Item name</th>
+                                <th class="col-qty">Quantity</th>
+                                <th class="col-rate">Price/ Unit</th>
+                                <th class="col-amount">Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td class="col-idx">1</td>
+                                <td x-text="currentReceipt.item_name"></td>
+                                <td class="col-qty tabular-nums" x-text="currentReceipt.quantity"></td>
+                                <td class="col-rate tabular-nums" x-text="fmtNum(unitPrice(currentReceipt))"></td>
+                                <td class="col-amount tabular-nums" x-text="fmtNum(currentReceipt.total_price)"></td>
+                            </tr>
+                            <!-- Blank run-out so a one-line invoice still fills
+                                 the sheet, column rules and all. -->
+                            <tr class="inv-fill-row" aria-hidden="true">
+                                <td class="col-idx"></td>
+                                <td></td>
+                                <td class="col-qty"></td>
+                                <td class="col-rate"></td>
+                                <td class="col-amount"></td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <!-- Amount in words | totals -->
+                    <div class="inv-split inv-footer">
+                        <div>
+                            <p class="inv-words-label">Invoice Amount In Words</p>
+                            <p class="inv-words-value" x-text="amountInWords(currentReceipt.total_price)"></p>
+                        </div>
+                        <div>
+                            <p class="inv-total-line">
+                                <span>Sub Total</span>
+                                <span class="tabular-nums" x-text="fmtNum(currentReceipt.total_price)"></span>
+                            </p>
+                            <p class="inv-total-line is-grand">
+                                <span>Total</span>
+                                <span class="tabular-nums" x-text="fmt(currentReceipt.total_price)"></span>
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Terms | signature -->
+                    <div class="inv-split inv-sign">
+                        <div>
+                            <p class="inv-terms-label">Terms &amp; Conditions</p>
+                            <ul class="inv-terms-list">
+                                <template x-for="(line, i) in shop.terms" :key="'term-' + i">
+                                    <li x-text="line"></li>
+                                </template>
+                            </ul>
+                        </div>
+                        <div class="inv-signature">
+                            <p class="inv-signature-name" x-text="'For: ' + shop.invoiceName"></p>
+                            <p class="inv-signature-rule">Authorized Signatory</p>
+                        </div>
+                    </div>
+
                 </div>
 
-                <div class="receipt-meta flex flex-wrap justify-between items-center gap-2 text-xs mb-5 bg-slate-50 p-3 rounded border border-slate-200">
-                    <div><span class="font-semibold text-slate-500">Customer:</span> <span class="font-bold text-slate-800" x-text="currentReceipt.customer_name"></span></div>
-                    <div><span class="font-semibold text-slate-500">Invoice:</span> <span class="font-bold text-slate-800" x-text="'#' + (currentReceipt.id ?? '—')"></span></div>
-                    <div><span class="font-semibold text-slate-500">Date:</span> <span class="font-bold text-slate-800" x-text="fmtDate(currentReceipt.date)"></span></div>
-                </div>
-
-                <table class="receipt-items w-full text-xs border-collapse">
-                    <thead>
-                        <tr class="bg-slate-800 text-white">
-                            <th class="py-2.5 px-3 text-left font-semibold">Item Name</th>
-                            <th class="py-2.5 px-3 text-center font-semibold">Quantity</th>
-                            <th class="py-2.5 px-3 text-right font-semibold">Amount</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr class="border-b border-slate-200">
-                            <td class="py-3 px-3 font-medium text-slate-800" x-text="currentReceipt.item_name"></td>
-                            <td class="py-3 px-3 text-center text-slate-700 tabular-nums" x-text="currentReceipt.quantity"></td>
-                            <td class="py-3 px-3 text-right font-semibold text-slate-800 tabular-nums" x-text="fmt(currentReceipt.total_price)"></td>
-                        </tr>
-                    </tbody>
-                </table>
-
-                <!-- Grows to fill the sheet so the totals block always lands at
-                     the bottom of the A4 page rather than floating mid-air. -->
-                <div class="receipt-spacer" aria-hidden="true"></div>
-
-                <div class="totals-block border-t-2 border-slate-800 pt-3 flex justify-between items-center text-base font-bold">
-                    <span>Total Amount</span>
-                    <span class="text-blue-900 tabular-nums" x-text="fmt(currentReceipt.total_price)"></span>
-                </div>
-
-                <div class="signature-block flex justify-between items-end pt-10 mt-8 text-xs text-slate-600">
-                    <div class="text-center"><div class="border-t border-slate-400 w-32 pt-1">Customer Signature</div></div>
-                    <div class="text-center"><div class="border-t border-slate-400 w-32 pt-1">Authorized Signature</div></div>
-                </div>
-
-                <div class="address-bar text-center bg-blue-900 text-white text-[11px] py-2.5 px-3 mt-6 rounded font-medium">
-                    ঠিকানা: তাজুল ইসলাম সুপার মার্কেট, ইটাখোলা মোড়, গাজীপুর রোড, শিবপুর, নরসিংদী।
-                </div>
+                <p class="inv-thanks">Thank you for your business.</p>
             </div>
 
             <!-- ---------- Actions (never printed) ---------- -->
             <div class="no-print mt-5 flex flex-col sm:flex-row sm:justify-end gap-2.5 sticky bottom-0 bg-white pt-1 pb-1">
                 <p class="text-xs text-slate-500 sm:mr-auto sm:self-center">To keep a PDF, choose <strong>Save as PDF</strong> as the destination.</p>
-                <button @click="closeReceipt()" class="min-h-[48px] order-2 sm:order-1 bg-slate-200 hover:bg-slate-300 text-slate-700 px-5 py-2.5 rounded-lg text-sm font-semibold transition">Close</button>
-                <button @click="printReceipt()" class="min-h-[48px] order-1 sm:order-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-semibold shadow transition">Print / Save as PDF</button>
+                <button @click="closeReceipt()" class="nb-press min-h-[48px] order-2 sm:order-1 bg-slate-200 hover:bg-slate-300 text-slate-700 px-5 py-2.5 rounded-lg text-sm font-semibold">Close</button>
+                <button @click="printReceipt()" class="nb-press min-h-[48px] order-1 sm:order-2 bg-brand-700 hover:bg-brand-800 text-white px-5 py-2.5 rounded-lg text-sm font-semibold shadow">Print / Save as PDF</button>
             </div>
 
         </div>
     </div>
 
     <!-- ================= TOAST ================= -->
-    <div x-show="toast.show" x-cloak x-transition.opacity
-         class="no-print fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] w-[calc(100%-2rem)] max-w-sm rounded-xl px-4 py-3 text-sm font-medium shadow-xl text-white"
+    <div x-show="toast.show" x-cloak
+         class="nb-toast no-print fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] w-[calc(100%-2rem)] max-w-sm rounded-xl px-4 py-3 text-sm font-medium shadow-xl text-white"
          :class="toast.type === 'error' ? 'bg-red-600' : 'bg-slate-900'"
          role="status" aria-live="polite">
         <span x-text="toast.message"></span>

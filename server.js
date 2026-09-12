@@ -7,7 +7,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
+// Override with PORT=… to run a second instance (a test copy, say) alongside
+// the one the shop is using.
+const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -19,6 +21,19 @@ const db = new sqlite3.Database(path.join(__dirname, 'shop.db'), (err) => {
   if (err) console.error('Error opening database', err.message);
   else console.log('Connected to the SQLite database.');
 });
+
+// Adds a column to an existing table when it is not there yet. SQLite has no
+// ADD COLUMN IF NOT EXISTS, so the current shape is read first.
+function addColumnIfMissing(table, column, definition) {
+  db.all(`PRAGMA table_info(${table})`, [], (err, columns) => {
+    if (err || !columns) return;
+    if (columns.some((c) => c.name === column)) return;
+    db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`, (alterErr) => {
+      if (alterErr) console.error(`Could not add ${table}.${column}:`, alterErr.message);
+      else console.log(`Migrated: added ${table}.${column}`);
+    });
+  });
+}
 
 // Create Tables & Seed Admin
 db.serialize(() => {
@@ -33,11 +48,20 @@ db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     customer_name TEXT NOT NULL,
+    customer_contact TEXT,
     item_name TEXT NOT NULL,
     quantity INTEGER NOT NULL,
     total_price REAL NOT NULL,
-    date TEXT NOT NULL
+    date TEXT NOT NULL,
+    sale_time TEXT
   )`);
+
+  // Databases created before the NetBazar invoice redesign have neither the
+  // customer's contact number nor the time of sale, both of which the printed
+  // invoice shows. Add them in place so an existing shop.db keeps its history.
+  // Named `sale_time` rather than `time` because TIME is an SQL function name.
+  addColumnIfMissing('sales', 'customer_contact', 'TEXT');
+  addColumnIfMissing('sales', 'sale_time', 'TEXT');
 
   db.run(`CREATE TABLE IF NOT EXISTS dealer_purchases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,11 +140,12 @@ app.get('/api/data', (req, res) => {
 
 // API: Record a Sale (Customer)
 app.post('/api/sales', (req, res) => {
-  const { customer_name, item_name, quantity, total_price, date } = req.body;
-  
+  const { customer_name, customer_contact, item_name, quantity, total_price, date, sale_time } = req.body;
+
   db.run(
-    `INSERT INTO sales (customer_name, item_name, quantity, total_price, date) VALUES (?, ?, ?, ?, ?)`,
-    [customer_name, item_name, quantity, total_price, date],
+    `INSERT INTO sales (customer_name, customer_contact, item_name, quantity, total_price, date, sale_time)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [customer_name, customer_contact || null, item_name, quantity, total_price, date, sale_time || null],
     function(err) {
       if (err) return res.status(400).json({ error: err.message });
       

@@ -1,5 +1,6 @@
-/* Digital Khata — dashboard logic (Alpine.js component).
-   Loaded before alpine.min.js so shopApp() exists when Alpine boots. */
+/* NetBazar — dashboard logic (Alpine.js component).
+   Loaded after shop-config.js and before alpine.min.js, so both SHOP and
+   shopApp() exist when Alpine boots. */
 
 // Stock at or below this count is flagged as low.
 const LOW_STOCK_THRESHOLD = 5;
@@ -13,6 +14,57 @@ function todayLocal() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Local wall-clock time as HH:MM (24h), which is what <input type="time">
+// reads and writes. The invoice renders it back as 12-hour with AM/PM.
+function nowLocalTime() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// ---------------------------------------------------------------- numbers
+const ONES = [
+  '', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
+  'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen',
+  'Seventeen', 'Eighteen', 'Nineteen',
+];
+const TENS = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+// 0–99 in words.
+function twoDigitWords(n) {
+  if (n < 20) return ONES[n];
+  const tens = TENS[Math.floor(n / 10)];
+  const ones = ONES[n % 10];
+  return ones ? `${tens} ${ones}` : tens;
+}
+
+// 0–999 in words.
+function threeDigitWords(n) {
+  const hundreds = Math.floor(n / 100);
+  const rest = n % 100;
+  const parts = [];
+  if (hundreds) parts.push(`${ONES[hundreds]} Hundred`);
+  if (rest) parts.push(twoDigitWords(rest));
+  return parts.join(' ');
+}
+
+// Whole taka in words on the South Asian scale — crore and lakh rather than
+// million and billion — because that is how an invoice reads here.
+function integerWords(n) {
+  if (n === 0) return 'Zero';
+  const crore = Math.floor(n / 10000000);
+  const lakh = Math.floor((n % 10000000) / 100000);
+  const thousand = Math.floor((n % 100000) / 1000);
+  const rest = n % 1000;
+
+  const parts = [];
+  if (crore) parts.push(`${integerWords(crore)} Crore`);
+  if (lakh) parts.push(`${threeDigitWords(lakh)} Lakh`);
+  if (thousand) parts.push(`${threeDigitWords(thousand)} Thousand`);
+  if (rest) parts.push(threeDigitWords(rest));
+  return parts.join(' ');
 }
 
 // Remembers that the user got past the login screen. localStorage rather than
@@ -42,8 +94,18 @@ function writeSession(active) {
   }
 }
 
+// The form collects a price per unit, matching the invoice's "Price/ Unit"
+// column; the amount is derived from it rather than typed twice.
 function blankSale() {
-  return { customer_name: '', item_name: '', quantity: '', total_price: '', date: todayLocal() };
+  return {
+    customer_name: '',
+    customer_contact: '',
+    item_name: '',
+    quantity: '',
+    unit_price: '',
+    date: todayLocal(),
+    sale_time: nowLocalTime(),
+  };
 }
 
 function blankDealer() {
@@ -67,6 +129,9 @@ function shopApp() {
     resetSuccess: '',
     showResetPassword: false,
     resetting: false,
+
+    // Shop identity — name, address, contacts. See js/shop-config.js.
+    shop: window.SHOP,
 
     // ------------------------------------------------------------ dashboard
     activeForm: 'sale',
@@ -109,6 +174,7 @@ function shopApp() {
 
     // ------------------------------------------------------------- helpers
     today: todayLocal,
+    nowTime: nowLocalTime,
 
     fmt(n) {
       const v = Number(n);
@@ -127,12 +193,72 @@ function shopApp() {
       return dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
     },
 
+    // Plain number, no currency mark — the invoice's amount columns carry the
+    // taka sign once in the header instead of on every row.
+    fmtNum(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v)) return '0.00';
+      return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    },
+
+    // DD-MM-YYYY, the format the printed invoice uses.
+    fmtDateDMY(d) {
+      if (!d) return '—';
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+      const [y, m, day] = d.split('-');
+      return `${day}-${m}-${y}`;
+    },
+
+    // "16:02" -> "04:02 PM". Sales recorded before the invoice redesign have
+    // no time stored, so they print an em dash rather than a made-up one.
+    fmtTime(t) {
+      if (!t) return '—';
+      const match = /^(\d{1,2}):(\d{2})/.exec(t);
+      if (!match) return t;
+      const hours = Number(match[1]);
+      if (!Number.isFinite(hours) || hours > 23) return t;
+      const suffix = hours >= 12 ? 'PM' : 'AM';
+      const hour12 = hours % 12 || 12;
+      return `${String(hour12).padStart(2, '0')}:${match[2]} ${suffix}`;
+    },
+
+    // Price per unit. Stored sales keep the total, so older rows — and any row
+    // whose total was edited directly in the database — still show a sensible
+    // per-unit figure.
+    unitPrice(row) {
+      const qty = Number(row?.quantity);
+      const total = Number(row?.total_price);
+      if (!Number.isFinite(qty) || qty <= 0 || !Number.isFinite(total)) return 0;
+      return total / qty;
+    },
+
+    // Amount spelled out under the totals, as invoices here are expected to.
+    amountInWords(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v) || v < 0) return '—';
+      const taka = Math.floor(v);
+      // Rounded, not truncated, so 0.999 reads as one taka rather than 99 paisa.
+      const paisa = Math.round((v - taka) * 100);
+      if (paisa === 100) return `${integerWords(taka + 1)} Taka Only`;
+      const words = `${integerWords(taka)} Taka`;
+      return paisa ? `${words} and ${twoDigitWords(paisa)} Paisa Only` : `${words} Only`;
+    },
+
     notify(message, type = 'success') {
       this.toast = { show: true, message, type };
       clearTimeout(this.toastTimer);
       this.toastTimer = setTimeout(() => {
         this.toast.show = false;
       }, 3500);
+    },
+
+    // Live "Amount" preview under the sale form, and the figure actually
+    // saved as the sale total.
+    get saleAmount() {
+      const qty = Number(this.sale.quantity);
+      const unit = Number(this.sale.unit_price);
+      if (!Number.isFinite(qty) || !Number.isFinite(unit)) return 0;
+      return qty * unit;
     },
 
     // -------------------------------------------------------- derived stats
@@ -285,16 +411,26 @@ function shopApp() {
         const res = await fetch('/api/sales', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(this.sale),
+          // total_price stays the stored figure; the form's unit price is
+          // what the shopkeeper types, so it is multiplied out here.
+          body: JSON.stringify({
+            customer_name: this.sale.customer_name,
+            customer_contact: this.sale.customer_contact,
+            item_name: this.sale.item_name,
+            quantity: this.sale.quantity,
+            total_price: this.saleAmount,
+            date: this.sale.date,
+            sale_time: this.sale.sale_time,
+          }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Could not save the sale.');
 
         await this.loadData();
         this.sale = blankSale();
-        this.notify('Sale saved — receipt ready.');
+        this.notify('Sale saved — invoice ready.');
 
-        // The button promises a receipt, so actually open one.
+        // The button promises an invoice, so actually open one.
         const row = this.sales.find((s) => s.id === data.id);
         if (row) this.showReceipt(row);
       } catch (err) {
@@ -339,11 +475,12 @@ function shopApp() {
 
     // Filename the browser suggests in the print dialog's Save-as-PDF flow.
     receiptFilename() {
-      const name = (this.currentReceipt.customer_name || 'receipt')
+      const name = (this.currentReceipt.customer_name || 'invoice')
         .replace(/[^\p{L}\p{N}]+/gu, '-')
         .replace(/^-+|-+$/g, '');
+      const invoiceNo = this.currentReceipt.id ?? '';
       const date = this.currentReceipt.date || todayLocal();
-      return `Receipt-${name || 'customer'}-${date}`;
+      return `NetBazar-Invoice-${invoiceNo}-${name || 'customer'}-${date}`;
     },
 
     // Wait for Alpine to render and for the modal transition to settle before
