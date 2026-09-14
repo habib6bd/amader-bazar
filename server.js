@@ -34,10 +34,36 @@ app.use(express.static(path.join(__dirname, 'public')));
 const DATABASE_URL = process.env.DATABASE_URL || `file:${path.join(__dirname, 'shop.db')}`;
 const isRemote = !DATABASE_URL.startsWith('file:');
 
-const db = createClient({
-  url: DATABASE_URL,
-  authToken: process.env.DATABASE_AUTH_TOKEN,
-});
+/* createClient throws synchronously if it cannot open a local file, which on a
+   hosted platform means the module fails at import and the platform reports an
+   opaque crash. The most likely cause by far is deploying before DATABASE_URL
+   is set: the app falls back to a local file, and a serverless filesystem is
+   read-only. Say that plainly rather than leaving a libSQL stack trace as the
+   only clue. */
+let db;
+try {
+  db = createClient({
+    url: DATABASE_URL,
+    authToken: process.env.DATABASE_AUTH_TOKEN,
+  });
+} catch (err) {
+  console.error('\n=== NetBazar could not open its database ===');
+  if (isRemote) {
+    console.error('DATABASE_URL is set, so check it and DATABASE_AUTH_TOKEN are correct.');
+  } else {
+    console.error(
+      (process.env.DATABASE_URL
+        ? 'DATABASE_URL points at a local file, and that file is not writable.\n'
+        : 'DATABASE_URL is not set, so the app fell back to a local file — and this\n' +
+          'filesystem is not writable.\n') +
+        'If this is a hosted deployment, set DATABASE_URL and DATABASE_AUTH_TOKEN to\n' +
+        'your Turso database and redeploy. See DEPLOY.md.'
+    );
+  }
+  console.error(`Tried: ${DATABASE_URL}`);
+  console.error(`Underlying error: ${err.message}\n`);
+  process.exit(1);
+}
 
 console.log(isRemote ? 'Connected to the hosted database.' : 'Connected to the local SQLite file.');
 

@@ -43,6 +43,16 @@ running the local copy for actual billing.
 **What you need:** a [GitHub](https://github.com) account, a [Turso](https://turso.tech)
 account, and a [Vercel](https://vercel.com) account. All three sign up free with GitHub.
 
+### Do the database first
+
+Follow the steps in order: **Turso → GitHub → Vercel**. Vercel needs the database URL and
+token *while you set the project up*, because the app reads them at startup.
+
+Deploying before the database exists does not half-work — the app cannot open a database at
+all, so the function crashes and every page fails. It is recoverable (add the variables,
+redeploy) but there is nothing to see until you do. Creating the Turso database first costs
+two minutes and skips that entirely.
+
 ---
 
 ## 1. Put the database on Turso
@@ -198,10 +208,15 @@ node -e "new (require('@libsql/client').createClient)({url:'file:shop.db'}).exec
 
 ## Troubleshooting
 
+**Every page fails, or the deployment log says the database could not be opened**
+`DATABASE_URL` or `DATABASE_AUTH_TOKEN` is missing or wrong — most often because the project
+was deployed before the Turso database existed. The log says which of the two cases it is.
+Fix them under Vercel → Settings → Environment Variables, then **redeploy**: changing a
+variable does not redeploy on its own, so the old build keeps failing until you do.
+
 **"Database unavailable" on every page**
-`DATABASE_URL` or `DATABASE_AUTH_TOKEN` is wrong or missing. Check them under Vercel →
-Settings → Environment Variables, then redeploy — changing a variable does not redeploy on
-its own.
+The database opened but the tables could not be created — usually an auth token that is
+valid but lacks write access. Reissue it with `turso db tokens create netbazar`.
 
 **Logged out constantly, or after every deploy**
 `JWT_SECRET` is missing, so each instance signs cookies differently. Set it and redeploy.
