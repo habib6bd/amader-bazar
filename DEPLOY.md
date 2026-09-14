@@ -57,36 +57,57 @@ two minutes and skips that entirely.
 
 ## 1. Put the database on Turso
 
-### Install the CLI
+There are two routes. **Starting with an empty database needs no CLI at all** — use the
+browser. The CLI is only required to upload an existing `shop.db`.
+
+### Route A — in the browser (no install)
+
+1. Go to [turso.tech](https://turso.tech) and sign in with GitHub.
+2. **Create Database**, name it `netbazar`.
+3. On its page, copy the **URL** — it looks like `libsql://netbazar-yourorg.turso.io`.
+4. **Create Token** and copy that too.
+
+Those are `DATABASE_URL` and `DATABASE_AUTH_TOKEN`. Skip to
+[step 2](#2-generate-a-session-secret).
+
+### Route B — the CLI (needed to upload an existing shop.db)
 
 ```bash
 curl -sSfL https://get.tur.so/install.sh | bash
-turso auth signup      # or: turso auth login
 ```
 
-### Create the database from your existing data
-
-Run this **from the project folder**, so it picks up your real `shop.db`:
+**The installer adds itself to `~/.bashrc`, which your current terminal has already read.**
+Until you reload, `turso` is "command not found":
 
 ```bash
-turso db create netbazar --from-file shop.db
+source ~/.bashrc      # or just open a new terminal
+turso auth signup     # or: turso auth login
 ```
 
-`--from-file` uploads your current products, sales and purchases. Your local `shop.db` is
-not modified.
+Still not found? It installs to `~/.turso/turso`, so call it directly:
+`~/.turso/turso auth signup`.
 
-> Creating an empty database instead? Drop `--from-file`. The app creates its own tables
-> on first start, so an empty database is fine — you just begin with no history.
+Then create the database. Run this **from the project folder** so it picks up `shop.db`:
+
+```bash
+turso db create netbazar --from-file shop.db      # with your existing data
+turso db create netbazar                          # or empty
+```
+
+`--from-file` uploads your current products, sales and purchases; your local `shop.db` is
+not modified. Remember that **sales and dealer purchases cannot be deleted from inside the
+app** — if the existing data is test data, start empty rather than importing it.
 
 ### Get the two values the app needs
+
+If you used the CLI (Route B), these print the same two values the dashboard shows:
 
 ```bash
 turso db show netbazar --url
 turso db tokens create netbazar
 ```
 
-The first prints a `libsql://…` URL, the second a long token. Keep both to hand — they go
-into Vercel in step 4. **The token is a password to your business data; do not commit it
+Keep both to hand — they go into Vercel in step 4. **The token is a password to your business data; do not commit it
 or paste it anywhere public.**
 
 ---
@@ -224,6 +245,11 @@ valid but lacks write access. Reissue it with `turso db tokens create netbazar`.
 **"Invalid email or password" with the right password**
 If you imported a database, the account is whatever was in it — `ADMIN_EMAIL` is ignored
 when an admin already exists. Check with `turso db shell netbazar "SELECT email FROM admin"`.
+
+**`turso: command not found` right after installing it**
+The installer appends to `~/.bashrc`, which the terminal you are in has already read. Run
+`source ~/.bashrc`, or open a new terminal. Failing that, call it by its full path:
+`~/.turso/turso`.
 
 **Sale times are hours off**
 `TZ` is not set to `Asia/Dhaka`. Vercel servers run UTC, which is six hours behind.
