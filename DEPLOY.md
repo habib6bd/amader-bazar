@@ -63,7 +63,7 @@ browser. The CLI is only required to upload an existing `shop.db`.
 ### Route A — in the browser (no install)
 
 1. Go to [turso.tech](https://turso.tech) and sign in with GitHub.
-2. **Create Database**, name it `netbazar`.
+2. **Create Database**, name it `netbazar`, and pick a **location** — see below.
 3. On its page, copy the **URL** — it looks like `libsql://netbazar-yourorg.turso.io`.
 4. **Create Token** and copy that too.
 
@@ -109,6 +109,30 @@ turso db tokens create netbazar
 
 Keep both to hand — they go into Vercel in step 4. **The token is a password to your business data; do not commit it
 or paste it anywhere public.**
+
+---
+
+### Which location to choose
+
+Nearest to Bangladesh is **Mumbai (`bom`)**, then **Singapore (`sin`)**.
+
+But the distance that matters most is **between the Vercel function and the database**, not
+between you and the database. One page load makes several queries, and saving a sale makes
+three on its own — look up the product, insert the sale, update the stock. Each one pays
+the round trip.
+
+So set both to the same city:
+
+- Turso database location: **Mumbai**
+- Vercel: **Project Settings → Functions → Function Region** → **Mumbai (bom1)**
+
+Matched, queries take single-digit milliseconds. Split across continents, each one costs a
+few hundred, and they add up into a delay you feel at the counter.
+
+If your Vercel plan does not allow choosing the function region (Hobby defaults to
+Washington DC), match Turso to *Vercel's* region rather than to yourself — there are more
+function-to-database round trips than browser-to-function ones. Static pages are unaffected
+either way; Vercel serves those from an edge location near the visitor.
 
 ---
 
