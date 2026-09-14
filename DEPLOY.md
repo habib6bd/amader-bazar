@@ -170,14 +170,23 @@ Make the repository **private** unless you have a reason not to.
 | Name | Value |
 |---|---|
 | `DATABASE_URL` | the `libsql://…` URL from step 1 |
-| `DATABASE_AUTH_TOKEN` | the token from step 1 |
+| `DATABASE_AUTH_TOKEN` | the read-write token from step 1 |
 | `JWT_SECRET` | the hex string from step 2 |
 | `ADMIN_EMAIL` | the email you want to log in with |
-| `ADMIN_PASSWORD` | a strong password — **not** `admin123` |
-| `TZ` | `Asia/Dhaka` |
+| `ADMIN_PASSWORD` | a strong password |
 
-`NODE_ENV` is set to `production` by Vercel automatically, which is what marks the login
-cookie HTTPS-only.
+**Four variables, that is all.**
+
+**Do not add `TZ` or `NODE_ENV`.** Vercel reserves both names and rejects them with *"The
+name of your Environment Variable is reserved"*. Neither is needed:
+
+- **Timezone** is applied in code, not read from the process. Vercel runs functions in UTC,
+  where `new Date().getHours()` would stamp a 12:53am sale as 6:53pm the previous evening —
+  so the app names `Asia/Dhaka` explicitly when formatting the date and time. Override with
+  `SHOP_TIMEZONE` only if the shop moves.
+- **`NODE_ENV`** is set to `production` by Vercel itself, which is what marks the login
+  cookie HTTPS-only. The app also checks Vercel's own `VERCEL` variable, so the cookie is
+  never left unmarked.
 
 4. Click **Deploy**.
 
@@ -276,7 +285,9 @@ The installer appends to `~/.bashrc`, which the terminal you are in has already 
 `~/.turso/turso`.
 
 **Sale times are hours off**
-`TZ` is not set to `Asia/Dhaka`. Vercel servers run UTC, which is six hours behind.
+The app formats times in `Asia/Dhaka` regardless of the server, so this should not happen.
+If it does, check whether `SHOP_TIMEZONE` has been set to something else. Do not try to fix
+it with `TZ` — Vercel reserves that name and will reject it.
 
 **Login works but nothing loads**
 Open the browser console. Repeated `401`s mean the cookie is not coming back — usually the

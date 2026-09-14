@@ -94,18 +94,41 @@ const all = async (sql, args = []) => {
   return r.rows;
 };
 
-/* Local wall-clock time as HH:MM, 24-hour — the format fmtTime() on the client
-   already parses, and what every existing row uses.
+/* The shop's wall-clock time as HH:MM, 24-hour — the format fmtTime() on the
+   client already parses, and what every existing row uses.
 
-   Deliberately local, not UTC. Date#getHours() reads the host's timezone, and
-   the host is the shop's own PC. toISOString() or SQLite's datetime('now')
-   would return UTC, and in Bangladesh (UTC+6) a 3pm sale would print as 09:00 —
-   the same trap todayLocal() warns about on the client, six hours wide. If the
-   server ever moves off the shop counter, set TZ=Asia/Dhaka for the process. */
+   The timezone is named explicitly rather than read from the process, because
+   the process timezone cannot be relied on: Vercel runs functions in UTC and
+   treats TZ as a reserved variable that cannot be set. Date#getHours() there
+   would stamp a 12:53am sale as 6:53pm the previous evening.
+
+   Intl carries its own timezone database, so this is correct wherever the
+   server happens to run — the shop PC, a Vercel function, anywhere. Override
+   with SHOP_TIMEZONE if the shop ever moves. */
+const SHOP_TIMEZONE = process.env.SHOP_TIMEZONE || 'Asia/Dhaka';
+
 function nowLocalTime() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: SHOP_TIMEZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date());
+  const part = (type) => parts.find((p) => p.type === type).value;
+  // en-GB renders midnight as 24 in some ICU versions; normalise it to 00.
+  const hour = part('hour') === '24' ? '00' : part('hour');
+  return `${hour}:${part('minute')}`;
+}
+
+// The shop's calendar date as YYYY-MM-DD, same reasoning. en-CA formats in that
+// order natively, so there is nothing to reassemble.
+function todayLocal() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: SHOP_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
 }
 
 // Adds a column to an existing table when it is not there yet. SQLite has no
@@ -310,8 +333,11 @@ function issueSession(res, admin) {
     expiresIn: `${SESSION_HOURS}h`,
   });
   res.cookie(COOKIE, token, {
-    httpOnly: true,                                   // unreadable to page scripts
-    secure: process.env.NODE_ENV === 'production',    // HTTPS only once deployed
+    httpOnly: true,   // unreadable to page scripts
+    // HTTPS-only once deployed. Vercel sets NODE_ENV=production itself and
+    // refuses to let you set it by hand, so VERCEL is checked as well — a
+    // cookie that is never marked secure would travel in clear text.
+    secure: process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL),
     sameSite: 'lax',
     maxAge: SESSION_HOURS * 60 * 60 * 1000,
   });
@@ -484,7 +510,9 @@ app.post('/api/sales', async (req, res) => {
         item_name,
         quantity,
         total_price,
-        date,
+        // date is NOT NULL, and a client that omits it would otherwise fail the
+        // insert; fall back to the shop's own calendar date, not the server's.
+        date || todayLocal(),
         nowLocalTime(),
         product ? product.warranty_months : null,
         product ? product.cost_price : null,
@@ -579,7 +607,7 @@ app.post('/api/dealer', async (req, res) => {
     const totalCost = cost * qty;
     const purchase = await run(
       `INSERT INTO dealer_purchases (dealer_name, item_name, quantity, total_cost, date) VALUES (?, ?, ?, ?, ?)`,
-      [dealer, name, qty, totalCost, date]
+      [dealer, name, qty, totalCost, date || todayLocal()]
     );
 
     if (existing) {
