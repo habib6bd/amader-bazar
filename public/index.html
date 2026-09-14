@@ -59,58 +59,12 @@
                             </button>
                         </form>
 
-                        <div class="mt-5 flex flex-wrap gap-2 justify-between items-center text-xs">
-                            <button @click="authView = 'reset'; resetError = ''; resetSuccess = '';" class="text-brand-800 hover:underline py-1">Forgot Password?</button>
-                            <span class="text-slate-400">Default: shop@admin.com / admin123</span>
-                        </div>
-                    </div>
-                </template>
-
-                <!-- RESET PASSWORD VIEW -->
-                <template x-if="authView === 'reset'">
-                    <div>
-                        <div class="text-center mb-6">
-                            <span class="text-4xl">🔑</span>
-                            <h1 class="text-xl sm:text-2xl font-bold text-slate-800 mt-2">Reset Password</h1>
-                            <p class="text-sm text-slate-500 mt-1">Enter your shop email and new password</p>
-                        </div>
-
-                        <form @submit.prevent="resetPassword" class="space-y-4">
-                            <div>
-                                <label for="reset-email" class="block text-sm font-medium text-slate-700 mb-1.5">Registered Email</label>
-                                <input id="reset-email" type="email" x-model="resetEmail" placeholder="shop@admin.com" autocomplete="username"
-                                       class="w-full p-3 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition" required>
-                            </div>
-                            <div>
-                                <label for="reset-password" class="block text-sm font-medium text-slate-700 mb-1.5">New Password</label>
-                                <div class="relative">
-                                    <input id="reset-password" :type="showResetPassword ? 'text' : 'password'" x-model="newPassword" placeholder="••••••••" autocomplete="new-password"
-                                           class="w-full p-3 pr-12 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition" required>
-                                    <button type="button" @click="showResetPassword = !showResetPassword"
-                                            :aria-label="showResetPassword ? 'Hide password' : 'Show password'"
-                                            class="absolute inset-y-0 right-0 px-3.5 flex items-center text-slate-500 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-r-lg">
-                                        <svg x-show="!showResetPassword" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                        </svg>
-                                        <svg x-show="showResetPassword" x-cloak xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7a10.05 10.05 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.542 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                                        </svg>
-                                    </button>
-                                </div>
-                            </div>
-                            <p x-text="resetError" class="text-red-600 text-sm text-center" x-show="resetError" x-cloak></p>
-                            <p x-text="resetSuccess" class="text-brand-800 text-sm text-center font-medium" x-show="resetSuccess" x-cloak></p>
-
-                            <button type="submit" :disabled="resetting"
-                                    class="nb-press w-full min-h-[48px] bg-brand-700 hover:bg-brand-800 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold p-3 rounded-lg transition shadow-lg shadow-brand-700/30">
-                                <span x-text="resetting ? 'Updating…' : 'Update Password'"></span>
-                            </button>
-                        </form>
-
-                        <div class="mt-5 text-center">
-                            <button @click="authView = 'login'" class="text-sm text-brand-800 hover:underline py-1">Back to Login</button>
-                        </div>
+                        <!-- No password-reset link and no default credentials shown: the
+                             public reset endpoint is gone, and printing the login on the
+                             page hands the shop's books to anyone who opens it. -->
+                        <p class="mt-5 text-center text-xs text-slate-400">
+                            Forgot the password? Sign in on the shop PC and change it from the dashboard.
+                        </p>
                     </div>
                 </template>
 
@@ -134,6 +88,8 @@
                     </div>
                     <div class="flex items-center gap-2 sm:gap-3 shrink-0">
                         <span class="hidden sm:inline-flex text-xs sm:text-sm bg-brand-900 px-3 py-1.5 rounded-lg text-brand-100" x-text="fmtDate(today())"></span>
+                        <button @click="isPasswordOpen = true; resetError = ''; resetSuccess = ''"
+                                class="nb-press min-h-[40px] bg-brand-900 hover:bg-brand-800 px-3 py-2 rounded-lg text-sm font-medium">Password</button>
                         <button @click="logout()" class="nb-press min-h-[40px] bg-red-600 hover:bg-red-700 px-3 sm:px-4 py-2 rounded-lg text-sm font-medium">Logout</button>
                     </div>
                 </div>
@@ -970,6 +926,44 @@
                 </div>
             </div>
 
+        </div>
+    </div>
+
+    <!-- ================= CHANGE PASSWORD ================= -->
+    <div id="password-modal" x-show="isPasswordOpen" x-cloak x-transition.opacity
+         class="no-print fixed inset-0 bg-brand-950/70 z-[55] flex items-center justify-center p-4 overflow-y-auto"
+         role="dialog" aria-modal="true" aria-label="Change password" @keydown.escape.window="isPasswordOpen = false">
+        <div class="nb-pop bg-white w-full sm:max-w-sm rounded-2xl shadow-2xl p-5 sm:p-6">
+            <div class="flex items-start justify-between gap-3 mb-4">
+                <h2 class="text-lg font-bold text-slate-800">Change Password</h2>
+                <button @click="isPasswordOpen = false" aria-label="Close"
+                        class="nb-press text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">&times;</button>
+            </div>
+            <form @submit.prevent="changePassword()" class="space-y-4">
+                <div>
+                    <label for="cur-pass" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Current Password</label>
+                    <input id="cur-pass" type="password" x-model="currentPassword" autocomplete="current-password"
+                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
+                </div>
+                <div>
+                    <label for="new-pass" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">New Password <span class="normal-case font-normal text-slate-400">(min 8)</span></label>
+                    <input id="new-pass" :type="showResetPassword ? 'text' : 'password'" x-model="newPassword" autocomplete="new-password" minlength="8"
+                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
+                    <label class="mt-1.5 flex items-center gap-2 text-xs text-slate-500">
+                        <input type="checkbox" x-model="showResetPassword" class="rounded border-slate-300"> Show password
+                    </label>
+                </div>
+                <p class="text-sm text-red-600" x-show="resetError" x-cloak x-text="resetError"></p>
+                <p class="text-sm text-brand-800 font-medium" x-show="resetSuccess" x-cloak x-text="resetSuccess"></p>
+                <div class="flex gap-2.5">
+                    <button type="button" @click="isPasswordOpen = false"
+                            class="nb-press min-h-[48px] flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-sm font-semibold">Cancel</button>
+                    <button type="submit" :disabled="resetting"
+                            class="nb-press min-h-[48px] flex-1 bg-brand-700 hover:bg-brand-800 disabled:opacity-60 text-white rounded-lg text-sm font-semibold shadow">
+                        <span x-text="resetting ? 'Saving…' : 'Update'"></span>
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
 

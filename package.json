@@ -12,9 +12,12 @@
     "watch:css": "tailwindcss -i src/input.css -o public/css/app.css --watch"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "alpinejs": "^3.17.0",
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
     "express": "^4.22.2",
-    "sqlite3": "^5.1.7"
+    "jsonwebtoken": "^9.0.3"
   },
   "keywords": [],
   "author": "",

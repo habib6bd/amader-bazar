@@ -21,6 +21,7 @@ every stylesheet, script and font is served from the app itself.
 - [Database](#database)
 - [API reference](#api-reference)
 - [**Going live — required changes**](#going-live--required-changes)
+- [Deploying online](DEPLOY.md)
 - [Backups](#backups)
 - [Known limitations](#known-limitations)
 - [Troubleshooting](#troubleshooting)
@@ -34,11 +35,17 @@ Requires **Node.js 18 or newer** (developed on Node 22).
 ```bash
 npm install     # dependencies
 npm run build   # compile CSS + copy Alpine and fonts into public/
-npm start       # http://localhost:3000
+
+# First run only: creates the admin account.
+ADMIN_EMAIL=you@example.com ADMIN_PASSWORD='choose-a-strong-one' npm start
+
+npm start       # afterwards — http://localhost:3000
 ```
 
-Default login: `shop@admin.com` / `admin123` — **change this before going live**
-(see [Going live](#going-live--required-changes)).
+There is **no default password**. The first admin is created from `ADMIN_EMAIL` and
+`ADMIN_PASSWORD` on a database with no admin yet; after that, change it from the dashboard.
+Set `JWT_SECRET` too, or logins will not survive a restart —
+see [`.env.example`](.env.example) and [`DEPLOY.md`](DEPLOY.md).
 
 `npm run build` only needs an internet connection once, to install packages. After that
 the app runs entirely offline.
@@ -59,8 +66,8 @@ npm start           # server, in another
 
 | Layer | Choice | Notes |
 |---|---|---|
-| Server | Express 4 | ~165 lines, [`server.js`](server.js) |
-| Database | SQLite (`sqlite3`) | single file, `shop.db` |
+| Server | Express 4 | [`server.js`](server.js); also exported for serverless |
+| Database | SQLite via `@libsql/client` | local `shop.db`, or hosted Turso |
 | Frontend | One static HTML page | [`public/index.html`](public/index.html) |
 | Interactivity | Alpine.js 3 | served from `public/vendor/`, not a CDN |
 | Styling | Tailwind CSS 4 | compiled ahead of time to `public/css/app.css` |
@@ -80,8 +87,11 @@ committed to the repository, so a fresh checkout works without `npm install`.
 ## Project layout
 
 ```
-server.js               Express app, SQLite setup, all API routes
-shop.db                 the database (gitignored — see Backups)
+server.js               Express app, database setup, auth, all API routes
+api/index.js            re-exports the app as the Vercel serverless handler
+vercel.json             routes every request to that handler
+.env.example            the environment variables the app reads
+shop.db                 the local database (gitignored — see Backups)
 
 public/                 everything served to the browser
   index.html            the entire UI: login, dashboard, invoice
@@ -100,7 +110,7 @@ scripts/vendor.js       copies Alpine + fonts into public/
 
 All three live in `public/index.html`, switched by Alpine, not by URL:
 
-1. **Login / reset password** — shown when `isLoggedIn` is false
+1. **Login** — shown until the server confirms a valid session cookie
 2. **Dashboard** — summary cards, sale and purchase forms, three tables
 3. **Invoice modal** — a direct child of `<body>`, on purpose ([why](#printing-and-pdf))
 
@@ -320,7 +330,9 @@ Existing databases are migrated in place on startup by `migrate()` in
 [`server.js`](server.js) — no manual step, no data loss. It is **awaited**, not
 callback-driven, and that is load-bearing: node-sqlite3 defaults to parallelize mode, so
 the barcode index would otherwise be issued before the column it references existed. On
-first run, if `admin` is empty, `shop@admin.com` / `admin123` is inserted.
+first run, if `admin` is empty, an account is created from `ADMIN_EMAIL` and
+`ADMIN_PASSWORD` with the password bcrypt-hashed. If those are unset, no account is
+created and the app says so at boot rather than seeding a guessable default.
 
 **Items are linked by their `item_name` string.** There are no foreign keys, so renaming a
 product cascades the new name through `sales` and `dealer_purchases` in a transaction —
@@ -378,38 +390,42 @@ purchase — which always has history attached.
 
 ## Going live — required changes
 
-**This app is currently safe only on a single machine you control, reachable at
-`localhost`.** Do not expose it to the internet or an office network until at least
-everything in "Security" below is done.
+**Authentication is now in place** — see [`DEPLOY.md`](DEPLOY.md) for putting this online
+with Turso and Vercel. Every `/api` route requires a signed session cookie, passwords are
+bcrypt-hashed, and the first admin comes from environment variables rather than a literal
+in the source.
+
+The items below that remain unticked are still worth doing before a public deployment.
 
 ### 1. Security — must do
 
 None of these are theoretical. Each was confirmed against the running app.
 
-- [ ] **The API has no authentication at all.** `isLoggedIn` is a JavaScript variable in
+- [x] **The API requires authentication.** `isLoggedIn` is a JavaScript variable in
       the browser; the server issues no session and checks nothing. Anyone who can reach
       the server can read every sale and customer name with a single
       `curl http://host:3000/api/data`. **Fix:** issue an `httpOnly`, `secure`,
       `sameSite: 'lax'` session cookie on login (`express-session`), and put auth
       middleware in front of `/api/data`, `/api/sales` and `/api/dealer`.
 
-- [ ] **Anyone who knows the admin email can take over the account.**
+- [x] **The public password-reset endpoint is gone.**
       `POST /api/reset-password` ([`server.js:213`](server.js#L213)) changes the password
       with no verification of any kind — no old password, no email confirmation, no token.
       **Fix:** delete the public reset endpoint and replace it with a change-password form
       behind the login that requires the current password. If self-service reset is
       genuinely needed, it must go through an emailed single-use token.
 
-- [ ] **Passwords are stored and compared in plain text**
+- [x] **Passwords are bcrypt-hashed**
       ([`server.js:190`](server.js#L190), [`server.js:203`](server.js#L203)). Anyone who gets
       the `shop.db` file gets the password. **Fix:** hash with `bcrypt`
       (cost 12). Migrate the existing password on the owner's next successful login.
 
-- [ ] **Remove the default credentials printed on the login page.** The hint
-      `Default: shop@admin.com / admin123` is visible to every visitor — delete the
-      `<span>` at [`public/index.html:63`](public/index.html#L63).
+- [x] **The default credentials are no longer printed on the login page.** The hint
+      The hint that used to read `Default: shop@admin.com / admin123` has been removed
+      from the login card.
 
-- [ ] **Change the default password**, and preferably the admin email too.
+- [x] **The default admin is no longer seeded from a literal** — set ADMIN_EMAIL and
+      ADMIN_PASSWORD, then change the password from the dashboard after first login.
 
 - [ ] **Serve over HTTPS.** Put nginx or Caddy in front as a reverse proxy with a Let's
       Encrypt certificate. Session cookies marked `secure` require it. Then

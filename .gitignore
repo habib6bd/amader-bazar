@@ -3,3 +3,6 @@ shop.db
 shop.db.bak-*
 .DS_Store
 *.log
+# local environment
+.env
+.vercel

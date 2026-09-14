@@ -1,5 +1,8 @@
 import express from 'express';
-import sqlite3 from 'sqlite3';
+import cookieParser from 'cookie-parser';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { createClient } from '@libsql/client';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -12,46 +15,58 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Initialize SQLite Database
-// Resolved against this file, not the current working directory — otherwise
-// starting the server from elsewhere silently creates a second, empty database.
-const db = new sqlite3.Database(path.join(__dirname, 'shop.db'), (err) => {
-  if (err) console.error('Error opening database', err.message);
-  else console.log('Connected to the SQLite database.');
+/* ---------------------------------------------------------------------------
+   Database — libSQL.
+
+   One driver covers both deployments, because @libsql/client speaks the same
+   SQLite dialect over a local file and over the network:
+
+     no DATABASE_URL  ->  file:shop.db next to this file, exactly as before
+     DATABASE_URL set ->  a hosted Turso database (libsql://…)
+
+   The path is resolved against this file, not the working directory —
+   otherwise starting the server from elsewhere silently creates a second,
+   empty database.
+   --------------------------------------------------------------------------- */
+const DATABASE_URL = process.env.DATABASE_URL || `file:${path.join(__dirname, 'shop.db')}`;
+const isRemote = !DATABASE_URL.startsWith('file:');
+
+const db = createClient({
+  url: DATABASE_URL,
+  authToken: process.env.DATABASE_AUTH_TOKEN,
 });
 
-/* ---------------------------------------------------------------------------
-   Promise wrappers.
+console.log(isRemote ? 'Connected to the hosted database.' : 'Connected to the local SQLite file.');
 
-   node-sqlite3 defaults to *parallelize* mode: statements issued independently
-   may be dispatched to the thread pool concurrently, and only those issued
-   inside a db.serialize() window are ordered. Awaiting each statement enforces
-   issue order regardless of mode, which the migration below depends on.
+/* Promise wrappers.
 
-   Used by the migration and the newer routes. The original callback-style
-   routes are left as they are — rewriting them is unrelated risk.
-   --------------------------------------------------------------------------- */
+   These keep the shape the routes were written against — `run` returning
+   { lastID, changes }, `get` a single row, `all` an array — so swapping the
+   driver did not ripple through every call site.
 
-// `function`, not an arrow: sqlite3 binds this.lastID / this.changes to it.
-const run = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
-      if (err) reject(err);
-      else resolve(this);
-    });
-  });
+   One sharp edge worth the conversion: libSQL returns lastInsertRowid as a
+   BigInt, and JSON.stringify throws outright on BigInt. Returning it raw would
+   have made every successful insert respond with a 500. */
+const run = async (sql, args = []) => {
+  const r = await db.execute({ sql, args });
+  return {
+    lastID: r.lastInsertRowid == null ? null : Number(r.lastInsertRowid),
+    changes: r.rowsAffected,
+  };
+};
 
-const get = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
-  });
+const get = async (sql, args = []) => {
+  const r = await db.execute({ sql, args });
+  return r.rows[0];
+};
 
-const all = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
-  });
+const all = async (sql, args = []) => {
+  const r = await db.execute({ sql, args });
+  return r.rows;
+};
 
 /* Local wall-clock time as HH:MM, 24-hour — the format fmtTime() on the client
    already parses, and what every existing row uses.
@@ -137,9 +152,13 @@ async function migrate() {
   console.log('Inventory indexes:', indexes.map((i) => i.name).join(', ') || '(none)');
 }
 
-// Create Tables & Seed Admin
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS inventory (
+/* Create tables, migrate, seed the admin.
+
+   Everything is awaited in order. The old code leaned on db.serialize() to
+   sequence the CREATE TABLEs, which libSQL has no equivalent for — and does not
+   need, since each awaited statement completes before the next is issued. */
+async function setup() {
+  await run(`CREATE TABLE IF NOT EXISTS inventory (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     item_name TEXT NOT NULL,
     quantity INTEGER NOT NULL,
@@ -153,7 +172,7 @@ db.serialize(() => {
   // warranty_months, cost_price and list_price are all snapshotted from the
   // product at the moment of sale — see POST /api/sales — so editing a product
   // later never rewrites an invoice already issued, nor the profit already made.
-  db.run(`CREATE TABLE IF NOT EXISTS sales (
+  await run(`CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     customer_name TEXT NOT NULL,
     customer_contact TEXT,
@@ -168,7 +187,7 @@ db.serialize(() => {
     comment TEXT
   )`);
 
-  db.run(`CREATE TABLE IF NOT EXISTS dealer_purchases (
+  await run(`CREATE TABLE IF NOT EXISTS dealer_purchases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     dealer_name TEXT NOT NULL,
     item_name TEXT NOT NULL,
@@ -177,75 +196,229 @@ db.serialize(() => {
     date TEXT NOT NULL
   )`);
 
-  // Persistent Admin Table
-  db.run(`CREATE TABLE IF NOT EXISTS admin (
+  await run(`CREATE TABLE IF NOT EXISTS admin (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL,
     password TEXT NOT NULL
   )`);
 
-  // Seed default admin if table is empty
-  db.get(`SELECT COUNT(*) as count FROM admin`, (err, row) => {
-    if (row && row.count === 0) {
-      db.run(`INSERT INTO admin (email, password) VALUES (?, ?)`, ["shop@admin.com", "admin123"]);
-    }
-  });
-});
+  await migrate();
+  await seedAdmin();
+}
 
-// The CREATE TABLEs above are queued inside the serialize() window, so they are
-// issued before migrate()'s first statement; from there `await` keeps order. A
-// request arriving mid-migration queues on the same connection and lands after.
-migrate().catch((err) => console.error('Migration failed:', err.message));
+/* The first admin comes from the environment, never from a literal in the
+   source. A public deployment seeded with shop@admin.com / admin123 is owned by
+   the first person who reads this repository.
 
-// API: Login Endpoint (Database-backed)
-app.post('/api/login', (req, res) => {
-  const { email, password } = req.body;
-  db.get(`SELECT * FROM admin WHERE email = ? AND password = ?`, [email, password], (err, row) => {
-    if (row) {
-      res.json({ success: true, message: "Login successful" });
-    } else {
-      res.status(401).json({ success: false, message: "Invalid email or password" });
-    }
-  });
-});
+   Passwords are stored as bcrypt hashes. Any plain-text password left over from
+   the local-only era is upgraded in place on the owner's next successful login
+   — see POST /api/login. */
+async function seedAdmin() {
+  const row = await get(`SELECT COUNT(*) AS count FROM admin`);
+  if (Number(row.count) > 0) return;
 
-// API: Password Reset Endpoint (Database-backed & Persistent)
-app.post('/api/reset-password', (req, res) => {
-  const { email, new_password } = req.body;
-  if (!new_password || new_password.length < 4) {
-    return res.status(400).json({ success: false, message: "Password must be at least 4 characters long" });
+  const email = process.env.ADMIN_EMAIL;
+  const password = process.env.ADMIN_PASSWORD;
+  if (!email || !password) {
+    console.warn(
+      'No admin account exists and ADMIN_EMAIL / ADMIN_PASSWORD are not set — ' +
+        'nobody can log in. Set both and restart.'
+    );
+    return;
   }
 
-  db.get(`SELECT * FROM admin WHERE email = ?`, [email], (err, row) => {
-    if (row) {
-      db.run(`UPDATE admin SET password = ? WHERE email = ?`, [new_password, email], (updateErr) => {
-        if (updateErr) {
-          res.status(500).json({ success: false, message: "Database error" });
-        } else {
-          res.json({ success: true, message: "Password updated successfully" });
-        }
-      });
-    } else {
-      res.status(404).json({ success: false, message: "Email not recognized as shop admin" });
-    }
-  });
+  await run(`INSERT INTO admin (email, password) VALUES (?, ?)`, [
+    email.trim().toLowerCase(),
+    bcrypt.hashSync(password, 12),
+  ]);
+  console.log(`Seeded admin account for ${email}`);
+}
+
+// Kicked off at import time; every route awaits it, so a request that arrives
+// mid-setup waits rather than hitting a table that does not exist yet. That
+// matters on serverless, where a cold start and the first request are
+// simultaneous.
+const ready = setup().catch((err) => {
+  console.error('Database setup failed:', err.message);
+  throw err;
 });
 
-// API: Get Dashboard Stats & Lists
-app.get('/api/data', (req, res) => {
-  db.all("SELECT * FROM inventory ORDER BY item_name COLLATE NOCASE", [], (invErr, inventory) => {
-    if (invErr) return res.status(500).json({ error: invErr.message });
+app.use(async (req, res, next) => {
+  try {
+    await ready;
+    next();
+  } catch (err) {
+    res.status(503).json({ error: 'Database unavailable.' });
+  }
+});
 
-    db.all("SELECT * FROM sales ORDER BY id DESC", [], (salesErr, sales) => {
-      if (salesErr) return res.status(500).json({ error: salesErr.message });
+/* ===========================================================================
+   Authentication
 
-      db.all("SELECT * FROM dealer_purchases ORDER BY id DESC", [], (purchErr, purchases) => {
-        if (purchErr) return res.status(500).json({ error: purchErr.message });
+   Until now `isLoggedIn` was a variable in the browser and the server checked
+   nothing, which was defensible while the app only ever answered on localhost.
+   It is not defensible on a public URL: anyone who found it could read every
+   sale and customer phone number with a single curl.
 
-        res.json({ inventory, sales, purchases });
-      });
-    });
+   The session is a signed JWT in an httpOnly cookie rather than server-side
+   session state, because serverless instances do not share memory — there is
+   nowhere to keep a session table that every invocation can see.
+   =========================================================================== */
+
+const COOKIE = 'nb_session';
+const SESSION_HOURS = 12;
+
+// Without a secret, cookies signed by one instance cannot be verified by
+// another, and a restart would silently log everyone out. Refusing to start is
+// better than appearing to work and failing at random.
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.warn(
+    'JWT_SECRET is not set — logins will not survive a restart. ' +
+      'Set it to a long random string before deploying.'
+  );
+}
+
+function issueSession(res, admin) {
+  const token = jwt.sign({ sub: admin.id, email: admin.email }, JWT_SECRET || 'dev-only-insecure-secret', {
+    expiresIn: `${SESSION_HOURS}h`,
   });
+  res.cookie(COOKIE, token, {
+    httpOnly: true,                                   // unreadable to page scripts
+    secure: process.env.NODE_ENV === 'production',    // HTTPS only once deployed
+    sameSite: 'lax',
+    maxAge: SESSION_HOURS * 60 * 60 * 1000,
+  });
+}
+
+function readSession(req) {
+  const token = req.cookies?.[COOKIE];
+  if (!token) return null;
+  try {
+    return jwt.verify(token, JWT_SECRET || 'dev-only-insecure-secret');
+  } catch {
+    return null;   // expired or tampered with
+  }
+}
+
+function requireAuth(req, res, next) {
+  const session = readSession(req);
+  if (!session) return res.status(401).json({ error: 'Not signed in.' });
+  req.admin = session;
+  next();
+}
+
+// Slows down password guessing without needing a dependency. Per-process, so on
+// serverless it resets with each cold start — a real rate limiter belongs in
+// front of the app, but this removes the cheapest attack.
+const attempts = new Map();
+function tooManyAttempts(key) {
+  const now = Date.now();
+  const rec = attempts.get(key);
+  if (!rec || now - rec.first > 15 * 60 * 1000) {
+    attempts.set(key, { count: 1, first: now });
+    return false;
+  }
+  rec.count += 1;
+  return rec.count > 10;
+}
+
+app.post('/api/login', async (req, res) => {
+  const email = String(req.body?.email ?? '').trim().toLowerCase();
+  const password = String(req.body?.password ?? '');
+
+  if (tooManyAttempts(req.ip)) {
+    return res.status(429).json({ success: false, message: 'Too many attempts. Wait 15 minutes.' });
+  }
+
+  try {
+    const admin = await get(`SELECT * FROM admin WHERE email = ? COLLATE NOCASE`, [email]);
+    // Same response whether the email is unknown or the password is wrong, so
+    // the endpoint cannot be used to discover which accounts exist.
+    const fail = () => res.status(401).json({ success: false, message: 'Invalid email or password' });
+    if (!admin) return fail();
+
+    const stored = String(admin.password ?? '');
+    const hashed = stored.startsWith('$2');   // bcrypt hashes all begin $2a/$2b/$2y
+
+    let ok = false;
+    if (hashed) {
+      ok = bcrypt.compareSync(password, stored);
+    } else {
+      // Left over from when passwords were stored in plain text. Accept it once,
+      // then immediately replace it with a hash so it is never read again.
+      ok = stored === password;
+      if (ok) {
+        await run(`UPDATE admin SET password = ? WHERE id = ?`, [bcrypt.hashSync(password, 12), admin.id]);
+        console.log(`Upgraded plain-text password to a hash for ${admin.email}`);
+      }
+    }
+
+    if (!ok) return fail();
+
+    attempts.delete(req.ip);
+    issueSession(res, admin);
+    res.json({ success: true, message: 'Login successful' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Could not sign in.' });
+  }
+});
+
+app.post('/api/logout', (req, res) => {
+  res.clearCookie(COOKIE);
+  res.json({ success: true });
+});
+
+// Lets the browser find out whether its cookie is still good, so a restored tab
+// shows the login screen instead of an empty dashboard full of failed requests.
+app.get('/api/session', (req, res) => {
+  const session = readSession(req);
+  res.json({ authenticated: Boolean(session), email: session?.email ?? null });
+});
+
+/* Changing the password now requires being signed in AND knowing the current
+   one. The old endpoint took an email and a new password from anyone on the
+   network and changed the account — no old password, no token, no check of any
+   kind. That is the single worst thing that could have been left exposed. */
+app.post('/api/change-password', requireAuth, async (req, res) => {
+  const current = String(req.body?.current_password ?? '');
+  const next = String(req.body?.new_password ?? '');
+
+  if (next.length < 8) {
+    return res.status(400).json({ success: false, message: 'New password must be at least 8 characters.' });
+  }
+
+  try {
+    const admin = await get(`SELECT * FROM admin WHERE id = ?`, [req.admin.sub]);
+    if (!admin) return res.status(404).json({ success: false, message: 'Account not found.' });
+
+    const stored = String(admin.password ?? '');
+    const ok = stored.startsWith('$2') ? bcrypt.compareSync(current, stored) : stored === current;
+    if (!ok) return res.status(401).json({ success: false, message: 'Current password is incorrect.' });
+
+    await run(`UPDATE admin SET password = ? WHERE id = ?`, [bcrypt.hashSync(next, 12), admin.id]);
+    res.json({ success: true, message: 'Password updated.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Could not update the password.' });
+  }
+});
+
+// Everything below this line needs a valid session. Declared once, here, rather
+// than remembered on each new route.
+app.use('/api', requireAuth);
+
+// API: Get Dashboard Stats & Lists
+app.get('/api/data', async (req, res) => {
+  try {
+    const [inventory, sales, purchases] = await Promise.all([
+      all('SELECT * FROM inventory ORDER BY item_name COLLATE NOCASE'),
+      all('SELECT * FROM sales ORDER BY id DESC'),
+      all('SELECT * FROM dealer_purchases ORDER BY id DESC'),
+    ]);
+    res.json({ inventory, sales, purchases });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // API: Record a Sale (Customer)
@@ -545,17 +718,27 @@ app.put('/api/inventory/:id', async (req, res) => {
        customer's copy too), whereas a price or warranty change is a new
        decision that must not rewrite a promise already made.
 
-       BEGIN IMMEDIATE, not plain BEGIN: it takes the write lock up front, so
-       the transaction cannot fail at COMMIT time after partial work. */
-    await run('BEGIN IMMEDIATE');
+       Driven through the client's own transaction API rather than by issuing
+       BEGIN / COMMIT as statements. libSQL manages transactions itself, and a
+       bare `BEGIN IMMEDIATE` is rejected — it would have left this running as
+       three separate unprotected writes, which is exactly the failure this
+       block exists to prevent. 'write' is the equivalent of BEGIN IMMEDIATE:
+       it takes the write lock up front rather than upgrading at COMMIT. */
+    const tx = await db.transaction('write');
     try {
-      await run(updateItem, fields);
-      const s = await run(`UPDATE sales SET item_name = ? WHERE item_name = ?`, [item.item_name, oldName]);
-      const p = await run(`UPDATE dealer_purchases SET item_name = ? WHERE item_name = ?`, [item.item_name, oldName]);
-      await run('COMMIT');
-      res.json({ success: true, renamed: s.changes + p.changes });
+      await tx.execute({ sql: updateItem, args: fields });
+      const s = await tx.execute({
+        sql: `UPDATE sales SET item_name = ? WHERE item_name = ?`,
+        args: [item.item_name, oldName],
+      });
+      const p = await tx.execute({
+        sql: `UPDATE dealer_purchases SET item_name = ? WHERE item_name = ?`,
+        args: [item.item_name, oldName],
+      });
+      await tx.commit();
+      res.json({ success: true, renamed: s.rowsAffected + p.rowsAffected });
     } catch (txErr) {
-      await run('ROLLBACK').catch(() => {});
+      await tx.rollback().catch(() => {});
       throw txErr;
     }
   } catch (err) {
@@ -583,6 +766,14 @@ app.delete('/api/inventory/:id', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
-});
+/* On Vercel the platform imports this module and calls the exported handler per
+   request — there is no long-running process to listen on a port, and calling
+   listen() there would bind nothing and confuse the build. Locally there is no
+   VERCEL variable, so the shop's PC still gets an ordinary server. */
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Server running at http://localhost:${PORT}`);
+  });
+}
+
+export default app;

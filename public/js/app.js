@@ -59,12 +59,14 @@ function integerWords(n) {
   return parts.join(' ');
 }
 
-// Remembers that the user got past the login screen. localStorage rather than
-// sessionStorage so it survives closing the tab, not just a refresh.
-//
-// NOTE: this is a UI convenience, not authentication. The server issues no
-// session and the /api routes check nothing, so this flag only decides which
-// screen to show. It gets replaced by a real session cookie when auth is done.
+/* Remembers that the browser believes it is signed in, so a refresh does not
+   flash the login screen before the server answers. localStorage rather than
+   sessionStorage so it survives closing the tab.
+
+   This is a *hint*, not authentication. The real session is an httpOnly cookie
+   the page cannot read, and every /api route is checked server-side — clearing
+   or forging this flag gets you an empty dashboard and a string of 401s, not
+   access to anything. init() confirms it against /api/session on load. */
 const SESSION_KEY = 'shop-session';
 
 // Storage access throws outright in some contexts (private windows, browsers
@@ -166,7 +168,9 @@ function shopApp() {
     showLoginPassword: false,
     loggingIn: false,
 
-    resetEmail: '',
+    // Change password (signed in only) — replaces the old public reset flow.
+    isPasswordOpen: false,
+    currentPassword: '',
     newPassword: '',
     resetError: '',
     resetSuccess: '',
@@ -220,17 +224,35 @@ function shopApp() {
     toast: { show: false, message: '', type: 'success' },
     toastTimer: null,
 
-    init() {
-      // Survive a refresh, a new tab, and a browser restart instead of
-      // bouncing back to the login screen.
-      if (readSession()) {
-        this.isLoggedIn = true;
-        this.loadData();
-      }
+    async init() {
       // Restore the tab title after the print/save-as-PDF dialog closes.
       window.addEventListener('afterprint', () => {
         document.title = this.baseTitle;
       });
+
+      // Show the dashboard immediately if this browser was signed in, so a
+      // refresh does not flash the login card, then confirm with the server.
+      // The cookie can have expired while the tab was closed, and only the
+      // server knows that.
+      if (readSession()) this.isLoggedIn = true;
+
+      try {
+        const res = await fetch('/api/session');
+        const data = await res.json().catch(() => ({}));
+        if (data.authenticated) {
+          this.isLoggedIn = true;
+          writeSession(true);
+          this.loadData();
+        } else {
+          this.isLoggedIn = false;
+          writeSession(false);
+        }
+      } catch {
+        // Offline or the server is down. Keep whatever the local hint said and
+        // let loadData surface the real error rather than logging the shop out
+        // of a till that is working fine.
+        if (this.isLoggedIn) this.loadData();
+      }
     },
 
     // ------------------------------------------------------------- helpers
@@ -588,34 +610,49 @@ function shopApp() {
       }
     },
 
-    logout() {
+    async logout() {
+      // Clears the httpOnly cookie server-side; the local flag alone would
+      // leave a working session behind.
+      await fetch('/api/logout', { method: 'POST' }).catch(() => {});
       writeSession(false);
       this.isLoggedIn = false;
       this.isReceiptOpen = false;
+      this.isProductOpen = false;
       this.loginEmail = '';
       this.loginPassword = '';
+      this.sales = [];
+      this.inventory = [];
+      this.purchases = [];
     },
 
-    async resetPassword() {
+    /* Changing the password requires being signed in and knowing the current
+       one. The old public reset endpoint took an email and a new password from
+       anyone who could reach the server and changed the account — it is gone. */
+    async changePassword() {
       if (this.resetting) return;
       this.resetting = true;
+      this.resetError = '';
+      this.resetSuccess = '';
       try {
-        const res = await fetch('/api/reset-password', {
+        const res = await fetch('/api/change-password', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: this.resetEmail, new_password: this.newPassword }),
+          body: JSON.stringify({
+            current_password: this.currentPassword,
+            new_password: this.newPassword,
+          }),
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.success) {
-          this.resetSuccess = 'Password updated. You can log in now.';
-          this.resetError = '';
+          this.resetSuccess = 'Password updated.';
+          this.currentPassword = '';
+          this.newPassword = '';
           setTimeout(() => {
-            this.authView = 'login';
-            this.newPassword = '';
-          }, 1800);
+            this.isPasswordOpen = false;
+            this.resetSuccess = '';
+          }, 1500);
         } else {
           this.resetError = data.message || 'Could not update the password.';
-          this.resetSuccess = '';
         }
       } catch (err) {
         this.resetError = 'Connection error. Try again.';
