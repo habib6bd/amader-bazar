@@ -984,6 +984,20 @@ function shopApp() {
     async printReceipt(item) {
       if (item) this.showReceipt(item);
       await this.$nextTick();
+
+      // The masthead logo is an image. If the print dialog opens before it has
+      // decoded — first visit, slow connection to the hosted site — the invoice
+      // prints with a blank box where the logo should be, and the shop only
+      // finds out from the customer's copy. Wait for it, but never hang the
+      // print button on a logo that fails to load.
+      const images = [...document.querySelectorAll('#receipt-paper img')];
+      await Promise.race([
+        // decode() resolves once the image is loaded and ready to paint, and
+        // rejects if it fails — which is swallowed so a broken logo still prints.
+        Promise.all(images.map((img) => img.decode().catch(() => {}))),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ]);
+
       await new Promise((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(resolve))
       );

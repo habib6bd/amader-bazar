@@ -320,6 +320,14 @@
   border-right: 1px solid var(--inv-line);
 }
 
+.inv-logo-img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 5.4rem;
+}
+
 .inv-org {
   padding: 0.7rem 0.85rem;
   text-align: right;
