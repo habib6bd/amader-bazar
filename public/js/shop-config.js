@@ -23,10 +23,11 @@ const SHOP = {
 
   email: 'netbazar775@gmail.com',
 
-  // Printed under the totals block. Blank entries are skipped.
+  // Printed under the totals block, one line each, exactly as written — the
+  // Bangla numerals are part of the text, so the list adds no bullets of its own.
   terms: [
-    'Goods once sold are not returnable.',
-    'Warranty claims are subject to the manufacturer’s terms.',
+    '১. বজ্রপাত, শর্ট সার্কিট, পানি, আগুন কিংবা ভুল ব্যবহারে ক্ষতিগ্রস্ত হলে ওয়ারেন্টি বাতিল বলে গণ্য হবে।',
+    '২. ওয়ারেন্টির জন্য পণ্যের পাওয়ার (power on) থাকতে হবে।',
   ],
 };
 
