@@ -241,38 +241,44 @@ async function linkLegacySales() {
   const tx = await db.transaction('write');
   try {
     const orphans = (await tx.execute('SELECT * FROM sales WHERE invoice_id IS NULL ORDER BY id')).rows;
+    const header = (sale) => [
+      sale.customer_name,
+      sale.customer_contact,
+      sale.date,
+      sale.sale_time,
+      sale.comment,
+    ];
+    const link = (sale, invoiceId) =>
+      tx.execute({ sql: 'UPDATE sales SET invoice_id = ?, line_no = 1 WHERE id = ?', args: [invoiceId, sale.id] });
 
+    // Two passes, in this order on purpose. First, every sale whose own number
+    // is still free keeps it. Only then do the rest get fresh numbers — done the
+    // other way round, a sale needing a fresh number could be handed exactly the
+    // number another stray sale had already printed on a customer's receipt.
+    const needFresh = [];
     for (const sale of orphans) {
-      const header = [
-        sale.customer_name,
-        sale.customer_contact,
-        sale.date,
-        sale.sale_time,
-        sale.comment,
-      ];
       const taken = (await tx.execute({ sql: 'SELECT 1 FROM invoices WHERE id = ?', args: [sale.id] })).rows.length;
-
-      let invoiceId;
-      if (!taken) {
-        await tx.execute({
-          sql: `INSERT INTO invoices (id, customer_name, customer_contact, date, sale_time, comment)
-                VALUES (?, ?, ?, ?, ?, ?)`,
-          args: [sale.id, ...header],
-        });
-        invoiceId = Number(sale.id);
-      } else {
-        const r = await tx.execute({
-          sql: `INSERT INTO invoices (customer_name, customer_contact, date, sale_time, comment)
-                VALUES (?, ?, ?, ?, ?)`,
-          args: header,
-        });
-        invoiceId = Number(r.lastInsertRowid);
+      if (taken) {
+        needFresh.push(sale);
+        continue;
       }
-
       await tx.execute({
-        sql: 'UPDATE sales SET invoice_id = ?, line_no = 1 WHERE id = ?',
-        args: [invoiceId, sale.id],
+        sql: `INSERT INTO invoices (id, customer_name, customer_contact, date, sale_time, comment)
+              VALUES (?, ?, ?, ?, ?, ?)`,
+        args: [sale.id, ...header(sale)],
       });
+      await link(sale, Number(sale.id));
+    }
+
+    for (const sale of needFresh) {
+      const r = await tx.execute({
+        sql: `INSERT INTO invoices (customer_name, customer_contact, date, sale_time, comment)
+              VALUES (?, ?, ?, ?, ?)`,
+        args: header(sale),
+      });
+      const fresh = Number(r.lastInsertRowid);
+      await link(sale, fresh);
+      console.warn(`Sale ${sale.id} was numbered ${sale.id} when issued, but that invoice number was already taken; it is now invoice ${fresh}.`);
     }
 
     await tx.commit();
@@ -309,8 +315,15 @@ async function schemaIsCurrent() {
 
 async function setup() {
   if (await schemaIsCurrent()) {
-    // The admin check stays outside the fast path: ADMIN_EMAIL may be set on a
-    // later deploy of a database that was already migrated without one.
+    // An older deployment can still be serving traffic against a database this
+    // build has already migrated — a production domain not yet switched over,
+    // while a preview of the new build ran the migration. That old code writes
+    // sales with no invoice. Link them on every boot, not only the first, or
+    // once the version says "done" they would never be wrapped. When there is
+    // nothing to link this is a single read.
+    await linkLegacySales();
+    // The admin check stays outside the fast path too: ADMIN_EMAIL may be set on
+    // a later deploy of a database that was already migrated without one.
     await seedAdmin();
     return;
   }
