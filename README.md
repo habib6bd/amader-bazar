@@ -284,14 +284,28 @@ SQLite, created automatically on first run at `shop.db` next to `server.js`.
 
 ```sql
 inventory(id, item_name, quantity, cost_price, selling_price, barcode, warranty_months)
-sales(id, customer_name, customer_contact, item_name, quantity, total_price,
-      date, sale_time, warranty_months, cost_price, list_price, comment)
+invoices(id, customer_name, customer_contact, date, sale_time, comment)
+sales(id, invoice_id, line_no, customer_name, customer_contact, item_name, quantity,
+      total_price, date, sale_time, warranty_months, cost_price, list_price, comment)
 dealer_purchases(id, dealer_name, item_name, quantity, total_cost, date)
 admin(id, email, password)
+app_meta(key, value)   -- holds schema_version
 
 CREATE UNIQUE INDEX idx_inventory_barcode ON inventory(barcode)
   WHERE barcode IS NOT NULL AND barcode != '';
+CREATE INDEX idx_sales_invoice ON sales(invoice_id);
 ```
+
+**An invoice is one money receipt; its items are rows in `sales`**, joined by
+`sales.invoice_id` and numbered by `line_no`. The Invoice No. printed on a receipt is
+`invoices.id`. Customer, date and time are repeated on each line so `sales` reads sensibly
+on its own, but the invoice row is the source of truth, and `comment` lives on the invoice
+only.
+
+Sales recorded before invoices existed were each wrapped in an invoice of their own on the
+first start after upgrading, **keeping their original number** — so a receipt already
+handed to a customer still matches. New invoices continue numbering after the highest old
+one.
 
 `date` columns hold `YYYY-MM-DD` text and `sale_time` holds `HH:MM` (24-hour); both are
 local wall-clock values, never UTC. Money is `REAL`, and only the line **total** is stored:
@@ -327,7 +341,17 @@ up sharing a code. Don't remove it.
 ### Migrations
 
 Existing databases are migrated in place on startup by `migrate()` in
-[`server.js`](server.js) — no manual step, no data loss. It is **awaited**, not
+[`server.js`](server.js) — no manual step, no data loss. This includes the hosted Turso
+database: deploying new code is all it takes.
+
+A database already at the current `schema_version` (in `app_meta`) skips the migration
+with a single read, so a normal cold start does not run twenty statements against the
+hosted database. **Bump `SCHEMA_VERSION` in `server.js` whenever you add a migration
+step**, or databases already stamped with the old version will never run it.
+
+On serverless, several cold instances may migrate at once. Every step is idempotent, a
+locked database is retried with jittered backoff rather than failing, and a setup error is
+retried on the next request instead of crashing the process. It is **awaited**, not
 callback-driven, and that is load-bearing: node-sqlite3 defaults to parallelize mode, so
 the barcode index would otherwise be issued before the column it references existed. On
 first run, if `admin` is empty, an account is created from `ADMIN_EMAIL` and
@@ -356,18 +380,25 @@ All endpoints are JSON. **None of them require authentication** — see
 |---|---|---|---|
 | `POST` | `/api/login` | `{email, password}` | `{success, message}`; `401` if wrong |
 | `POST` | `/api/reset-password` | `{email, new_password}` | `{success, message}` |
-| `GET` | `/api/data` | — | `{inventory, sales, purchases}` |
-| `POST` | `/api/sales` | `{customer_name, customer_contact?, item_name, quantity, total_price, date, comment?}` | `{id}` |
+| `GET` | `/api/data` | — | `{inventory, invoices, sales, purchases}` — `sales` are invoice lines |
+| `POST` | `/api/sales` | `{customer_name, customer_contact?, date, comment?, items: [{item_name, quantity, total_price}]}` | `{id}` (invoice) |
 | `POST` | `/api/dealer` | `{dealer_name, item_name, quantity, cost_price, selling_price, date, barcode?, warranty_months?}` | `{id}` |
 | `POST` | `/api/inventory` | `{item_name, quantity, cost_price, selling_price, barcode?, warranty_months?}` | `{id}`; `400` invalid, `409` duplicate |
 | `PUT` | `/api/inventory/:id` | same as POST | `{success, renamed}`; `404`/`400`/`409` |
 | `DELETE` | `/api/inventory/:id` | — | `{success}`; `404` if gone |
 
-**`POST /api/sales`** stamps `sale_time` itself from the server clock — a client-sent value
-is ignored outright, since the browser's copy is stale the moment the form sits open. It
-also snapshots the product's cost, list price and warranty, then decrements
-`inventory.quantity` for the matching `item_name`. A backdated `date` still gets today's
-clock time.
+**`POST /api/sales`** records one invoice. The body carries the customer, `date` and
+optional `comment`, plus `items: [{item_name, quantity, total_price}, …]` — up to 100
+lines, where `total_price` is the line amount. Everything is written in one transaction:
+the invoice, every line, and every stock decrement succeed together or not at all, so a
+failure on one line cannot leave the others sold with no receipt. Lines are validated
+before anything is written, and errors name the line. A body with a single top-level
+`item_name` (a page cached from before invoices) is accepted as a one-line invoice.
+
+It stamps `sale_time` itself from the server clock — a client-sent value is ignored
+outright, since the browser's copy is stale the moment the form sits open. Each line
+snapshots its product's cost, list price and warranty. A backdated `date` still gets
+today's clock time. Returns the invoice id.
 
 **`POST /api/dealer`** adds stock and writes the prices onto the product, creating it if it
 does not exist. `total_cost` on the purchase row is derived as `quantity × cost_price`. A
@@ -501,15 +532,14 @@ Test a restore at least once — an untested backup is not a backup.
 
 Deliberate scope choices, not defects. Worth knowing before you build on this.
 
-- **One item per invoice.** The `sales` table stores one row per item and there is no
-  invoice header table, so an invoice can only ever show a single line. The item table is
-  already numbered and laid out for more; adding them needs a schema change (an `invoices`
-  table with `invoice_items` referencing it).
 - **No discount, VAT or paid/due lines on the invoice.** The totals block is Sub Total and
   Total only. A sale made below the set price is recorded and shown as a discount in the
   dashboard, but the invoice prints only what was actually charged.
-- **Sales cannot be edited or deleted.** *Products* now can, but a mistyped sale still has
+- **Invoices cannot be edited or deleted.** *Products* can, but a mistyped invoice still has
   to be corrected directly in the database — there is no `PUT`/`DELETE` for `/api/sales`.
+- **A long invoice continues onto a second page** with the column header repeated, but the
+  second page does not repeat the invoice number or customer. About fourteen lines fit on
+  one A4 sheet.
 - **Profit is per sale, not per unit of stock sold.** It compares the sale total against
   the cost snapshotted at the time, which is the product's current buying price — not the
   cost of the specific units that left the shelf. With one price per product rather than
