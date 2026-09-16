@@ -141,7 +141,15 @@ function todayLocal() {
 async function addColumnIfMissing(table, column, definition) {
   const columns = await all(`PRAGMA table_info(${table})`);
   if (columns.some((c) => c.name === column)) return false;
-  await run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  try {
+    await run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  } catch (err) {
+    // On serverless, two cold instances can both read the old shape and both
+    // try the ALTER; the loser gets "duplicate column name". The column exists
+    // either way, so that is success, not a reason to refuse every request.
+    if (/duplicate column name/i.test(err.message)) return false;
+    throw err;
+  }
   console.log(`Migrated: added ${table}.${column}`);
   return true;
 }
@@ -199,6 +207,82 @@ async function migrate() {
   // up sharing a barcode.
   const indexes = await all(`PRAGMA index_list(inventory)`);
   console.log('Inventory indexes:', indexes.map((i) => i.name).join(', ') || '(none)');
+
+  /* Multi-item invoices. A sale row is now one *line* of an invoice; the
+     invoice carries the customer, date, time and comment once. Existing
+     databases get the link columns here, then every older single-item sale
+     is wrapped in an invoice of its own by linkLegacySales(). */
+  await addColumnIfMissing('sales', 'invoice_id', 'INTEGER');
+  await addColumnIfMissing('sales', 'line_no', 'INTEGER');
+  await run(`CREATE INDEX IF NOT EXISTS idx_sales_invoice ON sales(invoice_id)`);
+  await linkLegacySales();
+}
+
+/* Wraps each sale recorded before invoices existed in an invoice of its own.
+
+   The invoice takes the sale's own id wherever it is free, so every receipt
+   already handed to a customer keeps the Invoice No. printed on it. Inserting
+   explicit ids into an AUTOINCREMENT table also moves its counter past them,
+   so new invoices continue numbering after the old ones instead of colliding.
+
+   If that id is already taken — possible only if an old deployment wrote a
+   sale after a newer one had started issuing invoices — the sale gets a fresh
+   invoice number rather than being attached to a stranger's invoice.
+
+   One write transaction for the lot. On serverless several cold instances can
+   run this at once; the lock makes the second wait, and re-reading the unlinked
+   rows inside the transaction means it then finds nothing left to do. */
+async function linkLegacySales() {
+  // A plain read first, so the write lock is only taken when there is actually
+  // something to link — which, after the first successful run, is never.
+  const pending = await get('SELECT COUNT(*) AS n FROM sales WHERE invoice_id IS NULL');
+  if (Number(pending.n) === 0) return;
+
+  const tx = await db.transaction('write');
+  try {
+    const orphans = (await tx.execute('SELECT * FROM sales WHERE invoice_id IS NULL ORDER BY id')).rows;
+
+    for (const sale of orphans) {
+      const header = [
+        sale.customer_name,
+        sale.customer_contact,
+        sale.date,
+        sale.sale_time,
+        sale.comment,
+      ];
+      const taken = (await tx.execute({ sql: 'SELECT 1 FROM invoices WHERE id = ?', args: [sale.id] })).rows.length;
+
+      let invoiceId;
+      if (!taken) {
+        await tx.execute({
+          sql: `INSERT INTO invoices (id, customer_name, customer_contact, date, sale_time, comment)
+                VALUES (?, ?, ?, ?, ?, ?)`,
+          args: [sale.id, ...header],
+        });
+        invoiceId = Number(sale.id);
+      } else {
+        const r = await tx.execute({
+          sql: `INSERT INTO invoices (customer_name, customer_contact, date, sale_time, comment)
+                VALUES (?, ?, ?, ?, ?)`,
+          args: header,
+        });
+        invoiceId = Number(r.lastInsertRowid);
+      }
+
+      await tx.execute({
+        sql: 'UPDATE sales SET invoice_id = ?, line_no = 1 WHERE id = ?',
+        args: [invoiceId, sale.id],
+      });
+    }
+
+    await tx.commit();
+    if (orphans.length) {
+      console.log(`Migrated: wrapped ${orphans.length} single-item sale(s) in invoices`);
+    }
+  } catch (err) {
+    await tx.rollback().catch(() => {});
+    throw err;
+  }
 }
 
 /* Create tables, migrate, seed the admin.
@@ -206,7 +290,31 @@ async function migrate() {
    Everything is awaited in order. The old code leaned on db.serialize() to
    sequence the CREATE TABLEs, which libSQL has no equivalent for — and does not
    need, since each awaited statement completes before the next is issued. */
+/* Bump whenever setup() or migrate() gains a step. A database already at this
+   version skips the whole migration on boot. */
+const SCHEMA_VERSION = '2026-09-17-invoices';
+
+// One read instead of ~20 statements, several of which take a write lock even
+// when they end up changing nothing. On Vercel every cold start runs this, each
+// statement a network round trip to the database — and write locks taken for
+// no reason are what made simultaneous cold starts trip over each other.
+async function schemaIsCurrent() {
+  try {
+    const row = await get(`SELECT value FROM app_meta WHERE key = 'schema_version'`);
+    return row?.value === SCHEMA_VERSION;
+  } catch {
+    return false; // no app_meta table yet: a database from before versioning
+  }
+}
+
 async function setup() {
+  if (await schemaIsCurrent()) {
+    // The admin check stays outside the fast path: ADMIN_EMAIL may be set on a
+    // later deploy of a database that was already migrated without one.
+    await seedAdmin();
+    return;
+  }
+
   await run(`CREATE TABLE IF NOT EXISTS inventory (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     item_name TEXT NOT NULL,
@@ -233,6 +341,20 @@ async function setup() {
     warranty_months INTEGER,
     cost_price REAL,
     list_price REAL,
+    comment TEXT,
+    invoice_id INTEGER,
+    line_no INTEGER
+  )`);
+
+  // One row per money receipt. Its lines live in `sales`, joined by
+  // sales.invoice_id; the customer, date, time and comment are stored here once
+  // rather than repeated on every line.
+  await run(`CREATE TABLE IF NOT EXISTS invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_name TEXT NOT NULL,
+    customer_contact TEXT,
+    date TEXT NOT NULL,
+    sale_time TEXT,
     comment TEXT
   )`);
 
@@ -253,6 +375,15 @@ async function setup() {
 
   await migrate();
   await seedAdmin();
+
+  // Stamped last, so an interrupted setup is simply run again next time.
+  await run(`CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)`);
+  await run(
+    `INSERT INTO app_meta (key, value) VALUES ('schema_version', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    [SCHEMA_VERSION]
+  );
+  console.log(`Schema is at version ${SCHEMA_VERSION}`);
 }
 
 /* The first admin comes from the environment, never from a literal in the
@@ -276,10 +407,13 @@ async function seedAdmin() {
     return;
   }
 
-  await run(`INSERT INTO admin (email, password) VALUES (?, ?)`, [
-    email.trim().toLowerCase(),
-    bcrypt.hashSync(password, 12),
-  ]);
+  // Conditional insert: two instances seeding an empty database at once would
+  // otherwise both pass the count check above and create the admin twice.
+  await run(
+    `INSERT INTO admin (email, password)
+     SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM admin)`,
+    [email.trim().toLowerCase(), bcrypt.hashSync(password, 12)]
+  );
   console.log(`Seeded admin account for ${email}`);
 }
 
@@ -287,14 +421,48 @@ async function seedAdmin() {
 // mid-setup waits rather than hitting a table that does not exist yet. That
 // matters on serverless, where a cold start and the first request are
 // simultaneous.
-const ready = setup().catch((err) => {
-  console.error('Database setup failed:', err.message);
-  throw err;
-});
+/* Setup is safe to run more than once — every step is idempotent — so when
+   another instance holds the database lock (two cold starts migrating at once,
+   which is ordinary on serverless) it waits briefly and tries again rather than
+   giving up. */
+async function setupWithRetry(attempts = 10) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await setup();
+    } catch (err) {
+      const busy = /SQLITE_BUSY|database is locked/i.test(`${err.code} ${err.message}`);
+      if (!busy || attempt >= attempts) throw err;
+      // Jittered: instances that collided once and back off by the same fixed
+      // amount collide again on every retry, in lockstep.
+      const wait = 120 * attempt + Math.random() * 250;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+  }
+}
+
+/* A failed setup must never take the process down. It used to be a single
+   promise created at import: if it rejected before any request arrived, Node
+   treated that as an unhandled rejection and exited — a crash on boot for what
+   is usually a momentary lock. Now a failure is logged, forgotten, and retried
+   by the next request, which gets a 503 in the meantime. */
+let readyPromise = null;
+function ensureReady() {
+  if (!readyPromise) {
+    readyPromise = setupWithRetry().catch((err) => {
+      console.error('Database setup failed:', err.message);
+      readyPromise = null;
+      throw err;
+    });
+  }
+  return readyPromise;
+}
+
+// Start at boot so the first visitor does not pay for the migration.
+ensureReady().catch(() => {});
 
 app.use(async (req, res, next) => {
   try {
-    await ready;
+    await ensureReady();
     next();
   } catch (err) {
     res.status(503).json({ error: 'Database unavailable.' });
@@ -462,18 +630,21 @@ app.use('/api', requireAuth);
 // API: Get Dashboard Stats & Lists
 app.get('/api/data', async (req, res) => {
   try {
-    const [inventory, sales, purchases] = await Promise.all([
+    const [inventory, invoices, sales, purchases] = await Promise.all([
       all('SELECT * FROM inventory ORDER BY item_name COLLATE NOCASE'),
-      all('SELECT * FROM sales ORDER BY id DESC'),
+      all('SELECT * FROM invoices ORDER BY id DESC'),
+      // `sales` are invoice lines; ordered so each invoice's lines arrive in
+      // the serial order they were entered.
+      all('SELECT * FROM sales ORDER BY invoice_id DESC, line_no, id'),
       all('SELECT * FROM dealer_purchases ORDER BY id DESC'),
     ]);
-    res.json({ inventory, sales, purchases });
+    res.json({ inventory, invoices, sales, purchases });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// API: Record a Sale (Customer)
+// API: Record a Sale — one invoice, any number of items
 //
 // The time of sale is stamped here, not sent by the browser. The form used to
 // carry a time field pre-filled when the page loaded, which went stale the
@@ -482,55 +653,108 @@ app.get('/api/data', async (req, res) => {
 // is the untrustworthy source here, and a PC with a wrong clock should not be
 // able to stamp an invoice.
 app.post('/api/sales', async (req, res) => {
-  const { customer_name, customer_contact, item_name, quantity, total_price, date, comment } = req.body;
+  const body = req.body || {};
 
+  const customer_name = String(body.customer_name ?? '').trim();
+  const customer_contact = String(body.customer_contact ?? '').trim() || null;
+  // date is NOT NULL; fall back to the shop's own calendar date, not the server's.
+  const date = body.date || todayLocal();
+  const comment = String(body.comment ?? '').trim() || null;
+
+  // A page cached from before multi-item invoices posts a single item at the top
+  // level. Treat it as a one-line invoice rather than rejecting a sale from a
+  // shop that has not reloaded.
+  const rawItems = Array.isArray(body.items)
+    ? body.items
+    : [{ item_name: body.item_name, quantity: body.quantity, total_price: body.total_price }];
+
+  if (!customer_name) return res.status(400).json({ error: 'Customer name is required.' });
+  if (rawItems.length === 0) return res.status(400).json({ error: 'Add at least one item to the invoice.' });
+  if (rawItems.length > 100) return res.status(400).json({ error: 'An invoice can have at most 100 items.' });
+
+  const items = [];
+  for (const [i, raw] of rawItems.entries()) {
+    const item_name = String(raw?.item_name ?? '').trim();
+    const quantity = Number(raw?.quantity);
+    const total_price = Number(raw?.total_price);
+    const n = i + 1;
+    if (!item_name) return res.status(400).json({ error: `Item ${n}: name is required.` });
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      return res.status(400).json({ error: `Item ${n} (${item_name}): quantity must be a whole number, one or more.` });
+    }
+    if (!Number.isFinite(total_price) || total_price < 0) {
+      return res.status(400).json({ error: `Item ${n} (${item_name}): amount must be a number, zero or more.` });
+    }
+    items.push({ item_name, quantity, total_price });
+  }
+
+  /* All or nothing. An invoice whose third line failed must not leave the first
+     two recorded and their stock deducted — the shop would be short on stock
+     with no receipt to show for it. 'write' takes the lock up front. */
+  const tx = await db.transaction('write');
   try {
-    /* Snapshot what the product was worth at this moment.
+    const time = nowLocalTime();
+    const invoice = await tx.execute({
+      sql: `INSERT INTO invoices (customer_name, customer_contact, date, sale_time, comment)
+            VALUES (?, ?, ?, ?, ?)`,
+      args: [customer_name, customer_contact, date, time, comment],
+    });
+    const invoiceId = Number(invoice.lastInsertRowid);
 
-       Exact match, not COLLATE NOCASE, because the stock decrement below
-       matches exactly too — two different notions of "the same product" in one
-       request would let a sale inherit a cost while never reducing stock.
+    for (const [i, item] of items.entries()) {
+      /* Snapshot what the product was worth at this moment.
 
-       An item that is not in inventory leaves all three NULL, which is a real
-       path: the item field is free text. NULL renders as no warranty line and
-       excludes the sale from profit, which is right — the shop cannot cost, or
-       honour a warranty on, something it has no record of. */
-    const product = await get(
-      `SELECT cost_price, selling_price, warranty_months FROM inventory WHERE item_name = ?`,
-      [item_name]
-    );
+         Exact match, not COLLATE NOCASE, because the stock decrement below
+         matches exactly too — two different notions of "the same product" in
+         one request would let a line inherit a cost while never reducing stock.
 
-    const result = await run(
-      `INSERT INTO sales (customer_name, customer_contact, item_name, quantity, total_price,
-                          date, sale_time, warranty_months, cost_price, list_price, comment)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        customer_name,
-        customer_contact || null,
-        item_name,
-        quantity,
-        total_price,
-        // date is NOT NULL, and a client that omits it would otherwise fail the
-        // insert; fall back to the shop's own calendar date, not the server's.
-        date || todayLocal(),
-        nowLocalTime(),
-        product ? product.warranty_months : null,
-        product ? product.cost_price : null,
-        product ? product.selling_price : null,
-        String(comment ?? '').trim() || null,
-      ]
-    );
-    const saleId = result.lastID;
+         An item that is not in inventory leaves all three NULL, which is a real
+         path: the item field is free text. NULL renders as no warranty line and
+         excludes the line from profit, which is right — the shop cannot cost, or
+         honour a warranty on, something it has no record of. */
+      const product = (
+        await tx.execute({
+          sql: `SELECT cost_price, selling_price, warranty_months FROM inventory WHERE item_name = ?`,
+          args: [item.item_name],
+        })
+      ).rows[0];
 
-    // Matches on the exact item_name; a name that is not in stock silently
-    // decrements nothing, which is long-standing behaviour (see README).
-    await run(`UPDATE inventory SET quantity = quantity - ? WHERE item_name = ?`, [
-      quantity,
-      item_name,
-    ]);
+      // Customer, date and time are repeated on each line so the sales table
+      // still reads sensibly on its own; the invoice row is the source of truth.
+      // The comment belongs to the invoice only.
+      await tx.execute({
+        sql: `INSERT INTO sales (invoice_id, line_no, customer_name, customer_contact, item_name,
+                                 quantity, total_price, date, sale_time,
+                                 warranty_months, cost_price, list_price)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          invoiceId,
+          i + 1,
+          customer_name,
+          customer_contact,
+          item.item_name,
+          item.quantity,
+          item.total_price,
+          date,
+          time,
+          product ? product.warranty_months : null,
+          product ? product.cost_price : null,
+          product ? product.selling_price : null,
+        ],
+      });
 
-    res.json({ id: saleId });
+      // Matches on the exact item_name; a name that is not in stock silently
+      // decrements nothing, which is long-standing behaviour (see README).
+      await tx.execute({
+        sql: `UPDATE inventory SET quantity = quantity - ? WHERE item_name = ?`,
+        args: [item.quantity, item.item_name],
+      });
+    }
+
+    await tx.commit();
+    res.json({ id: invoiceId });
   } catch (err) {
+    await tx.rollback().catch(() => {});
     res.status(400).json({ error: err.message });
   }
 });
