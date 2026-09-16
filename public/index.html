@@ -116,12 +116,12 @@
                     <div class="nb-lift bg-white rounded-2xl border border-slate-200 p-4 shadow-sm hover:shadow-md hover:border-brand-300">
                         <p class="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500">Today's Sales</p>
                         <p class="mt-1.5 text-lg sm:text-2xl font-bold text-slate-900 tabular-nums" x-text="fmt(todaysRevenue)"></p>
-                        <p class="text-xs text-slate-500 mt-0.5"><span x-text="todaysSales.length"></span> transaction(s)</p>
+                        <p class="text-xs text-slate-500 mt-0.5"><span x-text="todaysSales.length"></span> invoice(s)</p>
                     </div>
                     <div class="nb-lift bg-white rounded-2xl border border-slate-200 p-4 shadow-sm hover:shadow-md hover:border-brand-300">
                         <p class="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500">Total Revenue</p>
                         <p class="mt-1.5 text-lg sm:text-2xl font-bold text-brand-800 tabular-nums" x-text="fmt(totalRevenue)"></p>
-                        <p class="text-xs text-slate-500 mt-0.5"><span x-text="sales.length"></span> sale(s) recorded</p>
+                        <p class="text-xs text-slate-500 mt-0.5"><span x-text="invoices.length"></span> invoice(s) recorded</p>
                     </div>
                     <div class="nb-lift bg-white rounded-2xl border border-slate-200 p-4 shadow-sm hover:shadow-md hover:border-brand-300">
                         <p class="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500">Profit Earned</p>
@@ -154,74 +154,136 @@
                         <!-- Customer sale -->
                         <div class="nb-pop bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200" x-show="activeForm === 'sale'">
                             <h2 class="text-base sm:text-lg font-bold mb-4 text-brand-800 flex items-center gap-2">📝 Record Customer Sale</h2>
+                            <!-- One invoice, any number of items. Enter is intercepted on every field
+                                 that is not the Save button: a scanner's trailing Enter, or a
+                                 shopkeeper pressing Enter to add an item, must never issue a
+                                 half-built invoice. -->
                             <form @submit.prevent="submitSale" class="space-y-4">
-
-                                <!-- Scanning is the first thing that happens at the till, so it is the
-                                     first field. A USB scanner types the code then presses Enter; Enter
-                                     inside a form submits it, so .prevent here is load-bearing, not
-                                     decorative. Firing on Enter is also why no debounce is needed. -->
-                                <div>
-                                    <label for="sale-scan" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">📷 Scan Barcode</label>
-                                    <input id="sale-scan" type="text" x-model="scanCode" x-ref="scanInput"
-                                           autocomplete="off" enterkeyhint="done" placeholder="Scan or type a barcode…"
-                                           @keydown.enter.prevent.stop="scanBarcode()"
-                                           class="w-full p-3 sm:p-2.5 border border-brand-300 bg-brand-50 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
-
-                                    <!-- A miss becomes the product-creation path rather than a dead end. -->
-                                    <div class="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2"
-                                         x-show="unknownBarcode" x-cloak>
-                                        <span class="text-xs text-red-700">Unknown barcode <span class="font-semibold tabular-nums" x-text="unknownBarcode"></span></span>
-                                        <button type="button" @click="openAddProduct({ barcode: unknownBarcode }); unknownBarcode = ''; scanCode = ''"
-                                                class="nb-press ml-auto bg-white border border-red-300 text-red-700 px-2.5 py-1 rounded-lg text-xs font-semibold hover:bg-red-100">
-                                            Add this product
-                                        </button>
-                                    </div>
-                                </div>
 
                                 <div>
                                     <label for="sale-customer" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Customer Name</label>
                                     <input id="sale-customer" type="text" x-model="sale.customer_name" placeholder="e.g. S.A Net City"
+                                           @keydown.enter.prevent
                                            class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
                                 </div>
                                 <div>
                                     <label for="sale-contact" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Contact No. <span class="normal-case font-normal text-slate-400">(optional)</span></label>
                                     <input id="sale-contact" type="tel" inputmode="tel" x-model="sale.customer_contact" placeholder="e.g. 01961350466"
+                                           @keydown.enter.prevent
                                            class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
                                 </div>
-                                <div>
-                                    <label for="sale-item" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Item Name</label>
-                                    <input id="sale-item" type="text" x-model="sale.item_name" placeholder="e.g. Wi-Fi Router" list="inventory-items"
-                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
-                                    <datalist id="inventory-items">
-                                        <template x-for="item in inventory" :key="'dl-' + item.id">
-                                            <option :value="item.item_name"></option>
-                                        </template>
-                                    </datalist>
-                                </div>
-                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                    <div>
-                                        <label for="sale-qty" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Quantity</label>
-                                        <input id="sale-qty" type="number" min="1" step="1" x-model="sale.quantity" x-ref="saleQty" placeholder="1"
-                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
+
+                                <!-- ============ Items ============ -->
+                                <div class="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-3">
+                                    <div class="flex items-center justify-between">
+                                        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-600">Items</h3>
+                                        <span class="rounded-full bg-brand-100 text-brand-800 px-2 py-0.5 text-xs font-bold tabular-nums"
+                                              x-show="cart.length" x-cloak x-text="cart.length + (cart.length === 1 ? ' item' : ' items')"></span>
                                     </div>
+
+                                    <!-- Scanning adds straight to the invoice and keeps focus here, ready
+                                         for the next item. A USB scanner types the code then presses Enter,
+                                         which is why this fires on Enter and needs no debounce. -->
                                     <div>
-                                        <label for="sale-rate" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Price <span class="normal-case font-normal text-slate-400">(per piece)</span></label>
-                                        <input id="sale-rate" type="number" min="0" step="0.01" x-model="sale.unit_price" placeholder="0.00"
-                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
+                                        <label for="sale-scan" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">📷 Scan Barcode</label>
+                                        <input id="sale-scan" type="text" x-model="scanCode" x-ref="scanInput"
+                                               autocomplete="off" enterkeyhint="done" placeholder="Scan to add an item…"
+                                               @keydown.enter.prevent.stop="scanBarcode()"
+                                               class="w-full p-3 sm:p-2.5 border border-brand-300 bg-brand-50 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
+
+                                        <!-- A miss becomes the product-creation path rather than a dead end. -->
+                                        <div class="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2"
+                                             x-show="unknownBarcode" x-cloak>
+                                            <span class="text-xs text-red-700">Unknown barcode <span class="font-semibold tabular-nums" x-text="unknownBarcode"></span></span>
+                                            <button type="button" @click="openAddProduct({ barcode: unknownBarcode }); unknownBarcode = ''; scanCode = ''"
+                                                    class="nb-press ml-auto bg-white border border-red-300 text-red-700 px-2.5 py-1 rounded-lg text-xs font-semibold hover:bg-red-100">
+                                                Add this product
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <!-- Or type / pick an item. Picking a known product fills its set price. -->
+                                    <div class="rounded-lg border border-dashed border-slate-300 bg-white p-2.5 space-y-2">
+                                        <div>
+                                            <label for="sale-item" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Item Name</label>
+                                            <input id="sale-item" type="text" x-model="line.item_name" x-ref="lineItem"
+                                                   placeholder="e.g. Wi-Fi Router" list="inventory-items" autocomplete="off"
+                                                   @change="fillLinePrice()" @keydown.enter.prevent="fillLinePrice(); addLine()"
+                                                   class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
+                                            <!-- Shared with the dealer form, which points at it by id. It lives
+                                                 inside this x-show panel, so the panel must never become x-if. -->
+                                            <datalist id="inventory-items">
+                                                <template x-for="item in inventory" :key="'dl-' + item.id">
+                                                    <option :value="item.item_name"></option>
+                                                </template>
+                                            </datalist>
+                                        </div>
+                                        <div class="grid grid-cols-[1fr_1.4fr_auto] gap-2 items-end">
+                                            <div>
+                                                <label for="sale-qty" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Qty</label>
+                                                <input id="sale-qty" type="number" min="1" step="1" x-model="line.quantity"
+                                                       @keydown.enter.prevent="addLine()" class="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm tabular-nums transition">
+                                            </div>
+                                            <div>
+                                                <label for="sale-rate" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Price <span class="normal-case font-normal text-slate-400">(per piece)</span></label>
+                                                <input id="sale-rate" type="number" min="0" step="0.01" x-model="line.unit_price" placeholder="0.00"
+                                                       @keydown.enter.prevent="addLine()" class="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm tabular-nums transition">
+                                            </div>
+                                            <button type="button" @click="addLine()"
+                                                    class="nb-press h-[42px] sm:h-[38px] px-3 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-sm font-semibold">
+                                                + Add
+                                            </button>
+                                        </div>
+                                        <p class="text-xs text-slate-500 tabular-nums" x-show="line.item_name && lineAmount > 0" x-cloak>
+                                            Line amount: <span class="font-semibold text-slate-700" x-text="fmt(lineAmount)"></span>
+                                        </p>
+                                    </div>
+
+                                    <!-- The invoice so far, numbered as it will print. -->
+                                    <p class="text-sm text-slate-500 text-center py-3" x-show="cart.length === 0">
+                                        No items yet — scan a barcode or add an item above.
+                                    </p>
+                                    <ol class="space-y-2" x-show="cart.length" x-cloak>
+                                        <template x-for="(l, i) in cart" :key="l.key">
+                                            <li class="nb-pop rounded-lg border bg-white p-2.5"
+                                                :class="overStock(l) ? 'border-amber-300' : 'border-slate-200'">
+                                                <div class="flex items-start gap-2">
+                                                    <span class="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-800 text-white text-xs font-bold tabular-nums"
+                                                          x-text="i + 1"></span>
+                                                    <p class="min-w-0 flex-1 pt-0.5 text-sm font-semibold text-slate-800 break-words" x-text="l.item_name"></p>
+                                                    <button type="button" @click="removeLine(l.key)" :aria-label="'Remove ' + l.item_name"
+                                                            class="nb-press shrink-0 h-7 w-7 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 text-lg leading-none">&times;</button>
+                                                </div>
+                                                <div class="mt-2 grid grid-cols-[4.5rem_auto_1fr_auto] items-center gap-1.5 text-sm">
+                                                    <input type="number" min="1" step="1" x-model="l.quantity" :aria-label="'Quantity of ' + l.item_name"
+                                                           @keydown.enter.prevent class="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm tabular-nums transition">
+                                                    <span class="text-slate-400">×</span>
+                                                    <input type="number" min="0" step="0.01" x-model="l.unit_price" :aria-label="'Price per piece of ' + l.item_name"
+                                                           @keydown.enter.prevent class="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm tabular-nums transition">
+                                                    <span class="pl-1 font-bold text-brand-900 tabular-nums whitespace-nowrap" x-text="fmt(lineTotal(l))"></span>
+                                                </div>
+                                                <p class="mt-1.5 text-xs text-amber-700" x-show="overStock(l)" x-cloak>
+                                                    Only <span class="font-semibold tabular-nums" x-text="stockFor(l.item_name)"></span> in stock.
+                                                </p>
+                                            </li>
+                                        </template>
+                                    </ol>
+
+                                    <div class="flex items-baseline justify-between rounded-lg bg-brand-50 border border-brand-100 px-3 py-2.5">
+                                        <span class="text-xs font-semibold uppercase tracking-wide text-brand-800">
+                                            Total <span class="normal-case font-normal text-brand-700" x-show="cart.length" x-cloak>
+                                                (<span class="tabular-nums" x-text="cartPieces"></span> pcs)
+                                            </span>
+                                        </span>
+                                        <span class="text-lg font-bold text-brand-900 tabular-nums" x-text="fmt(cartTotal)"></span>
                                     </div>
                                 </div>
 
-                                <!-- Quantity × price, shown before saving so a typo is caught here
-                                     rather than on the printed invoice. -->
-                                <div class="flex items-baseline justify-between rounded-lg bg-brand-50 border border-brand-100 px-3 py-2.5">
-                                    <span class="text-xs font-semibold uppercase tracking-wide text-brand-800">Amount</span>
-                                    <span class="text-base font-bold text-brand-900 tabular-nums" x-text="fmt(saleAmount)"></span>
-                                </div>
                                 <!-- No Time field: the server stamps the time of sale on save, so
                                      it can never be the stale value a pre-filled input would hold. -->
                                 <div>
                                     <label for="sale-date" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Date</label>
-                                    <input id="sale-date" type="date" x-model="sale.date"
+                                    <input id="sale-date" type="date" x-model="sale.date" @keydown.enter.prevent
                                            class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
                                 </div>
 
@@ -236,7 +298,7 @@
                                 </div>
                                 <button type="submit" :disabled="savingSale"
                                         class="nb-press w-full min-h-[48px] bg-brand-700 hover:bg-brand-800 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold p-3 rounded-lg shadow transition">
-                                    <span x-text="savingSale ? 'Saving…' : 'Save & Generate Invoice'"></span>
+                                    <span x-text="savingSale ? 'Saving…' : (cart.length > 1 ? 'Save & Generate Invoice (' + cart.length + ' items)' : 'Save & Generate Invoice')"></span>
                                 </button>
                             </form>
                         </div>
@@ -475,7 +537,7 @@
                                 <div class="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-2.5 border-t border-slate-200 pt-3">
                                     <div>
                                         <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500" x-text="rangeLabel"></p>
-                                        <p class="text-sm font-bold text-slate-800 tabular-nums"><span x-text="filteredSales.length"></span> sale(s)</p>
+                                        <p class="text-sm font-bold text-slate-800 tabular-nums"><span x-text="filteredInvoices.length"></span> invoice(s)</p>
                                     </div>
                                     <div>
                                         <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Total Sold</p>
@@ -498,48 +560,53 @@
                             </div>
 
                             <p x-show="loading" class="nb-loading text-sm font-semibold py-6 text-center">Loading sales…</p>
-                            <p x-show="!loading && filteredSales.length === 0" x-cloak class="text-sm text-slate-500 py-8 text-center">
-                                <span x-text="sales.length ? 'No sale matches that search or date range.' : 'No sales recorded yet.'"></span>
+                            <p x-show="!loading && filteredInvoices.length === 0" x-cloak class="text-sm text-slate-500 py-8 text-center">
+                                <span x-text="invoices.length ? 'No invoice matches that search or date range.' : 'No sales recorded yet.'"></span>
                             </p>
 
-                            <!-- Desktop table -->
-                            <div class="hidden md:block overflow-x-auto" x-show="!loading && filteredSales.length > 0" x-cloak>
+                            <!-- Desktop table: one row per invoice, however many items it holds. -->
+                            <div class="hidden md:block overflow-x-auto" x-show="!loading && filteredInvoices.length > 0" x-cloak>
                                 <table class="w-full text-left border-collapse">
                                     <thead>
                                         <tr class="bg-slate-100 text-slate-600 text-xs uppercase tracking-wider">
-                                            <th class="p-3 rounded-l-lg font-semibold">Date</th>
+                                            <th class="p-3 rounded-l-lg font-semibold">Invoice</th>
                                             <th class="p-3 font-semibold">Customer</th>
-                                            <th class="p-3 font-semibold">Item</th>
-                                            <th class="p-3 font-semibold text-center">Qty</th>
+                                            <th class="p-3 font-semibold">Items</th>
                                             <th class="p-3 font-semibold text-right">Total</th>
                                             <th class="p-3 font-semibold text-right">Profit</th>
                                             <th class="p-3 rounded-r-lg font-semibold text-right">Actions</th>
                                         </tr>
                                     </thead>
                                     <tbody class="divide-y divide-slate-100 text-sm">
-                                        <template x-for="s in visibleSales" :key="s.id">
-                                            <tr class="nb-row hover:bg-slate-50">
-                                                <td class="p-3 text-slate-600 whitespace-nowrap" x-text="fmtDate(s.date)"></td>
-                                                <td class="p-3">
-                                                    <span class="font-medium text-slate-800" x-text="s.customer_name"></span>
-                                                    <!-- Admin's private note, never printed on the invoice. -->
-                                                    <span class="block text-xs text-slate-500 italic" x-show="s.comment" x-cloak x-text="s.comment"></span>
+                                        <template x-for="inv in visibleInvoices" :key="inv.key">
+                                            <tr class="nb-row hover:bg-slate-50 align-top">
+                                                <td class="p-3 whitespace-nowrap">
+                                                    <span class="font-semibold text-slate-800 tabular-nums" x-text="'#' + inv.id"></span>
+                                                    <span class="block text-xs text-slate-500" x-text="fmtDate(inv.date)"></span>
                                                 </td>
-                                                <td class="p-3 text-slate-600" x-text="s.item_name"></td>
-                                                <td class="p-3 text-slate-600 text-center tabular-nums" x-text="s.quantity"></td>
+                                                <td class="p-3">
+                                                    <span class="font-medium text-slate-800" x-text="inv.customer_name"></span>
+                                                    <!-- Admin's private note, never printed on the invoice. -->
+                                                    <span class="block text-xs text-slate-500 italic" x-show="inv.comment" x-cloak x-text="inv.comment"></span>
+                                                </td>
+                                                <td class="p-3 text-slate-600">
+                                                    <span x-text="invoiceSummary(inv)"></span>
+                                                    <span class="block text-xs text-slate-400" x-show="inv.lines.length > 1" x-cloak
+                                                          x-text="inv.lines.length + ' items'"></span>
+                                                </td>
                                                 <td class="p-3 text-right whitespace-nowrap">
-                                                    <span class="font-semibold text-brand-800 tabular-nums" x-text="fmt(s.total_price)"></span>
-                                                    <span class="block text-xs text-amber-700 tabular-nums" x-show="saleDiscount(s) > 0" x-cloak>
-                                                        −<span x-text="fmt(saleDiscount(s))"></span> off
+                                                    <span class="font-semibold text-brand-800 tabular-nums" x-text="fmt(invoiceTotal(inv))"></span>
+                                                    <span class="block text-xs text-amber-700 tabular-nums" x-show="invoiceDiscount(inv) > 0" x-cloak>
+                                                        −<span x-text="fmt(invoiceDiscount(inv))"></span> off
                                                     </span>
                                                 </td>
                                                 <td class="p-3 text-right tabular-nums font-medium whitespace-nowrap"
-                                                    :class="saleProfit(s) === null ? 'text-slate-400' : saleProfit(s) < 0 ? 'text-red-600' : 'text-brand-800'"
-                                                    x-text="saleProfit(s) === null ? '—' : fmt(saleProfit(s))"></td>
+                                                    :class="invoiceProfit(inv) === null ? 'text-slate-400' : invoiceProfit(inv) < 0 ? 'text-red-600' : 'text-brand-800'"
+                                                    x-text="invoiceProfit(inv) === null ? '—' : fmt(invoiceProfit(inv))"></td>
                                                 <td class="p-3">
                                                     <div class="flex justify-end gap-2">
-                                                        <button @click="showReceipt(s)" class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 whitespace-nowrap">Show</button>
-                                                        <button @click="printReceipt(s)" class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-brand-200 whitespace-nowrap">Print</button>
+                                                        <button @click="showReceipt(inv)" class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 whitespace-nowrap">Show</button>
+                                                        <button @click="printReceipt(inv)" class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-brand-200 whitespace-nowrap">Print</button>
                                                     </div>
                                                 </td>
                                             </tr>
@@ -549,36 +616,47 @@
                             </div>
 
                             <!-- Mobile cards -->
-                            <div class="md:hidden space-y-3" x-show="!loading && filteredSales.length > 0" x-cloak>
-                                <template x-for="s in visibleSales" :key="'m-' + s.id">
+                            <div class="md:hidden space-y-3" x-show="!loading && filteredInvoices.length > 0" x-cloak>
+                                <template x-for="inv in visibleInvoices" :key="'m-' + inv.key">
                                     <div class="nb-row rounded-xl border border-slate-200 p-3.5 hover:bg-slate-50">
                                         <div class="flex items-start justify-between gap-3">
-                                            <p class="font-semibold text-slate-800" x-text="s.customer_name"></p>
-                                            <p class="shrink-0 text-xs text-slate-500" x-text="fmtDate(s.date)"></p>
-                                        </div>
-                                        <div class="mt-2 flex items-baseline justify-between gap-3 text-sm">
-                                            <p class="text-slate-600"><span x-text="s.item_name"></span> <span class="text-slate-400">×</span> <span class="tabular-nums" x-text="s.quantity"></span></p>
-                                            <p class="font-bold text-brand-800 tabular-nums" x-text="fmt(s.total_price)"></p>
-                                        </div>
-                                        <div class="mt-1 flex items-baseline justify-between gap-3 text-xs">
-                                            <p class="text-amber-700 tabular-nums" x-show="saleDiscount(s) > 0" x-cloak>−<span x-text="fmt(saleDiscount(s))"></span> off</p>
-                                            <p class="ml-auto tabular-nums font-medium"
-                                               :class="saleProfit(s) === null ? 'text-slate-400' : saleProfit(s) < 0 ? 'text-red-600' : 'text-brand-800'">
-                                                Profit <span x-text="saleProfit(s) === null ? '—' : fmt(saleProfit(s))"></span>
+                                            <p class="font-semibold text-slate-800">
+                                                <span class="tabular-nums text-slate-500" x-text="'#' + inv.id"></span>
+                                                <span x-text="inv.customer_name"></span>
                                             </p>
+                                            <p class="shrink-0 text-xs text-slate-500" x-text="fmtDate(inv.date)"></p>
                                         </div>
-                                        <p class="mt-1.5 text-xs text-slate-500 italic" x-show="s.comment" x-cloak x-text="s.comment"></p>
+                                        <!-- Every item listed, since an invoice may hold several. -->
+                                        <ul class="mt-2 space-y-0.5 text-sm text-slate-600">
+                                            <template x-for="l in inv.lines" :key="'ml-' + l.id">
+                                                <li class="flex justify-between gap-3">
+                                                    <span><span x-text="l.item_name"></span> <span class="text-slate-400">×</span> <span class="tabular-nums" x-text="l.quantity"></span></span>
+                                                    <span class="tabular-nums text-slate-500" x-text="fmt(l.total_price)"></span>
+                                                </li>
+                                            </template>
+                                        </ul>
+                                        <div class="mt-2 flex items-baseline justify-between gap-3 border-t border-slate-100 pt-2">
+                                            <p class="text-xs tabular-nums font-medium"
+                                               :class="invoiceProfit(inv) === null ? 'text-slate-400' : invoiceProfit(inv) < 0 ? 'text-red-600' : 'text-brand-800'">
+                                                Profit <span x-text="invoiceProfit(inv) === null ? '—' : fmt(invoiceProfit(inv))"></span>
+                                                <span class="text-amber-700" x-show="invoiceDiscount(inv) > 0" x-cloak>
+                                                    · −<span x-text="fmt(invoiceDiscount(inv))"></span> off
+                                                </span>
+                                            </p>
+                                            <p class="font-bold text-brand-800 tabular-nums" x-text="fmt(invoiceTotal(inv))"></p>
+                                        </div>
+                                        <p class="mt-1.5 text-xs text-slate-500 italic" x-show="inv.comment" x-cloak x-text="inv.comment"></p>
                                         <div class="mt-3 grid grid-cols-2 gap-2">
-                                            <button @click="showReceipt(s)" class="nb-press min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm font-semibold border border-slate-300">Show Invoice</button>
-                                            <button @click="printReceipt(s)" class="nb-press min-h-[44px] bg-brand-50 hover:bg-brand-100 text-brand-800 rounded-lg text-sm font-semibold border border-brand-200">Print</button>
+                                            <button @click="showReceipt(inv)" class="nb-press min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm font-semibold border border-slate-300">Show Invoice</button>
+                                            <button @click="printReceipt(inv)" class="nb-press min-h-[44px] bg-brand-50 hover:bg-brand-100 text-brand-800 rounded-lg text-sm font-semibold border border-brand-200">Print</button>
                                         </div>
                                     </div>
                                 </template>
                             </div>
 
-                            <div class="mt-4 text-center" x-show="filteredSales.length > visibleSales.length" x-cloak>
+                            <div class="mt-4 text-center" x-show="filteredInvoices.length > visibleInvoices.length" x-cloak>
                                 <button @click="salesLimit += 25" class="nb-press min-h-[44px] px-5 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50">
-                                    Load more (<span x-text="filteredSales.length - visibleSales.length"></span> left)
+                                    Load more (<span x-text="filteredInvoices.length - visibleInvoices.length"></span> left)
                                 </button>
                             </div>
                         </section>
@@ -720,25 +798,29 @@
                             </tr>
                         </thead>
                         <tbody>
-                            <tr>
-                                <td class="col-idx">1</td>
-                                <td>
-                                    <span x-text="currentReceipt.item_name"></span>
-                                    <!-- Warranty as a sub-line rather than a sixth column: the column
-                                         widths are fixed percentages and Item name is the only prose
-                                         column, so a new column would squeeze it. Hidden entirely when
-                                         there is no warranty, which is why older invoices reprint
-                                         exactly as they did before. -->
-                                    <span class="inv-item-warranty" x-show="warrantyText(currentReceipt)" x-cloak
-                                          x-text="warrantyText(currentReceipt)"></span>
-                                </td>
-                                <td class="col-qty tabular-nums" x-text="currentReceipt.quantity"></td>
-                                <td class="col-rate tabular-nums" x-text="fmtNum(unitPrice(currentReceipt))"></td>
-                                <td class="col-amount tabular-nums" x-text="fmtNum(currentReceipt.total_price)"></td>
-                            </tr>
-                            <!-- Blank run-out so a one-line invoice still fills
-                                 the sheet, column rules and all. -->
-                            <tr class="inv-fill-row" aria-hidden="true">
+                            <!-- One row per item, numbered in the order they were entered. -->
+                            <template x-for="(l, i) in (currentReceipt.lines || [])" :key="'rl-' + (l.id ?? i)">
+                                <tr>
+                                    <td class="col-idx tabular-nums" x-text="i + 1"></td>
+                                    <td>
+                                        <span x-text="l.item_name"></span>
+                                        <!-- Warranty as a sub-line rather than a sixth column: the column
+                                             widths are fixed percentages and Item name is the only prose
+                                             column, so a new column would squeeze it. Per line, since each
+                                             product carries its own warranty. -->
+                                        <span class="inv-item-warranty" x-show="warrantyText(l)" x-cloak
+                                              x-text="warrantyText(l)"></span>
+                                    </td>
+                                    <td class="col-qty tabular-nums" x-text="l.quantity"></td>
+                                    <td class="col-rate tabular-nums" x-text="fmtNum(unitPrice(l))"></td>
+                                    <td class="col-amount tabular-nums" x-text="fmtNum(l.total_price)"></td>
+                                </tr>
+                            </template>
+                            <!-- Blank run-out so a short invoice still fills the sheet, column
+                                 rules and all. Dropped once there are enough real lines to do
+                                 that, so a long invoice is not pushed onto a second page by
+                                 empty space. -->
+                            <tr class="inv-fill-row" aria-hidden="true" x-show="(currentReceipt.lines || []).length < 4">
                                 <td class="col-idx"></td>
                                 <td></td>
                                 <td class="col-qty"></td>
@@ -752,16 +834,16 @@
                     <div class="inv-split inv-footer">
                         <div>
                             <p class="inv-words-label">Invoice Amount In Words</p>
-                            <p class="inv-words-value" x-text="amountInWords(currentReceipt.total_price)"></p>
+                            <p class="inv-words-value" x-text="amountInWords(invoiceTotal(currentReceipt))"></p>
                         </div>
                         <div>
                             <p class="inv-total-line">
                                 <span>Sub Total</span>
-                                <span class="tabular-nums" x-text="fmtNum(currentReceipt.total_price)"></span>
+                                <span class="tabular-nums" x-text="fmtNum(invoiceTotal(currentReceipt))"></span>
                             </p>
                             <p class="inv-total-line is-grand">
                                 <span>Total</span>
-                                <span class="tabular-nums" x-text="fmt(currentReceipt.total_price)"></span>
+                                <span class="tabular-nums" x-text="fmt(invoiceTotal(currentReceipt))"></span>
                             </p>
                         </div>
                     </div>

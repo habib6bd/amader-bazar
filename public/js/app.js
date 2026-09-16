@@ -88,8 +88,7 @@ function writeSession(active) {
   }
 }
 
-// The form collects a price per unit, matching the invoice's "Price/ Unit"
-// column; the amount is derived from it rather than typed twice.
+// The invoice header. Items live in the cart, one entry per line.
 //
 // No sale_time here on purpose — the server stamps it at the moment of insert.
 // A value seeded on the client would be the time the form was created, not the
@@ -98,12 +97,42 @@ function blankSale() {
   return {
     customer_name: '',
     customer_contact: '',
-    item_name: '',
-    quantity: '',
-    unit_price: '',
     date: todayLocal(),
     comment: '',
   };
+}
+
+// The "add an item" row above the cart. Price is per piece, matching the
+// invoice's "Price/ Unit" column; the line amount is derived, never typed.
+function blankLine() {
+  return { item_name: '', quantity: 1, unit_price: '' };
+}
+
+/* Groups invoice lines under their invoices.
+
+   The server sends both flat; doing the join once per load keeps every list and
+   total that follows a simple walk over invoices, instead of re-grouping all
+   lines on each render.
+
+   A line that references no known invoice cannot occur after migration, but if
+   one ever did it would silently vanish from the history — so it is shown as an
+   invoice of its own instead. */
+function buildInvoices(invoices, lines) {
+  const byId = new Map();
+  for (const inv of invoices) byId.set(Number(inv.id), { ...inv, key: `i${inv.id}`, lines: [] });
+
+  const orphans = [];
+  for (const line of lines) {
+    const inv = byId.get(Number(line.invoice_id));
+    if (inv) inv.lines.push(line);
+    else orphans.push({ ...line, key: `o${line.id}`, lines: [line] });
+  }
+
+  const byLine = (a, b) => (Number(a.line_no) || 0) - (Number(b.line_no) || 0) || Number(a.id) - Number(b.id);
+  const grouped = [...byId.values()].filter((inv) => inv.lines.length > 0);
+  for (const inv of grouped) inv.lines.sort(byLine);
+
+  return [...grouped, ...orphans].sort((a, b) => Number(b.id) - Number(a.id));
 }
 
 // Dealer purchases are how stock and prices both enter the shop, so the form
@@ -195,6 +224,12 @@ function shopApp() {
     purchasesLimit: PAGE_SIZE,
 
     sale: blankSale(),
+    // The invoice being built: [{ key, item_name, quantity, unit_price }].
+    cart: [],
+    line: blankLine(),
+    cartSeq: 0,
+    // Invoices with their lines attached — see buildInvoices().
+    invoices: [],
     dealer: blankDealer(),
     savingSale: false,
     savingDealer: false,
@@ -357,11 +392,24 @@ function shopApp() {
 
     // Live "Amount" preview under the sale form, and the figure actually
     // saved as the sale total.
-    get saleAmount() {
-      const qty = Number(this.sale.quantity);
-      const unit = Number(this.sale.unit_price);
+    lineTotal(l) {
+      const qty = Number(l?.quantity);
+      const unit = Number(l?.unit_price);
       if (!Number.isFinite(qty) || !Number.isFinite(unit)) return 0;
       return qty * unit;
+    },
+
+    // Amount of the row being typed, before it is added.
+    get lineAmount() {
+      return this.lineTotal(this.line);
+    },
+
+    get cartTotal() {
+      return this.cart.reduce((sum, l) => sum + this.lineTotal(l), 0);
+    },
+
+    get cartPieces() {
+      return this.cart.reduce((sum, l) => sum + (Number(l.quantity) || 0), 0);
     },
 
     /* ------------------------------------------------------------- warranty */
@@ -497,11 +545,35 @@ function shopApp() {
     // -------------------------------------------------------- derived stats
     get todaysSales() {
       const t = todayLocal();
-      return this.sales.filter((s) => s.date === t);
+      return this.invoices.filter((inv) => inv.date === t);
     },
 
     get todaysRevenue() {
-      return this.todaysSales.reduce((sum, s) => sum + Number(s.total_price || 0), 0);
+      return this.todaysSales.reduce((sum, inv) => sum + this.invoiceTotal(inv), 0);
+    },
+
+    /* ----------------------------------------------------------- invoices */
+
+    invoiceTotal(inv) {
+      return (inv?.lines || []).reduce((sum, l) => sum + Number(l.total_price || 0), 0);
+    },
+
+    // Profit on the lines whose cost is known; null when none of them are.
+    invoiceProfit(inv) {
+      const known = (inv?.lines || []).map((l) => this.saleProfit(l)).filter((p) => p !== null);
+      return known.length ? known.reduce((a, b) => a + b, 0) : null;
+    },
+
+    invoiceDiscount(inv) {
+      return (inv?.lines || []).reduce((sum, l) => sum + this.saleDiscount(l), 0);
+    },
+
+    // "Router ×2" or "Router ×2 +3 more", for the history table.
+    invoiceSummary(inv) {
+      const lines = inv?.lines || [];
+      if (!lines.length) return '—';
+      const first = `${lines[0].item_name} ×${lines[0].quantity}`;
+      return lines.length > 1 ? `${first} +${lines.length - 1} more` : first;
     },
 
     get totalRevenue() {
@@ -535,38 +607,46 @@ function shopApp() {
       );
     },
 
-    get filteredSales() {
+    // Search matches the invoice number, customer, phone, comment, or any item
+    // on the invoice — "who bought the ONU modem last week?" has to work.
+    get filteredInvoices() {
       const q = this.saleSearch.trim().toLowerCase();
-      return this.sales.filter((s) => {
-        if (!this.inDateRange(s)) return false;
+      return this.invoices.filter((inv) => {
+        if (!this.inDateRange(inv)) return false;
         if (!q) return true;
+        const hay = [inv.id, inv.customer_name, inv.customer_contact, inv.comment]
+          .map((v) => String(v ?? '').toLowerCase());
         return (
-          (s.customer_name || '').toLowerCase().includes(q) ||
-          (s.item_name || '').toLowerCase().includes(q)
+          hay.some((v) => v.includes(q)) ||
+          inv.lines.some((l) => (l.item_name || '').toLowerCase().includes(q))
         );
       });
     },
 
-    get visibleSales() {
-      return this.filteredSales.slice(0, this.salesLimit);
+    get visibleInvoices() {
+      return this.filteredInvoices.slice(0, this.salesLimit);
+    },
+
+    get filteredLines() {
+      return this.filteredInvoices.flatMap((inv) => inv.lines);
     },
 
     // Totals for whatever the filter currently shows — the answer to "how much
     // did I sell on this day".
     get rangeRevenue() {
-      return this.filteredSales.reduce((sum, s) => sum + Number(s.total_price || 0), 0);
+      return this.filteredLines.reduce((sum, l) => sum + Number(l.total_price || 0), 0);
     },
 
     get rangeProfit() {
-      return this.profitOf(this.filteredSales);
+      return this.profitOf(this.filteredLines);
     },
 
     get rangeDiscount() {
-      return this.filteredSales.reduce((sum, s) => sum + this.saleDiscount(s), 0);
+      return this.filteredLines.reduce((sum, l) => sum + this.saleDiscount(l), 0);
     },
 
     get rangeHasUnknownCost() {
-      return this.hasUnknownCost(this.filteredSales);
+      return this.hasUnknownCost(this.filteredLines);
     },
 
     get filteredPurchases() {
@@ -621,8 +701,11 @@ function shopApp() {
       this.loginEmail = '';
       this.loginPassword = '';
       this.sales = [];
+      this.invoices = [];
       this.inventory = [];
       this.purchases = [];
+      this.cart = [];
+      this.line = blankLine();
     },
 
     /* Changing the password requires being signed in and knowing the current
@@ -671,6 +754,7 @@ function shopApp() {
         if (!res.ok) throw new Error(data.error || 'Could not load shop data.');
         this.inventory = data.inventory || [];
         this.sales = data.sales || [];
+        this.invoices = buildInvoices(data.invoices || [], this.sales);
         this.purchases = data.purchases || [];
       } catch (err) {
         this.loadError = err.message || 'Could not load shop data.';
@@ -680,38 +764,130 @@ function shopApp() {
       }
     },
 
+    /* ---------------------------------------------------------------- cart */
+
+    productByName(name) {
+      const n = String(name || '').trim();
+      return n ? this.inventory.find((i) => i.item_name === n) || null : null;
+    },
+
+    // When the typed or picked name is a known product, take its set price —
+    // the agent can still lower it on the line.
+    fillLinePrice() {
+      const product = this.productByName(this.line.item_name);
+      if (product) this.line.unit_price = product.selling_price;
+    },
+
+    // Adding the same product twice raises the quantity on its existing line
+    // rather than printing it on the invoice twice. The existing line keeps its
+    // price, so a discount already agreed on it is not overwritten.
+    addToCart({ item_name, quantity = 1, unit_price }) {
+      const name = String(item_name).trim();
+      const existing = this.cart.find((l) => l.item_name === name);
+      if (existing) {
+        existing.quantity = (Number(existing.quantity) || 0) + Number(quantity);
+        return existing;
+      }
+      this.cartSeq += 1;
+      const entry = { key: this.cartSeq, item_name: name, quantity: Number(quantity), unit_price };
+      this.cart.push(entry);
+      return entry;
+    },
+
+    // Returns false when the row is not valid, so submitSale can stop.
+    addLine() {
+      const name = String(this.line.item_name || '').trim();
+      const qty = Number(this.line.quantity);
+      const price = Number(this.line.unit_price);
+      if (!name) {
+        this.notify('Enter or scan an item first.', 'error');
+        return false;
+      }
+      if (!Number.isInteger(qty) || qty < 1) {
+        this.notify('Quantity must be a whole number, one or more.', 'error');
+        return false;
+      }
+      if (this.line.unit_price === '' || !Number.isFinite(price) || price < 0) {
+        this.notify('Enter a price per piece for this item.', 'error');
+        return false;
+      }
+      this.addToCart({ item_name: name, quantity: qty, unit_price: price });
+      this.line = blankLine();
+      this.$nextTick(() => this.$refs.lineItem?.focus());
+      return true;
+    },
+
+    removeLine(key) {
+      this.cart = this.cart.filter((l) => l.key !== key);
+    },
+
+    // Stock left for a product, or null for an item that is not in inventory.
+    stockFor(name) {
+      const product = this.productByName(name);
+      return product ? Number(product.quantity) : null;
+    },
+
+    // Selling more than is in stock is allowed — the count may simply be wrong —
+    // but it is worth a warning before the invoice is issued.
+    overStock(l) {
+      const stock = this.stockFor(l.item_name);
+      return stock !== null && Number(l.quantity) > stock;
+    },
+
     async submitSale() {
       if (this.savingSale) return;
+
+      // An item typed into the row but not yet added is almost certainly meant
+      // to be on the invoice. Add it rather than silently leaving it off.
+      if (String(this.line.item_name || '').trim() && !this.addLine()) return;
+
+      if (this.cart.length === 0) {
+        this.notify('Add at least one item to the invoice.', 'error');
+        return;
+      }
+      for (const [i, l] of this.cart.entries()) {
+        const qty = Number(l.quantity);
+        const price = Number(l.unit_price);
+        if (!Number.isInteger(qty) || qty < 1 || l.unit_price === '' || !Number.isFinite(price) || price < 0) {
+          this.notify(`Check item ${i + 1} (${l.item_name}): quantity and price.`, 'error');
+          return;
+        }
+      }
+
       this.savingSale = true;
       try {
         const res = await fetch('/api/sales', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          // total_price stays the stored figure; the form's unit price is
-          // what the shopkeeper types, so it is multiplied out here.
+          // Each line's total is the stored figure; the price per piece is what
+          // the shopkeeper types, so it is multiplied out here.
           // sale_time is absent deliberately — the server stamps it.
           body: JSON.stringify({
             customer_name: this.sale.customer_name,
             customer_contact: this.sale.customer_contact,
-            item_name: this.sale.item_name,
-            quantity: this.sale.quantity,
-            total_price: this.saleAmount,
             date: this.sale.date,
             comment: this.sale.comment,
+            items: this.cart.map((l) => ({
+              item_name: l.item_name,
+              quantity: Number(l.quantity),
+              total_price: this.lineTotal(l),
+            })),
           }),
         });
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not save the sale.'));
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || 'Could not save the sale.');
 
         await this.loadData();
         this.sale = blankSale();
+        this.cart = [];
+        this.line = blankLine();
         this.scanCode = '';
         this.unknownBarcode = '';
         this.notify('Sale saved — invoice ready.');
 
         // The button promises an invoice, so actually open one.
-        const row = this.sales.find((s) => s.id === data.id);
-        if (row) this.showReceipt(row);
+        const invoice = this.invoices.find((inv) => Number(inv.id) === Number(data.id));
+        if (invoice) this.showReceipt(invoice);
       } catch (err) {
         this.notify(err.message || 'Could not save the sale.', 'error');
       } finally {
@@ -792,18 +968,15 @@ function shopApp() {
 
       this.unknownBarcode = '';
       this.scanCode = '';
-      // Taken from the inventory row verbatim, which is the point: the stock
-      // decrement and the cost/warranty snapshot both match on item_name, and a
-      // hand-typed name can drift from it where a scanned one cannot.
-      this.sale.item_name = item.item_name;
-      this.sale.unit_price = item.selling_price;
-      if (!this.sale.quantity) this.sale.quantity = 1;
+      // Name taken from the inventory row verbatim, which is the point: the
+      // stock decrement and the cost/warranty snapshot both match on item_name,
+      // and a hand-typed name can drift from it where a scanned one cannot.
+      const line = this.addToCart({ item_name: item.item_name, quantity: 1, unit_price: item.selling_price });
+      this.notify(`${item.item_name} ×${line.quantity} — ${this.fmt(item.selling_price)}`);
 
-      this.notify(`${item.item_name} — ${this.fmt(item.selling_price)}`);
-      this.$nextTick(() => {
-        this.$refs.saleQty?.focus();
-        this.$refs.saleQty?.select();
-      });
+      // Focus stays in the scan box: at a till the next action is scanning the
+      // next item, not typing.
+      this.$nextTick(() => this.$refs.scanInput?.focus());
     },
 
     // Dealer form: a known code fills the product being restocked; an unknown
