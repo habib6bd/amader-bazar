@@ -124,10 +124,14 @@
                         <p class="text-xs text-slate-500 mt-0.5"><span x-text="invoices.length"></span> invoice(s) recorded</p>
                     </div>
                     <div class="nb-lift bg-white rounded-2xl border border-slate-200 p-4 shadow-sm hover:shadow-md hover:border-brand-300">
-                        <p class="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500">Profit Earned</p>
+                        <!-- Net of expenses, all time. The gross figure is not lost: it is the
+                             sub-line here, and the range version sits in both history sections. -->
+                        <p class="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500">Net Profit</p>
                         <p class="mt-1.5 text-lg sm:text-2xl font-bold tabular-nums"
-                           :class="profitOf(sales) < 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(profitOf(sales))"></p>
-                        <p class="text-xs text-slate-500 mt-0.5"><span x-text="fmt(expectedProfit)"></span> still in stock</p>
+                           :class="netProfit < 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(netProfit)"></p>
+                        <p class="text-xs text-slate-500 mt-0.5">
+                            Sales <span x-text="fmt(profitOf(sales))"></span> − খরচ <span x-text="fmt(totalExpenses)"></span>
+                        </p>
                     </div>
                     <div class="nb-lift bg-white rounded-2xl border p-4 shadow-sm hover:shadow-md"
                          :class="lowStockItems.length ? 'border-red-200 bg-red-50 nb-alert' : 'border-slate-200 hover:border-brand-300'">
@@ -145,10 +149,13 @@
                         <div class="flex rounded-xl bg-slate-200 p-1" role="tablist">
                             <button role="tab" :aria-selected="activeForm === 'sale'" @click="activeForm = 'sale'"
                                     :class="activeForm === 'sale' ? 'bg-white text-brand-800 shadow' : 'text-slate-600 hover:text-slate-800'"
-                                    class="nb-press flex-1 min-h-[44px] py-2.5 rounded-lg font-semibold text-sm">Customer Sale</button>
+                                    class="nb-press flex-1 min-h-[44px] py-2.5 rounded-lg font-semibold text-[13px] sm:text-sm">Customer Sale</button>
                             <button role="tab" :aria-selected="activeForm === 'dealer'" @click="activeForm = 'dealer'"
                                     :class="activeForm === 'dealer' ? 'bg-white text-amber-700 shadow' : 'text-slate-600 hover:text-slate-800'"
-                                    class="nb-press flex-1 min-h-[44px] py-2.5 rounded-lg font-semibold text-sm">Dealer Purchase</button>
+                                    class="nb-press flex-1 min-h-[44px] py-2.5 rounded-lg font-semibold text-[13px] sm:text-sm">Dealer Purchase</button>
+                            <button role="tab" :aria-selected="activeForm === 'expense'" @click="activeForm = 'expense'"
+                                    :class="activeForm === 'expense' ? 'bg-white text-rose-700 shadow' : 'text-slate-600 hover:text-slate-800'"
+                                    class="nb-press flex-1 min-h-[44px] py-2.5 rounded-lg font-semibold text-[13px] sm:text-sm">খরচ Expense</button>
                         </div>
 
                         <!-- Customer sale -->
@@ -386,6 +393,62 @@
                                 </button>
                             </form>
                         </div>
+
+                        <!-- Expense. x-show, not x-if, for the same reason as the sale panel:
+                             the shared datalists must stay in the DOM. -->
+                        <div class="nb-pop bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200" x-show="activeForm === 'expense'" x-cloak>
+                            <h2 class="text-base sm:text-lg font-bold mb-1 text-rose-700 flex items-center gap-2">💸 খরচ — Shop Expense</h2>
+                            <!-- Said plainly, because nothing in the data can catch it: stock bought
+                                 for resale is already inside each sale's buying price, so entering it
+                                 here too would subtract it from profit twice. -->
+                            <p class="text-xs text-slate-500 mb-4">
+                                শপের চলতি খরচ — ভাড়া, বিদ্যুৎ, বেতন, চা, যাতায়াত।
+                                <span class="block">মালের কেনা এখানে নয় — সেটা Dealer Purchase-এ, এবং তা প্রতিটি বিক্রির কেনা দামে ধরা আছে।</span>
+                            </p>
+                            <form @submit.prevent="submitExpense" class="space-y-4">
+                                <div>
+                                    <label for="exp-category" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">খরচের খাত <span class="normal-case font-normal text-slate-400">(Expense head)</span></label>
+                                    <input id="exp-category" type="text" x-model="expense.category" list="expense-categories"
+                                           autocomplete="off" maxlength="60" placeholder="যেমন দোকান ভাড়া / Electricity"
+                                           @keydown.enter.prevent
+                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none text-base sm:text-sm transition" required>
+                                    <!-- Built from the heads already used, so the first entry types a
+                                         new one and every later entry picks it from the list. -->
+                                    <datalist id="expense-categories">
+                                        <template x-for="c in expenseCategories" :key="'ec-' + c">
+                                            <option :value="c"></option>
+                                        </template>
+                                    </datalist>
+                                    <p class="mt-1 text-xs text-slate-500">প্রথমবার নিজে লিখুন, পরে তালিকা থেকে বেছে নিন।</p>
+                                    <p class="mt-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5"
+                                       x-show="expenseLooksLikeStock" x-cloak>
+                                        এটা কি মাল কেনা? তাহলে Dealer Purchase-এ লিখুন — এখানে লিখলে লাভ থেকে দুবার বাদ যাবে।
+                                    </p>
+                                </div>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    <div>
+                                        <label for="exp-amount" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">টাকা (৳)</label>
+                                        <input id="exp-amount" type="number" min="0.01" step="0.01" x-model="expense.amount"
+                                               placeholder="0.00" @keydown.enter.prevent class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none text-base sm:text-sm transition" required>
+                                    </div>
+                                    <div>
+                                        <label for="exp-date" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">তারিখ</label>
+                                        <input id="exp-date" type="date" x-model="expense.date"
+                                               @keydown.enter.prevent class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none text-base sm:text-sm transition" required>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label for="exp-note" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">নোট <span class="normal-case font-normal text-slate-400">(optional)</span></label>
+                                    <textarea id="exp-note" rows="2" x-model="expense.note" maxlength="200"
+                                              placeholder="যেমন সেপ্টেম্বর মাসের"
+                                              class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none text-base sm:text-sm transition resize-y"></textarea>
+                                </div>
+                                <button type="submit" :disabled="savingExpense"
+                                        class="nb-press w-full min-h-[48px] bg-rose-700 hover:bg-rose-800 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold p-3 rounded-lg shadow transition">
+                                    <span x-text="savingExpense ? 'Saving…' : 'Save Expense'"></span>
+                                </button>
+                            </form>
+                        </div>
                     </div>
 
                     <!-- RIGHT: tables -->
@@ -511,7 +574,7 @@
                             </div>
                             <!-- One control, not paging: a shop wants either the short list or
                                  all of it, and paging by 25 just moves the scrolling problem. -->
-                            <div class="mt-4 text-center" x-show="filteredInventory.length > 5 || inventoryExpanded" x-cloak>
+                            <div class="mt-4 text-center" x-show="filteredInventory.length > rowsCollapsed || inventoryExpanded" x-cloak>
                                 <button type="button" @click="toggleInventoryRows()"
                                         class="nb-press min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50">
                                     <span x-show="!inventoryExpanded">Show all
@@ -572,7 +635,7 @@
                                 </div>
 
                                 <!-- The answer to "how much did I sell on this day". -->
-                                <div class="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-2.5 border-t border-slate-200 pt-3">
+                                <div class="mt-3 grid grid-cols-2 lg:grid-cols-3 gap-2.5 border-t border-slate-200 pt-3">
                                     <div>
                                         <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500" x-text="rangeLabel"></p>
                                         <p class="text-sm font-bold text-slate-800 tabular-nums"><span x-text="filteredInvoices.length"></span> invoice(s)</p>
@@ -590,10 +653,22 @@
                                         <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Discount Given</p>
                                         <p class="text-sm sm:text-base font-bold text-amber-700 tabular-nums" x-text="fmt(rangeDiscount)"></p>
                                     </div>
+                                    <div>
+                                        <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">খরচ Expenses</p>
+                                        <p class="text-sm sm:text-base font-bold text-rose-700 tabular-nums" x-text="fmt(rangeExpenses)"></p>
+                                    </div>
+                                    <div>
+                                        <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Net Profit</p>
+                                        <p class="text-base sm:text-lg font-bold tabular-nums"
+                                           :class="rangeNetProfit < 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(rangeNetProfit)"></p>
+                                    </div>
                                 </div>
                                 <!-- Said plainly rather than quietly understating the figure. -->
-                                <p class="mt-2 text-xs text-slate-500" x-show="rangeHasUnknownCost" x-cloak>
-                                    Some sales have no buying price recorded, so profit excludes them.
+                                <p class="mt-2 text-xs text-slate-500">
+                                    Net profit = profit on sales − খরচ, over this range.
+                                </p>
+                                <p class="mt-1 text-xs text-slate-500" x-show="rangeHasUnknownCost" x-cloak>
+                                    Some sales have no buying price recorded, so profit — and net profit — exclude them.
                                 </p>
                             </div>
 
@@ -701,7 +776,7 @@
                                 </template>
                             </div>
 
-                            <div class="mt-4 text-center" x-show="filteredInvoices.length > 5 || salesExpanded" x-cloak>
+                            <div class="mt-4 text-center" x-show="filteredInvoices.length > rowsCollapsed || salesExpanded" x-cloak>
                                 <button type="button" @click="toggleSalesRows()"
                                         class="nb-press min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50">
                                     <span x-show="!salesExpanded">Show all
@@ -712,14 +787,165 @@
                             </div>
                         </section>
 
+                        <!-- খরচ / Expenses -->
+                        <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <button type="button" @click="toggleSection('expenses')"
+                                        :aria-expanded="expensesOpen" aria-controls="expenses-body"
+                                        class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
+                                    <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="expensesOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                                    <span>💸 খরচ — Expenses</span>
+                                    <span class="rounded-full bg-slate-100 text-slate-600 px-2 py-0.5 text-xs font-bold tabular-nums"
+                                          x-show="expenses.length" x-cloak x-text="expenses.length"></span>
+                                </button>
+                                <input type="search" x-model="expenseSearch" placeholder="Search head or note…" aria-label="Search expenses"
+                                       x-show="expensesOpen" x-cloak class="w-full sm:w-60 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
+                            </div>
+
+                            <div id="expenses-body" x-show="expensesOpen" x-cloak class="mt-4">
+                                <!-- The same range as the sales list, and the same control. Both
+                                     copies bind to dateFrom/dateTo, so Alpine keeps them in step —
+                                     but a change to one must be made to the other. -->
+                                <div class="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <button @click="setDateRange('today')" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                                :aria-pressed="activePreset === 'today'"
+                                                :class="activePreset === 'today' ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">Today</button>
+                                        <button @click="setDateRange('week')" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                                :aria-pressed="activePreset === 'week'"
+                                                :class="activePreset === 'week' ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">This Week</button>
+                                        <button @click="setDateRange('month')" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                                :aria-pressed="activePreset === 'month'"
+                                                :class="activePreset === 'month' ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">This Month</button>
+                                        <button @click="setDateRange('all')" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                                :aria-pressed="activePreset === 'all'"
+                                                :class="activePreset === 'all' ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">All Time</button>
+                                    </div>
+
+                                    <div class="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-2.5 border-t border-slate-200 pt-3">
+                                        <div>
+                                            <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500" x-text="rangeLabel"></p>
+                                            <p class="text-sm font-bold text-slate-800 tabular-nums"><span x-text="filteredExpenses.length"></span> খরচ</p>
+                                        </div>
+                                        <div>
+                                            <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Profit (sales)</p>
+                                            <p class="text-sm sm:text-base font-bold tabular-nums"
+                                               :class="rangeProfit < 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(rangeProfit)"></p>
+                                        </div>
+                                        <div>
+                                            <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">খরচ Expenses</p>
+                                            <p class="text-sm sm:text-base font-bold text-rose-700 tabular-nums" x-text="fmt(rangeExpenses)"></p>
+                                        </div>
+                                        <div>
+                                            <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Net Profit</p>
+                                            <p class="text-base sm:text-lg font-bold tabular-nums"
+                                               :class="rangeNetProfit < 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(rangeNetProfit)"></p>
+                                        </div>
+                                    </div>
+                                    <p class="mt-2 text-xs text-slate-500">
+                                        Net profit = profit on sales − খরচ. মালের কেনা এখানে ধরা হয়নি; সেটা আগেই প্রতিটি পণ্যের কেনা দামে আছে।
+                                    </p>
+                                    <p class="mt-1 text-xs text-slate-500" x-show="rangeHasUnknownCost" x-cloak>
+                                        Some sales have no buying price recorded, so profit — and net profit — exclude them.
+                                    </p>
+                                </div>
+
+                                <!-- Where the money went, biggest head first. -->
+                                <div class="mb-4 flex flex-wrap gap-2" x-show="expenseByCategory.length > 1" x-cloak>
+                                    <template x-for="c in expenseByCategory" :key="'cat-' + c.category">
+                                        <span class="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs">
+                                            <span class="text-slate-600" x-text="c.category"></span>
+                                            <span class="font-bold text-rose-700 tabular-nums" x-text="fmt(c.amount)"></span>
+                                        </span>
+                                    </template>
+                                </div>
+
+                                <p x-show="loading" class="nb-loading text-sm font-semibold py-6 text-center">Loading expenses…</p>
+                                <div x-show="!loading && filteredExpenses.length === 0" x-cloak class="py-8 text-center">
+                                    <p class="text-sm text-slate-500">
+                                        <span x-text="expenses.length ? 'No expense matches that search or date range.' : 'No expenses recorded yet.'"></span>
+                                    </p>
+                                    <button type="button" @click="setDateRange('all')"
+                                            x-show="expenses.length && activePreset !== 'all'" x-cloak
+                                            class="nb-press mt-3 nb-press min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50">Show all time</button>
+                                </div>
+
+                                <!-- Desktop table -->
+                                <div class="hidden md:block overflow-x-auto" x-show="!loading && filteredExpenses.length > 0" x-cloak>
+                                    <table class="w-full text-left border-collapse">
+                                        <thead>
+                                            <tr class="bg-slate-100 text-slate-600 text-xs uppercase tracking-wider">
+                                                <th class="p-3 rounded-l-lg font-semibold">Date</th>
+                                                <th class="p-3 font-semibold">খাত / Head</th>
+                                                <th class="p-3 font-semibold">Note</th>
+                                                <th class="p-3 font-semibold text-right">Amount</th>
+                                                <th class="p-3 rounded-r-lg font-semibold text-right">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-slate-100 text-sm">
+                                            <template x-for="e in visibleExpenses" :key="e.id">
+                                                <tr class="nb-row hover:bg-slate-50">
+                                                    <td class="p-3 text-slate-600 whitespace-nowrap" x-text="fmtDate(e.date)"></td>
+                                                    <td class="p-3 font-medium text-slate-800" x-text="e.category"></td>
+                                                    <td class="p-3 text-slate-500 italic" x-text="e.note || ''"></td>
+                                                    <td class="p-3 text-right font-semibold text-rose-700 tabular-nums whitespace-nowrap" x-text="fmt(e.amount)"></td>
+                                                    <td class="p-3">
+                                                        <div class="flex justify-end gap-2">
+                                                            <button @click="openEditExpense(e)" class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300">Edit</button>
+                                                            <button @click="openEditExpense(e); confirmExpenseDelete = true" class="nb-press bg-red-50 hover:bg-red-100 text-red-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-red-200">Delete</button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <!-- Mobile cards -->
+                                <div class="md:hidden space-y-3" x-show="!loading && filteredExpenses.length > 0" x-cloak>
+                                    <template x-for="e in visibleExpenses" :key="'m-' + e.id">
+                                        <div class="nb-row rounded-xl border border-slate-200 p-3.5 hover:bg-slate-50">
+                                            <div class="flex items-start justify-between gap-3">
+                                                <p class="font-semibold text-slate-800" x-text="e.category"></p>
+                                                <p class="shrink-0 font-bold text-rose-700 tabular-nums" x-text="fmt(e.amount)"></p>
+                                            </div>
+                                            <p class="mt-1 text-xs text-slate-500" x-text="fmtDate(e.date)"></p>
+                                            <p class="mt-1 text-xs text-slate-500 italic" x-show="e.note" x-cloak x-text="e.note"></p>
+                                            <div class="mt-3 grid grid-cols-2 gap-2">
+                                                <button @click="openEditExpense(e)" class="nb-press min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm font-semibold border border-slate-300">Edit</button>
+                                                <button @click="openEditExpense(e); confirmExpenseDelete = true" class="nb-press min-h-[44px] bg-red-50 hover:bg-red-100 text-red-700 rounded-lg text-sm font-semibold border border-red-200">Delete</button>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+
+                                <div class="mt-4 text-center" x-show="filteredExpenses.length > rowsCollapsed || expensesExpanded" x-cloak>
+                                    <button type="button" @click="toggleExpenseRows()" class="nb-press min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                                        <span x-show="!expensesExpanded">Show all
+                                            (<span class="tabular-nums" x-text="filteredExpenses.length"></span>)</span>
+                                        <span x-show="expensesExpanded" x-cloak>Show less</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </section>
+
                         <!-- Dealer purchase history -->
                         <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
-                            <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-                                <h2 class="text-sm sm:text-base font-bold text-slate-800">🚚 Dealer Purchase History</h2>
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <button type="button" @click="toggleSection('purchases')"
+                                        :aria-expanded="purchasesOpen" aria-controls="purchases-body"
+                                        class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
+                                    <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="purchasesOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                                    <span>🚚 Dealer Purchase History</span>
+                                    <span class="rounded-full bg-slate-100 text-slate-600 px-2 py-0.5 text-xs font-bold tabular-nums"
+                                          x-show="purchases.length" x-cloak x-text="purchases.length"></span>
+                                </button>
                                 <input type="search" x-model="dealerSearch" placeholder="Search dealer or item…" aria-label="Search dealer purchases"
+                                       x-show="purchasesOpen" x-cloak
                                        class="w-full sm:w-60 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none transition">
                             </div>
 
+                            <div id="purchases-body" x-show="purchasesOpen" x-cloak class="mt-4">
                             <p x-show="loading" class="nb-loading text-sm font-semibold py-6 text-center">Loading purchases…</p>
                             <p x-show="!loading && filteredPurchases.length === 0" x-cloak class="text-sm text-slate-500 py-8 text-center">
                                 <span x-text="purchases.length ? 'No purchase matches that search.' : 'No dealer purchases recorded yet.'"></span>
@@ -767,10 +993,14 @@
                                 </template>
                             </div>
 
-                            <div class="mt-4 text-center" x-show="filteredPurchases.length > visiblePurchases.length" x-cloak>
-                                <button @click="purchasesLimit += 25" class="nb-press min-h-[44px] px-5 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50">
-                                    Load more (<span x-text="filteredPurchases.length - visiblePurchases.length"></span> left)
+                            <div class="mt-4 text-center" x-show="filteredPurchases.length > rowsCollapsed || purchasesExpanded" x-cloak>
+                                <button type="button" @click="togglePurchaseRows()"
+                                        class="nb-press min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                                    <span x-show="!purchasesExpanded">Show all
+                                        (<span class="tabular-nums" x-text="filteredPurchases.length"></span>)</span>
+                                    <span x-show="purchasesExpanded" x-cloak>Show less</span>
                                 </button>
+                            </div>
                             </div>
                         </section>
 
@@ -1066,6 +1296,84 @@
                 </div>
             </div>
 
+        </div>
+    </div>
+
+    <!-- ================= EXPENSE EDIT =================
+         A direct child of <body>, beside the receipt and product modals, for the
+         same two reasons: a `fixed` overlay nested under a transformed ancestor
+         positions against that ancestor rather than the viewport, and the print
+         rule `body.receipt-open > *:not(#receipt-modal)` only matches top-level
+         siblings. `no-print` is not redundant with that rule — the rule only
+         applies while a receipt is open, so without it Ctrl+P with just this
+         dialog open would print it over the dashboard. -->
+    <div id="expense-modal" x-show="isExpenseOpen" x-cloak x-transition.opacity
+         class="no-print fixed inset-0 bg-brand-950/70 z-[55] flex items-center justify-center p-4 overflow-y-auto"
+         role="dialog" aria-modal="true" aria-label="Expense" @keydown.escape.window="closeExpense()">
+        <div class="nb-pop bg-white w-full sm:max-w-md rounded-2xl shadow-2xl p-5 sm:p-6">
+            <div class="flex items-start justify-between gap-3 mb-4">
+                <h2 class="text-lg font-bold text-slate-800">খরচ সম্পাদনা</h2>
+                <button @click="closeExpense()" aria-label="Close"
+                        class="nb-press text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">&times;</button>
+            </div>
+
+            <form @submit.prevent="submitExpenseEdit()" class="space-y-4">
+                <div>
+                    <label for="exp-edit-category" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">খরচের খাত</label>
+                    <!-- Reuses the datalist in the expense panel, which stays in the
+                         DOM because that panel is x-show, not x-if. -->
+                    <input id="exp-edit-category" type="text" x-model="expenseDraft.category" list="expense-categories"
+                           autocomplete="off" maxlength="60" @keydown.enter.prevent class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none text-base sm:text-sm transition" required>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label for="exp-edit-amount" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">টাকা (৳)</label>
+                        <input id="exp-edit-amount" type="number" min="0.01" step="0.01" x-model="expenseDraft.amount"
+                               @keydown.enter.prevent class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none text-base sm:text-sm transition" required>
+                    </div>
+                    <div>
+                        <label for="exp-edit-date" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">তারিখ</label>
+                        <input id="exp-edit-date" type="date" x-model="expenseDraft.date"
+                               @keydown.enter.prevent class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none text-base sm:text-sm transition" required>
+                    </div>
+                </div>
+                <div>
+                    <label for="exp-edit-note" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">নোট <span class="normal-case font-normal text-slate-400">(optional)</span></label>
+                    <textarea id="exp-edit-note" rows="2" x-model="expenseDraft.note" maxlength="200"
+                              class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none text-base sm:text-sm transition resize-y"></textarea>
+                </div>
+
+                <p class="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
+                   x-show="expenseError" x-cloak x-text="expenseError"></p>
+
+                <div class="flex flex-col sm:flex-row gap-2.5 pt-1">
+                    <button type="button" @click="confirmExpenseDelete = true"
+                            x-show="!confirmExpenseDelete" x-cloak
+                            class="nb-press min-h-[48px] sm:mr-auto bg-red-50 hover:bg-red-100 text-red-700 px-4 py-2.5 rounded-lg text-sm font-semibold border border-red-200">
+                        Delete
+                    </button>
+                    <button type="button" @click="closeExpense()"
+                            class="nb-press min-h-[48px] order-2 sm:order-1 bg-slate-200 hover:bg-slate-300 text-slate-700 px-5 py-2.5 rounded-lg text-sm font-semibold">Cancel</button>
+                    <button type="submit" :disabled="savingExpenseEdit"
+                            class="nb-press min-h-[48px] order-1 sm:order-2 bg-rose-700 hover:bg-rose-800 disabled:opacity-60 text-white px-5 py-2.5 rounded-lg text-sm font-semibold shadow">
+                        <span x-text="savingExpenseEdit ? 'Saving…' : 'Save Changes'"></span>
+                    </button>
+                </div>
+            </form>
+
+            <div class="mt-4 rounded-xl border border-red-200 bg-red-50 p-3.5" x-show="confirmExpenseDelete" x-cloak>
+                <p class="text-sm font-semibold text-red-800">
+                    Delete “<span x-text="expenseDraft.category"></span>” — <span x-text="fmt(expenseDraft.amount)"></span>
+                    on <span x-text="fmtDate(expenseDraft.date)"></span>?
+                </p>
+                <p class="mt-1 text-xs text-red-700">Nothing else refers to it.</p>
+                <div class="mt-3 flex gap-2">
+                    <button type="button" @click="confirmExpenseDelete = false"
+                            class="nb-press min-h-[40px] flex-1 bg-white border border-slate-300 text-slate-700 rounded-lg text-sm font-semibold hover:bg-slate-50">Cancel</button>
+                    <button type="button" @click="deleteExpense()" :disabled="savingExpenseEdit"
+                            class="nb-press min-h-[40px] flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white rounded-lg text-sm font-semibold">Delete</button>
+                </div>
+            </div>
         </div>
     </div>
 

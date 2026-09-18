@@ -288,13 +288,24 @@ invoices(id, customer_name, customer_contact, date, sale_time, comment)
 sales(id, invoice_id, line_no, customer_name, customer_contact, item_name, quantity,
       total_price, date, sale_time, warranty_months, cost_price, list_price, comment)
 dealer_purchases(id, dealer_name, item_name, quantity, total_cost, date)
+expenses(id, category, amount, note, date, created_time)
 admin(id, email, password)
 app_meta(key, value)   -- holds schema_version
 
 CREATE UNIQUE INDEX idx_inventory_barcode ON inventory(barcode)
   WHERE barcode IS NOT NULL AND barcode != '';
 CREATE INDEX idx_sales_invoice ON sales(invoice_id);
+CREATE INDEX idx_expenses_date ON expenses(date);
 ```
+
+**Expenses are the shop's running costs** — rent, electricity, salary, tea,
+transport — and deliberately *not* stock buying. Goods bought for resale go through
+`dealer_purchases` and are already inside each sale line's snapshotted `cost_price`,
+so recording them as an expense too would subtract them from profit twice. Nothing in
+the schema can enforce that; the form says it plainly and warns when a head looks like
+stock buying. `category` is free text with no table behind it: the form offers a
+datalist of heads already used. `date` is the day the money went out and is editable;
+`created_time` records when the row was entered and never changes.
 
 **An invoice is one money receipt; its items are rows in `sales`**, joined by
 `sales.invoice_id` and numbered by `line_no`. The Invoice No. printed on a receipt is
@@ -380,9 +391,12 @@ All endpoints are JSON. **None of them require authentication** — see
 |---|---|---|---|
 | `POST` | `/api/login` | `{email, password}` | `{success, message}`; `401` if wrong |
 | `POST` | `/api/reset-password` | `{email, new_password}` | `{success, message}` |
-| `GET` | `/api/data` | — | `{inventory, invoices, sales, purchases}` — `sales` are invoice lines |
+| `GET` | `/api/data` | — | `{inventory, invoices, sales, purchases, expenses}` — `sales` are invoice lines |
 | `POST` | `/api/sales` | `{customer_name, customer_contact?, date, comment?, items: [{item_name, quantity, total_price}]}` | `{id}` (invoice) |
 | `POST` | `/api/dealer` | `{dealer_name, item_name, quantity, cost_price, selling_price, date, barcode?, warranty_months?}` | `{id}` |
+| `POST` | `/api/expenses` | `{category, amount, note?, date?}` | `{id}`; `400` invalid |
+| `PUT` | `/api/expenses/:id` | same as POST | `{success}`; `404` if gone |
+| `DELETE` | `/api/expenses/:id` | — | `{success}`; `404` if gone |
 | `POST` | `/api/inventory` | `{item_name, quantity, cost_price, selling_price, barcode?, warranty_months?}` | `{id}`; `400` invalid, `409` duplicate |
 | `PUT` | `/api/inventory/:id` | same as POST | `{success, renamed}`; `404`/`400`/`409` |
 | `DELETE` | `/api/inventory/:id` | — | `{success}`; `404` if gone |
@@ -535,6 +549,11 @@ Deliberate scope choices, not defects. Worth knowing before you build on this.
 - **No discount, VAT or paid/due lines on the invoice.** The totals block is Sub Total and
   Total only. A sale made below the set price is recorded and shown as a discount in the
   dashboard, but the invoice prints only what was actually charged.
+- **Expenses are a flat list.** No recurring entries, no attachments, and nothing
+  stops stock buying being typed in as an expense beyond the form's labelling and a
+  soft warning — which would subtract it from profit twice.
+- **Profit is shown two ways.** "Profit" is what the goods earned; "Net Profit" is that
+  minus expenses. Both skip sales with no recorded buying price, and say so.
 - **Invoices cannot be edited or deleted.** *Products* can, but a mistyped invoice still has
   to be corrected directly in the database — there is no `PUT`/`DELETE` for `/api/sales`.
 - **A long invoice continues onto a second page** with the column header repeated, but the

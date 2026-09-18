@@ -5,9 +5,6 @@
 // Stock at or below this count is flagged as low.
 const LOW_STOCK_THRESHOLD = 5;
 
-// How many sales/purchases rows to show before "Load more".
-const PAGE_SIZE = 25;
-
 // Rows a long table shows before it is expanded. Small on purpose: the till is
 // used on a laptop at a counter, and a shop with a hundred products should not
 // have to scroll past all of them to reach the next section.
@@ -122,7 +119,7 @@ function writeSession(active) {
    shopkeeper settles on survives a refresh. Purely cosmetic: losing it costs
    nothing, which is why every access is wrapped rather than guarded. */
 const SECTIONS_KEY = 'shop-sections';
-const DEFAULT_SECTIONS = { products: true, sales: true };
+const DEFAULT_SECTIONS = { products: true, sales: true, expenses: true, purchases: true };
 
 function readSections() {
   try {
@@ -202,6 +199,12 @@ function blankDealer() {
   };
 }
 
+/* One running cost. `category` is the খরচের খাত — free text, offered back as a
+   suggestion next time. `amount` is the whole expense, not a unit price. */
+function blankExpense() {
+  return { id: null, category: '', amount: '', note: '', date: todayLocal() };
+}
+
 function blankProduct() {
   return {
     id: null,
@@ -275,13 +278,19 @@ function shopApp() {
     // Both start collapsed to five rows; "Show all" opens them fully.
     invLimit: ROWS_COLLAPSED,
     salesLimit: ROWS_COLLAPSED,
-    purchasesLimit: PAGE_SIZE,
+    expensesLimit: ROWS_COLLAPSED,
+    purchasesLimit: ROWS_COLLAPSED,
+    // Exposed so the markup can use the constant instead of repeating the
+    // literal 5 — those copies do not follow when the constant changes.
+    rowsCollapsed: ROWS_COLLAPSED,
     /* Two flat booleans rather than one `sections` object: Alpine tracks a
        change to a top-level property reliably, but a change to a key *inside* a
        nested object bound as `sections.products` was not picked up here — the
        value changed and the panel stayed open. Flat is also less to read. */
     productsOpen: readSections().products,
     salesOpen: readSections().sales,
+    expensesOpen: readSections().expenses,
+    purchasesOpen: readSections().purchases,
 
     sale: blankSale(),
     // The invoice being built: [{ key, item_name, quantity, unit_price }].
@@ -299,6 +308,17 @@ function shopApp() {
     scanCode: '',
     unknownBarcode: '',
     dealerScanCode: '',
+
+    // Expenses — the form panel, the list, and the edit dialog.
+    expenses: [],
+    expense: blankExpense(),
+    savingExpense: false,
+    expenseSearch: '',
+    isExpenseOpen: false,
+    expenseDraft: blankExpense(),
+    expenseError: '',
+    savingExpenseEdit: false,
+    confirmExpenseDelete: false,
 
     // Product manager
     isProductOpen: false,
@@ -664,10 +684,22 @@ function shopApp() {
 
     /* ------------------------------------------------- collapsing sections */
 
+    /* Flat `<name>Open` booleans rather than keys on one object: Alpine tracks a
+       change to a top-level property reliably, but a change inside a nested
+       object bound as `sections.products` was not picked up here — the value
+       flipped and the panel stayed open.
+
+       Every flag is written back each time. Omitting one drops it from storage
+       on the next toggle, and it silently reverts to its default. */
     toggleSection(name) {
-      if (name === 'products') this.productsOpen = !this.productsOpen;
-      else this.salesOpen = !this.salesOpen;
-      writeSections({ products: this.productsOpen, sales: this.salesOpen });
+      const key = `${name}Open`;
+      this[key] = !this[key];
+      writeSections({
+        products: this.productsOpen,
+        sales: this.salesOpen,
+        expenses: this.expensesOpen,
+        purchases: this.purchasesOpen,
+      });
     },
 
     // Number.MAX_SAFE_INTEGER rather than the row count, so rows added after
@@ -750,6 +782,87 @@ function shopApp() {
       return this.hasUnknownCost(this.filteredLines);
     },
 
+    /* ---------------------------------------------------------------- খরচ
+
+       Expenses share the sales date range on purpose. Net profit is
+       profit − expenses, and subtracting two figures measured over different
+       periods would produce a number that looks precise and is simply wrong. */
+
+    // Heads the shop has actually used, commonest first — the datalist source.
+    get expenseCategories() {
+      const counts = new Map();
+      for (const e of this.expenses) {
+        const name = String(e.category || '').trim();
+        if (name) counts.set(name, (counts.get(name) || 0) + 1);
+      }
+      return [...counts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([name]) => name);
+    },
+
+    get filteredExpenses() {
+      const q = this.expenseSearch.trim().toLowerCase();
+      return this.expenses.filter((e) => {
+        if (!this.inDateRange(e)) return false;
+        if (!q) return true;
+        return (
+          (e.category || '').toLowerCase().includes(q) ||
+          (e.note || '').toLowerCase().includes(q)
+        );
+      });
+    },
+
+    get visibleExpenses() {
+      return this.filteredExpenses.slice(0, this.expensesLimit);
+    },
+
+    get expensesExpanded() {
+      return this.expensesLimit > ROWS_COLLAPSED;
+    },
+
+    toggleExpenseRows() {
+      this.expensesLimit = this.expensesExpanded ? ROWS_COLLAPSED : Number.MAX_SAFE_INTEGER;
+    },
+
+    get rangeExpenses() {
+      return this.filteredExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    },
+
+    // What the shop actually made over the selected range. Inherits the
+    // understatement rangeProfit carries when a sale has no cost snapshot,
+    // which is why the same warning is shown beside it.
+    get rangeNetProfit() {
+      return this.rangeProfit - this.rangeExpenses;
+    },
+
+    // Where the money went, over the range — biggest head first.
+    get expenseByCategory() {
+      const totals = new Map();
+      for (const e of this.filteredExpenses) {
+        const name = String(e.category || '').trim() || '—';
+        totals.set(name, (totals.get(name) || 0) + Number(e.amount || 0));
+      }
+      return [...totals.entries()]
+        .map(([category, amount]) => ({ category, amount }))
+        .sort((a, b) => b.amount - a.amount);
+    },
+
+    // All-time figures, for the summary card.
+    get totalExpenses() {
+      return this.expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    },
+
+    get netProfit() {
+      return this.profitOf(this.sales) - this.totalExpenses;
+    },
+
+    // Softly flags a head that sounds like stock buying, which belongs in Dealer
+    // Purchase. A hint, never a refusal: "মাল আনার ভাড়া" is a genuine expense
+    // that contains the word.
+    get expenseLooksLikeStock() {
+      return /(মাল|স্টক|stock|purchase|dealer|কেনা)/i.test(this.expense.category || '');
+    },
+
     get filteredPurchases() {
       const q = this.dealerSearch.trim().toLowerCase();
       if (!q) return this.purchases;
@@ -758,6 +871,14 @@ function shopApp() {
           (p.dealer_name || '').toLowerCase().includes(q) ||
           (p.item_name || '').toLowerCase().includes(q)
       );
+    },
+
+    get purchasesExpanded() {
+      return this.purchasesLimit > ROWS_COLLAPSED;
+    },
+
+    togglePurchaseRows() {
+      this.purchasesLimit = this.purchasesExpanded ? ROWS_COLLAPSED : Number.MAX_SAFE_INTEGER;
     },
 
     get visiblePurchases() {
@@ -805,6 +926,8 @@ function shopApp() {
       this.invoices = [];
       this.inventory = [];
       this.purchases = [];
+      this.expenses = [];
+      this.isExpenseOpen = false;
       this.cart = [];
       this.line = blankLine();
     },
@@ -857,6 +980,7 @@ function shopApp() {
         this.sales = data.sales || [];
         this.invoices = buildInvoices(data.invoices || [], this.sales);
         this.purchases = data.purchases || [];
+        this.expenses = data.expenses || [];
       } catch (err) {
         this.loadError = err.message || 'Could not load shop data.';
         this.notify(this.loadError, 'error');
@@ -1100,6 +1224,90 @@ function shopApp() {
         this.$nextTick(() => this.$refs.dealerItem?.focus());
       }
       this.dealerScanCode = '';
+    },
+
+    /* --------------------------------------------------------- খরচ entry */
+
+    async submitExpense() {
+      if (this.savingExpense) return;
+      this.savingExpense = true;
+      try {
+        const res = await fetch('/api/expenses', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.expense),
+        });
+        // describeFailure, not data.error: it is the one that explains an older
+        // server answering with an HTML 404 instead of JSON.
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not save the expense.'));
+
+        await this.loadData();
+        this.expense = blankExpense();
+        this.notify('Expense saved.');
+      } catch (err) {
+        this.notify(err.message || 'Could not save the expense.', 'error');
+      } finally {
+        this.savingExpense = false;
+      }
+    },
+
+    // Spread, never the live row: binding x-model straight to the expenses entry
+    // would edit the table behind the dialog as you type, and keep the change on
+    // Cancel. Same reasoning as openEditProduct().
+    openEditExpense(row) {
+      this.expenseDraft = { ...blankExpense(), ...row };
+      this.expenseError = '';
+      this.confirmExpenseDelete = false;
+      this.isExpenseOpen = true;
+    },
+
+    closeExpense() {
+      this.isExpenseOpen = false;
+      this.confirmExpenseDelete = false;
+    },
+
+    async submitExpenseEdit() {
+      if (this.savingExpenseEdit) return;
+      this.savingExpenseEdit = true;
+      this.expenseError = '';
+      try {
+        const res = await fetch(`/api/expenses/${this.expenseDraft.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.expenseDraft),
+        });
+        // Left open on failure so the reason is readable where it was typed.
+        if (!res.ok) {
+          this.expenseError = await this.describeFailure(res, 'Could not save the expense.');
+          return;
+        }
+        await this.loadData();
+        this.closeExpense();
+        this.notify('Expense updated.');
+      } catch (err) {
+        this.expenseError = 'Connection error. Try again.';
+      } finally {
+        this.savingExpenseEdit = false;
+      }
+    },
+
+    async deleteExpense() {
+      if (this.savingExpenseEdit) return;
+      this.savingExpenseEdit = true;
+      try {
+        const res = await fetch(`/api/expenses/${this.expenseDraft.id}`, { method: 'DELETE' });
+        if (!res.ok) {
+          this.expenseError = await this.describeFailure(res, 'Could not delete the expense.');
+          return;
+        }
+        await this.loadData();
+        this.closeExpense();
+        this.notify('Expense deleted.');
+      } catch (err) {
+        this.expenseError = 'Connection error. Try again.';
+      } finally {
+        this.savingExpenseEdit = false;
+      }
     },
 
     /* ------------------------------------------------------- product manager */
