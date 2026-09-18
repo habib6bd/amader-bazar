@@ -21,6 +21,31 @@ function todayLocal() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/* The dates a preset covers, as YYYY-MM-DD strings. Shared by setDateRange()
+   and the activePreset getter, so the buttons and the highlight can never
+   disagree about what "This Week" means. Built from local date parts, never
+   toISOString() — see todayLocal() above. */
+function rangeFor(preset) {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const iso = (x) => `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}`;
+
+  if (preset === 'today') return { from: iso(d), to: iso(d) };
+
+  if (preset === 'week') {
+    // Week starts Saturday, as the Bangladeshi working week does.
+    const start = new Date(d);
+    start.setDate(d.getDate() - ((d.getDay() + 1) % 7));
+    return { from: iso(start), to: iso(d) };
+  }
+
+  if (preset === 'month') {
+    return { from: iso(new Date(d.getFullYear(), d.getMonth(), 1)), to: iso(d) };
+  }
+
+  return { from: '', to: '' }; // 'all'
+}
+
 // ---------------------------------------------------------------- numbers
 const ONES = [
   '', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
@@ -283,9 +308,12 @@ function shopApp() {
     productError: '',
     confirmDelete: false,
 
-    // Sales date filter. Empty strings mean "all time".
-    dateFrom: '',
-    dateTo: '',
+    /* Date filter, shared by the sales and expense lists so that
+       net = profit − expenses is a true subtraction rather than two ranges
+       compared by accident. Starts on today; setDateRange('all') clears both
+       back to '', which means all time. */
+    dateFrom: todayLocal(),
+    dateTo: todayLocal(),
 
     isReceiptOpen: false,
     currentReceipt: {},
@@ -532,27 +560,34 @@ function shopApp() {
     /* ---------------------------------------------------------- date filter */
 
     setDateRange(preset) {
-      const d = new Date();
-      const pad = (n) => String(n).padStart(2, '0');
-      const iso = (x) => `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}`;
+      const { from, to } = rangeFor(preset);
+      this.dateFrom = from;
+      this.dateTo = to;
+      this.onDateEdit();
+    },
 
-      if (preset === 'all') {
-        this.dateFrom = '';
-        this.dateTo = '';
-      } else if (preset === 'today') {
-        this.dateFrom = this.dateTo = iso(d);
-      } else if (preset === 'week') {
-        // Week starts Saturday, as the Bangladeshi working week does.
-        const back = (d.getDay() + 1) % 7;
-        const start = new Date(d);
-        start.setDate(d.getDate() - back);
-        this.dateFrom = iso(start);
-        this.dateTo = iso(d);
-      } else if (preset === 'month') {
-        this.dateFrom = iso(new Date(d.getFullYear(), d.getMonth(), 1));
-        this.dateTo = iso(d);
-      }
+    // Both lists fold back to five rows whenever the range changes, however it
+    // changed — a preset button or the From/To boxes.
+    onDateEdit() {
       this.salesLimit = ROWS_COLLAPSED;
+      this.expensesLimit = ROWS_COLLAPSED;
+    },
+
+    /* Which preset button to highlight, worked out from the dates rather than
+       stored alongside them. A stored value would have to be cleared in every
+       path that writes a date — two @change handlers, four buttons, and the
+       "show all time" escape hatch — and one missed path would leave the
+       highlight claiming a range that is not on screen. Deriving it also gets
+       the nice case right: type today's date into both boxes by hand and Today
+       lights up, because it is today's range. '' means a custom range, where
+       no button is highlighted and rangeLabel spells the dates out. */
+    get activePreset() {
+      if (!this.dateFrom && !this.dateTo) return 'all';
+      for (const preset of ['today', 'week', 'month']) {
+        const r = rangeFor(preset);
+        if (r.from === this.dateFrom && r.to === this.dateTo) return preset;
+      }
+      return '';
     },
 
     get isDateFiltered() {

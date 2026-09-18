@@ -542,23 +542,31 @@
                             <!-- Date filter. Everything below — the rows, the totals and the profit —
                                  follows whatever is selected here. -->
                             <div class="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                <!-- All four highlight from activePreset, which is derived from the
+                                     dates themselves, so the lit button always matches what is listed. -->
                                 <div class="flex flex-wrap items-center gap-2">
-                                    <button @click="setDateRange('today')" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 bg-white hover:bg-slate-100 text-slate-700">Today</button>
-                                    <button @click="setDateRange('week')" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 bg-white hover:bg-slate-100 text-slate-700">This Week</button>
-                                    <button @click="setDateRange('month')" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 bg-white hover:bg-slate-100 text-slate-700">This Month</button>
-                                    <button @click="setDateRange('all')"
-                                            class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
-                                            :class="isDateFiltered ? 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700' : 'border-brand-300 bg-brand-100 text-brand-800'">All Time</button>
+                                    <button @click="setDateRange('today')" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                            :aria-pressed="activePreset === 'today'"
+                                            :class="activePreset === 'today' ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">Today</button>
+                                    <button @click="setDateRange('week')" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                            :aria-pressed="activePreset === 'week'"
+                                            :class="activePreset === 'week' ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">This Week</button>
+                                    <button @click="setDateRange('month')" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                            :aria-pressed="activePreset === 'month'"
+                                            :class="activePreset === 'month' ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">This Month</button>
+                                    <button @click="setDateRange('all')" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                            :aria-pressed="activePreset === 'all'"
+                                            :class="activePreset === 'all' ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">All Time</button>
                                 </div>
                                 <div class="mt-2.5 flex flex-wrap items-end gap-2">
                                     <div>
                                         <label for="sales-from" class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">From</label>
-                                        <input id="sales-from" type="date" x-model="dateFrom" @change="salesLimit = 5"
+                                        <input id="sales-from" type="date" x-model="dateFrom" @change="onDateEdit()"
                                                class="p-2 text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
                                     </div>
                                     <div>
                                         <label for="sales-to" class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">To</label>
-                                        <input id="sales-to" type="date" x-model="dateTo" @change="salesLimit = 5"
+                                        <input id="sales-to" type="date" x-model="dateTo" @change="onDateEdit()"
                                                class="p-2 text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
                                     </div>
                                 </div>
@@ -590,9 +598,18 @@
                             </div>
 
                             <p x-show="loading" class="nb-loading text-sm font-semibold py-6 text-center">Loading sales…</p>
-                            <p x-show="!loading && filteredInvoices.length === 0" x-cloak class="text-sm text-slate-500 py-8 text-center">
-                                <span x-text="invoices.length ? 'No invoice matches that search or date range.' : 'No sales recorded yet.'"></span>
-                            </p>
+                            <div x-show="!loading && filteredInvoices.length === 0" x-cloak class="py-8 text-center">
+                                <p class="text-sm text-slate-500">
+                                    <span x-text="invoices.length ? 'No invoice matches that search or date range.' : 'No sales recorded yet.'"></span>
+                                </p>
+                                <!-- The list opens on Today, so a shop that has not sold yet today
+                                     would otherwise see an empty table over a full ledger. -->
+                                <button type="button" @click="setDateRange('all')"
+                                        x-show="invoices.length && activePreset !== 'all'" x-cloak
+                                        class="nb-press mt-3 min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                                    Show all time
+                                </button>
+                            </div>
 
                             <!-- Desktop table: one row per invoice, however many items it holds. -->
                             <div class="hidden md:block overflow-x-auto" x-show="!loading && filteredInvoices.length > 0" x-cloak>
