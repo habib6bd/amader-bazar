@@ -393,9 +393,18 @@
 
                         <!-- Inventory -->
                         <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
-                            <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-                                <h2 class="text-sm sm:text-base font-bold text-slate-800">📋 Products &amp; Stock</h2>
-                                <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <!-- The whole heading is the toggle, so it is an easy target on a
+                                     touchscreen rather than a small chevron. -->
+                                <button type="button" @click="toggleSection('products')"
+                                        :aria-expanded="productsOpen" aria-controls="products-body"
+                                        class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
+                                    <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="productsOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                                    <span>📋 Products &amp; Stock</span>
+                                    <span class="rounded-full bg-slate-100 text-slate-600 px-2 py-0.5 text-xs font-bold tabular-nums"
+                                          x-show="inventory.length" x-cloak x-text="inventory.length"></span>
+                                </button>
+                                <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto" x-show="productsOpen" x-cloak>
                                     <input type="search" x-model="invSearch" placeholder="Search name or barcode…" aria-label="Search products"
                                            class="flex-1 sm:flex-none sm:w-52 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
                                     <button @click="openAddProduct()"
@@ -405,6 +414,7 @@
                                 </div>
                             </div>
 
+                            <div id="products-body" x-show="productsOpen" x-cloak class="mt-4">
                             <!-- What the stock on hand is worth, and what it stands to earn if it
                                  all sells at the set price. -->
                             <div class="grid grid-cols-2 gap-3 mb-4" x-show="!loading && inventory.length > 0" x-cloak>
@@ -438,7 +448,7 @@
                                         </tr>
                                     </thead>
                                     <tbody class="divide-y divide-slate-100 text-sm">
-                                        <template x-for="item in filteredInventory" :key="item.id">
+                                        <template x-for="item in visibleInventory" :key="item.id">
                                             <tr class="nb-row hover:bg-slate-50">
                                                 <td class="p-3">
                                                     <span class="font-medium text-slate-800" x-text="item.item_name"></span>
@@ -472,7 +482,7 @@
 
                             <!-- Mobile cards -->
                             <div class="md:hidden space-y-3" x-show="!loading && filteredInventory.length > 0" x-cloak>
-                                <template x-for="item in filteredInventory" :key="'m-' + item.id">
+                                <template x-for="item in visibleInventory" :key="'m-' + item.id">
                                     <div class="nb-row rounded-xl border border-slate-200 p-3.5 hover:bg-slate-50">
                                         <div class="flex items-start justify-between gap-3">
                                             <div class="min-w-0">
@@ -499,16 +509,36 @@
                                     </div>
                                 </template>
                             </div>
+                            <!-- One control, not paging: a shop wants either the short list or
+                                 all of it, and paging by 25 just moves the scrolling problem. -->
+                            <div class="mt-4 text-center" x-show="filteredInventory.length > 5 || inventoryExpanded" x-cloak>
+                                <button type="button" @click="toggleInventoryRows()"
+                                        class="nb-press min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                                    <span x-show="!inventoryExpanded">Show all
+                                        (<span class="tabular-nums" x-text="filteredInventory.length"></span>)</span>
+                                    <span x-show="inventoryExpanded" x-cloak>Show less</span>
+                                </button>
+                            </div>
+                            </div>
                         </section>
 
                         <!-- Sales history -->
                         <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
-                            <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-                                <h2 class="text-sm sm:text-base font-bold text-slate-800">🛍️ Customer Sales History</h2>
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <button type="button" @click="toggleSection('sales')"
+                                        :aria-expanded="salesOpen" aria-controls="sales-body"
+                                        class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
+                                    <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="salesOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                                    <span>🛍️ Customer Sales History</span>
+                                    <span class="rounded-full bg-slate-100 text-slate-600 px-2 py-0.5 text-xs font-bold tabular-nums"
+                                          x-show="invoices.length" x-cloak x-text="invoices.length"></span>
+                                </button>
                                 <input type="search" x-model="saleSearch" placeholder="Search customer or item…" aria-label="Search sales"
+                                       x-show="salesOpen" x-cloak
                                        class="w-full sm:w-60 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
                             </div>
 
+                            <div id="sales-body" x-show="salesOpen" x-cloak class="mt-4">
                             <!-- Date filter. Everything below — the rows, the totals and the profit —
                                  follows whatever is selected here. -->
                             <div class="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -523,12 +553,12 @@
                                 <div class="mt-2.5 flex flex-wrap items-end gap-2">
                                     <div>
                                         <label for="sales-from" class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">From</label>
-                                        <input id="sales-from" type="date" x-model="dateFrom" @change="salesLimit = 25"
+                                        <input id="sales-from" type="date" x-model="dateFrom" @change="salesLimit = 5"
                                                class="p-2 text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
                                     </div>
                                     <div>
                                         <label for="sales-to" class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">To</label>
-                                        <input id="sales-to" type="date" x-model="dateTo" @change="salesLimit = 25"
+                                        <input id="sales-to" type="date" x-model="dateTo" @change="salesLimit = 5"
                                                class="p-2 text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
                                     </div>
                                 </div>
@@ -654,10 +684,14 @@
                                 </template>
                             </div>
 
-                            <div class="mt-4 text-center" x-show="filteredInvoices.length > visibleInvoices.length" x-cloak>
-                                <button @click="salesLimit += 25" class="nb-press min-h-[44px] px-5 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50">
-                                    Load more (<span x-text="filteredInvoices.length - visibleInvoices.length"></span> left)
+                            <div class="mt-4 text-center" x-show="filteredInvoices.length > 5 || salesExpanded" x-cloak>
+                                <button type="button" @click="toggleSalesRows()"
+                                        class="nb-press min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                                    <span x-show="!salesExpanded">Show all
+                                        (<span class="tabular-nums" x-text="filteredInvoices.length"></span>)</span>
+                                    <span x-show="salesExpanded" x-cloak>Show less</span>
                                 </button>
+                            </div>
                             </div>
                         </section>
 

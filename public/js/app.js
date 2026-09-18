@@ -8,6 +8,11 @@ const LOW_STOCK_THRESHOLD = 5;
 // How many sales/purchases rows to show before "Load more".
 const PAGE_SIZE = 25;
 
+// Rows a long table shows before it is expanded. Small on purpose: the till is
+// used on a laptop at a counter, and a shop with a hundred products should not
+// have to scroll past all of them to reach the next section.
+const ROWS_COLLAPSED = 5;
+
 // Local calendar date as YYYY-MM-DD. Deliberately not toISOString(), which is
 // UTC — in Bangladesh (UTC+6) that returns yesterday's date until 6am.
 function todayLocal() {
@@ -85,6 +90,28 @@ function writeSession(active) {
     else localStorage.removeItem(SESSION_KEY);
   } catch {
     /* nothing to do — the user just logs in again next visit */
+  }
+}
+
+/* Which dashboard sections are open, remembered per browser so the layout a
+   shopkeeper settles on survives a refresh. Purely cosmetic: losing it costs
+   nothing, which is why every access is wrapped rather than guarded. */
+const SECTIONS_KEY = 'shop-sections';
+const DEFAULT_SECTIONS = { products: true, sales: true };
+
+function readSections() {
+  try {
+    return { ...DEFAULT_SECTIONS, ...JSON.parse(localStorage.getItem(SECTIONS_KEY) || '{}') };
+  } catch {
+    return { ...DEFAULT_SECTIONS };
+  }
+}
+
+function writeSections(sections) {
+  try {
+    localStorage.setItem(SECTIONS_KEY, JSON.stringify(sections));
+  } catch {
+    /* nothing to do — the sections simply open again next visit */
   }
 }
 
@@ -220,8 +247,16 @@ function shopApp() {
     invSearch: '',
     saleSearch: '',
     dealerSearch: '',
-    salesLimit: PAGE_SIZE,
+    // Both start collapsed to five rows; "Show all" opens them fully.
+    invLimit: ROWS_COLLAPSED,
+    salesLimit: ROWS_COLLAPSED,
     purchasesLimit: PAGE_SIZE,
+    /* Two flat booleans rather than one `sections` object: Alpine tracks a
+       change to a top-level property reliably, but a change to a key *inside* a
+       nested object bound as `sections.products` was not picked up here — the
+       value changed and the panel stayed open. Flat is also less to read. */
+    productsOpen: readSections().products,
+    salesOpen: readSections().sales,
 
     sale: blankSale(),
     // The invoice being built: [{ key, item_name, quantity, unit_price }].
@@ -517,7 +552,7 @@ function shopApp() {
         this.dateFrom = iso(new Date(d.getFullYear(), d.getMonth(), 1));
         this.dateTo = iso(d);
       }
-      this.salesLimit = PAGE_SIZE;
+      this.salesLimit = ROWS_COLLAPSED;
     },
 
     get isDateFiltered() {
@@ -590,6 +625,37 @@ function shopApp() {
 
     isLowStock(item) {
       return Number(item.quantity) < LOW_STOCK_THRESHOLD;
+    },
+
+    /* ------------------------------------------------- collapsing sections */
+
+    toggleSection(name) {
+      if (name === 'products') this.productsOpen = !this.productsOpen;
+      else this.salesOpen = !this.salesOpen;
+      writeSections({ products: this.productsOpen, sales: this.salesOpen });
+    },
+
+    // Number.MAX_SAFE_INTEGER rather than the row count, so rows added after
+    // expanding (a new sale, a search cleared) stay visible instead of the list
+    // silently re-truncating.
+    get inventoryExpanded() {
+      return this.invLimit > ROWS_COLLAPSED;
+    },
+
+    toggleInventoryRows() {
+      this.invLimit = this.inventoryExpanded ? ROWS_COLLAPSED : Number.MAX_SAFE_INTEGER;
+    },
+
+    get visibleInventory() {
+      return this.filteredInventory.slice(0, this.invLimit);
+    },
+
+    get salesExpanded() {
+      return this.salesLimit > ROWS_COLLAPSED;
+    },
+
+    toggleSalesRows() {
+      this.salesLimit = this.salesExpanded ? ROWS_COLLAPSED : Number.MAX_SAFE_INTEGER;
     },
 
     // ------------------------------------------------------ filtered lists
