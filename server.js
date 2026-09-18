@@ -215,6 +215,12 @@ async function migrate() {
   await addColumnIfMissing('sales', 'invoice_id', 'INTEGER');
   await addColumnIfMissing('sales', 'line_no', 'INTEGER');
   await run(`CREATE INDEX IF NOT EXISTS idx_sales_invoice ON sales(invoice_id)`);
+
+  // Every expense list is filtered by date, so that is what gets the index.
+  // setup() creates the table before calling migrate(), so this can never
+  // reference a table that does not exist yet.
+  await run(`CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date)`);
+
   await linkLegacySales();
 }
 
@@ -298,7 +304,7 @@ async function linkLegacySales() {
    need, since each awaited statement completes before the next is issued. */
 /* Bump whenever setup() or migrate() gains a step. A database already at this
    version skips the whole migration on boot. */
-const SCHEMA_VERSION = '2026-09-17-invoices';
+const SCHEMA_VERSION = '2026-09-18-expenses';
 
 // One read instead of ~20 statements, several of which take a write lock even
 // when they end up changing nothing. On Vercel every cold start runs this, each
@@ -378,6 +384,25 @@ async function setup() {
     quantity INTEGER NOT NULL,
     total_cost REAL NOT NULL,
     date TEXT NOT NULL
+  )`);
+
+  /* The shop's running costs — rent, electricity, salary, tea, transport.
+     Deliberately NOT stock buying: goods bought for resale go through
+     dealer_purchases and are already counted inside each sale line's
+     snapshotted cost_price, so recording them here would charge the shop twice.
+
+     `category` is free text with no category table behind it: the form offers a
+     datalist built from the heads already used, which needs no setup and lets a
+     new head be invented mid-sentence. `amount` is the whole expense, not a
+     unit price. `date` is the day the money went out and stays editable, while
+     `created_time` records when the row was entered and never changes. */
+  await run(`CREATE TABLE IF NOT EXISTS expenses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL,
+    amount REAL NOT NULL,
+    note TEXT,
+    date TEXT NOT NULL,
+    created_time TEXT
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS admin (
@@ -643,15 +668,19 @@ app.use('/api', requireAuth);
 // API: Get Dashboard Stats & Lists
 app.get('/api/data', async (req, res) => {
   try {
-    const [inventory, invoices, sales, purchases] = await Promise.all([
+    // The destructure order must match the Promise.all order exactly; getting it
+    // wrong is the one silent way to break this — inventory would arrive as
+    // expenses and every figure on the dashboard would be nonsense.
+    const [inventory, invoices, sales, purchases, expenses] = await Promise.all([
       all('SELECT * FROM inventory ORDER BY item_name COLLATE NOCASE'),
       all('SELECT * FROM invoices ORDER BY id DESC'),
       // `sales` are invoice lines; ordered so each invoice's lines arrive in
       // the serial order they were entered.
       all('SELECT * FROM sales ORDER BY invoice_id DESC, line_no, id'),
       all('SELECT * FROM dealer_purchases ORDER BY id DESC'),
+      all('SELECT * FROM expenses ORDER BY date DESC, id DESC'),
     ]);
-    res.json({ inventory, invoices, sales, purchases });
+    res.json({ inventory, invoices, sales, purchases, expenses });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1051,6 +1080,95 @@ app.delete('/api/inventory/:id', async (req, res) => {
   try {
     const result = await run(`DELETE FROM inventory WHERE id = ?`, [Number(req.params.id)]);
     if (result.changes === 0) return res.status(404).json({ error: 'That product no longer exists.' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ===========================================================================
+   Expenses (খরচ)
+
+   The shop's running costs. Sales tell it what it earned on goods; without
+   these, "profit" is not what it actually made at the end of the month.
+
+   Deliberately separate from dealer_purchases: stock bought for resale is
+   already inside each sale line's snapshotted cost_price, so counting it here
+   as well would subtract it twice. The form says so; the server cannot tell
+   "মাল কেনা" from "মাল আনার ভাড়া" and does not try.
+   =========================================================================== */
+
+// Returns { error } or { expense }.
+function validateExpense(body = {}) {
+  const category = String(body.category ?? '').trim();
+  if (!category) return { error: 'Expense head is required — e.g. Shop Rent, Electricity, Salary.' };
+  if (category.length > 60) return { error: 'Expense head is too long (max 60 characters).' };
+
+  // Zero is rejected here, unlike a sale's total_price: a zero expense is only
+  // ever a blank form submitted by accident.
+  const amount = Number(body.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { error: 'Amount must be a number greater than zero.' };
+  }
+
+  const note = String(body.note ?? '').trim() || null;
+  if (note && note.length > 200) return { error: 'Note is too long (max 200 characters).' };
+
+  const raw = String(body.date ?? '').trim();
+  if (raw && !/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return { error: 'Date must be a real calendar date.' };
+  }
+  // A future date is allowed on purpose — rent paid in advance is a real entry.
+  const date = raw || todayLocal();
+
+  return { expense: { category, amount, note, date } };
+}
+
+// API: Record an expense
+app.post('/api/expenses', async (req, res) => {
+  const { error, expense } = validateExpense(req.body);
+  if (error) return res.status(400).json({ error });
+
+  try {
+    const result = await run(
+      `INSERT INTO expenses (category, amount, note, date, created_time) VALUES (?, ?, ?, ?, ?)`,
+      [expense.category, expense.amount, expense.note, expense.date, nowLocalTime()]
+    );
+    res.json({ id: result.lastID });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* API: Correct an expense.
+   No 409 anywhere in this file's expense routes: `expenses` has no uniqueness
+   constraint, and inventing one — same head, same day, same amount — would
+   refuse the second cup of tea on the same afternoon. */
+app.put('/api/expenses/:id', async (req, res) => {
+  const { error, expense } = validateExpense(req.body);
+  if (error) return res.status(400).json({ error });
+
+  try {
+    const existing = await get(`SELECT id FROM expenses WHERE id = ?`, [Number(req.params.id)]);
+    if (!existing) return res.status(404).json({ error: 'That expense no longer exists.' });
+
+    // created_time is left alone: it records when the row was entered, which
+    // correcting it later does not change.
+    await run(
+      `UPDATE expenses SET category = ?, amount = ?, note = ?, date = ? WHERE id = ?`,
+      [expense.category, expense.amount, expense.note, expense.date, Number(req.params.id)]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Delete an expense. Nothing references it, so there is nothing to cascade.
+app.delete('/api/expenses/:id', async (req, res) => {
+  try {
+    const result = await run(`DELETE FROM expenses WHERE id = ?`, [Number(req.params.id)]);
+    if (result.changes === 0) return res.status(404).json({ error: 'That expense no longer exists.' });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
