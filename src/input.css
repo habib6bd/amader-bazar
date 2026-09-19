@@ -291,6 +291,8 @@
   background: #fff;
   color: var(--inv-ink);
   padding: 6px 2px 2px;
+  /* Positions the DUE / PAID stamp against the sheet, not the viewport. */
+  position: relative;
 }
 
 .inv-title {
@@ -303,6 +305,40 @@
 
 .inv-sheet {
   border: 1px solid var(--inv-line);
+}
+
+/* ---- DUE / PAID stamp ----
+
+   Outlined rather than filled, and coloured with the border and the text. The
+   print dialog drops background colours by default — a filled badge comes out
+   of the printer as white-on-white, and the shopkeeper only finds out from the
+   customer's copy. Borders and text colour print regardless.
+
+   Positioned against .inv-paper, on the centred "Invoice" title's line, where
+   the sheet is empty. Inside the masthead it landed across the shop's own name:
+   the logo, name, address, mobiles and email already fill that band edge to
+   edge, and there is no free corner in it at any invoice width. */
+.inv-stamp {
+  position: absolute;
+  top: 2px;
+  right: 6px;
+  padding: 0.12rem 0.55rem;
+  border: 2px solid currentColor;
+  border-radius: 0.3rem;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  line-height: 1.5;
+  /* Rotated the way a rubber stamp lands, which is what this stands in for. */
+  transform: rotate(-8deg);
+}
+
+.inv-stamp.is-due {
+  color: #b91c1c;
+}
+
+.inv-stamp.is-paid {
+  color: #15803d;
 }
 
 /* ---- masthead: logo | shop identity ---- */
@@ -493,6 +529,13 @@
 
 .inv-total-line + .inv-total-line {
   margin-top: 0.35rem;
+}
+
+/* What is still owed, said as plainly on the paper as the total is. */
+.inv-total-line.is-due {
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: #b91c1c;
 }
 
 .inv-total-line.is-grand {

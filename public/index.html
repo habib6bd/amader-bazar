@@ -155,7 +155,7 @@
                                     class="nb-press flex-1 min-h-[44px] py-2.5 rounded-lg font-semibold text-[13px] sm:text-sm">Dealer Purchase</button>
                             <button role="tab" :aria-selected="activeForm === 'expense'" @click="activeForm = 'expense'"
                                     :class="activeForm === 'expense' ? 'bg-white text-rose-700 shadow' : 'text-slate-600 hover:text-slate-800'"
-                                    class="nb-press flex-1 min-h-[44px] py-2.5 rounded-lg font-semibold text-[13px] sm:text-sm">খরচ Expense</button>
+                                    class="nb-press flex-1 min-h-[44px] py-2.5 rounded-lg font-semibold text-[13px] sm:text-sm">Expense</button>
                         </div>
 
                         <!-- Customer sale -->
@@ -244,6 +244,11 @@
                                         <p class="text-xs text-slate-500 tabular-nums" x-show="line.item_name && lineAmount > 0" x-cloak>
                                             Line amount: <span class="font-semibold text-slate-700" x-text="fmt(lineAmount)"></span>
                                         </p>
+                                        <!-- Warned here, before + Add, as well as on the cart line below:
+                                             this is where the shopkeeper is looking while typing. -->
+                                        <p class="text-xs font-semibold text-red-600" x-show="outOfStock(line.item_name)" x-cloak>
+                                            ⚠️ <span x-text="line.item_name"></span> — stock out.
+                                        </p>
                                     </div>
 
                                     <!-- The invoice so far, numbered as it will print. -->
@@ -253,7 +258,7 @@
                                     <ol class="space-y-2" x-show="cart.length" x-cloak>
                                         <template x-for="(l, i) in cart" :key="l.key">
                                             <li class="nb-pop rounded-lg border bg-white p-2.5"
-                                                :class="overStock(l) ? 'border-amber-300' : 'border-slate-200'">
+                                                :class="outOfStock(l.item_name) ? 'border-red-300' : overStock(l) ? 'border-amber-300' : 'border-slate-200'">
                                                 <div class="flex items-start gap-2">
                                                     <span class="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-800 text-white text-xs font-bold tabular-nums"
                                                           x-text="i + 1"></span>
@@ -269,7 +274,12 @@
                                                            @keydown.enter.prevent class="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm tabular-nums transition">
                                                     <span class="pl-1 font-bold text-brand-900 tabular-nums whitespace-nowrap" x-text="fmt(lineTotal(l))"></span>
                                                 </div>
-                                                <p class="mt-1.5 text-xs text-amber-700" x-show="overStock(l)" x-cloak>
+                                                <!-- Stock out is its own message, in red: "Only 0 in stock"
+                                                     reads like a quantity to fix, not like an empty shelf. -->
+                                                <p class="mt-1.5 text-xs font-semibold text-red-600" x-show="outOfStock(l.item_name)" x-cloak>
+                                                    ⚠️ This item is stock out.
+                                                </p>
+                                                <p class="mt-1.5 text-xs text-amber-700" x-show="overStock(l) && !outOfStock(l.item_name)" x-cloak>
                                                     Only <span class="font-semibold tabular-nums" x-text="stockFor(l.item_name)"></span> in stock.
                                                 </p>
                                             </li>
@@ -292,6 +302,24 @@
                                     <label for="sale-date" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Date</label>
                                     <input id="sale-date" type="date" x-model="sale.date" @keydown.enter.prevent
                                            class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
+                                </div>
+
+                                <!-- What the customer handed over; the rest becomes the due by
+                                     itself. Left blank the sale is paid in full — submitSale()
+                                     sends the cart total — so a cash sale needs no typing and still
+                                     prints a PAID receipt. A figure below the total makes it a due
+                                     money receipt. -->
+                                <div>
+                                    <label for="sale-paid" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+                                        Paid <span class="normal-case font-normal text-slate-400">(blank = full payment)</span>
+                                    </label>
+                                    <input id="sale-paid" type="number" step="0.01" min="0" inputmode="decimal"
+                                           x-model="sale.paid_amount" @keydown.enter.prevent
+                                           :placeholder="cart.length ? fmtNum(cartTotal) : 'Full amount'"
+                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
+                                    <p class="mt-1.5 text-xs font-semibold text-red-600" x-show="saleDue > 0" x-cloak>
+                                        Due: <span class="tabular-nums" x-text="fmt(saleDue)"></span>
+                                    </p>
                                 </div>
 
                                 <!-- Private to the shop: shown in the sales history, never printed on
@@ -621,6 +649,22 @@
                                             :aria-pressed="activePreset === 'all'"
                                             :class="activePreset === 'all' ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">All Time</button>
                                 </div>
+
+                                <!-- Due / paid. A separate row from the date presets because the two
+                                     combine: "everything still owed, all time" is the question the
+                                     shop actually asks, and it needs one chip from each row. -->
+                                <div class="mt-2 flex flex-wrap items-center gap-2">
+                                    <button @click="saleStatus = 'all'" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                            :aria-pressed="saleStatus === 'all'"
+                                            :class="saleStatus === 'all' ? 'border-slate-400 bg-slate-200 text-slate-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">All</button>
+                                    <button @click="saleStatus = 'due'" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                            :aria-pressed="saleStatus === 'due'"
+                                            :class="saleStatus === 'due' ? 'border-red-300 bg-red-100 text-red-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">Due</button>
+                                    <button @click="saleStatus = 'paid'" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                            :aria-pressed="saleStatus === 'paid'"
+                                            :class="saleStatus === 'paid' ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">Paid</button>
+                                </div>
+
                                 <div class="mt-2.5 flex flex-wrap items-end gap-2">
                                     <div>
                                         <label for="sales-from" class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">From</label>
@@ -657,6 +701,14 @@
                                         <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">খরচ Expenses</p>
                                         <p class="text-sm sm:text-base font-bold text-rose-700 tabular-nums" x-text="fmt(rangeExpenses)"></p>
                                     </div>
+                                    <!-- Money sold but not yet collected. Not subtracted from profit:
+                                         the goods left the shop and the sale is real — this is what
+                                         is still out on credit, which is a different question. -->
+                                    <div>
+                                        <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Due</p>
+                                        <p class="text-sm sm:text-base font-bold tabular-nums"
+                                           :class="rangeDue > 0 ? 'text-red-600' : 'text-slate-500'" x-text="fmt(rangeDue)"></p>
+                                    </div>
                                     <div>
                                         <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Net Profit</p>
                                         <p class="text-base sm:text-lg font-bold tabular-nums"
@@ -675,7 +727,7 @@
                             <p x-show="loading" class="nb-loading text-sm font-semibold py-6 text-center">Loading sales…</p>
                             <div x-show="!loading && filteredInvoices.length === 0" x-cloak class="py-8 text-center">
                                 <p class="text-sm text-slate-500">
-                                    <span x-text="invoices.length ? 'No invoice matches that search or date range.' : 'No sales recorded yet.'"></span>
+                                    <span x-text="invoices.length ? (saleStatus === 'due' ? 'No due money receipt in this date range — nothing is owed.' : 'No invoice matches that search or date range.') : 'No sales recorded yet.'"></span>
                                 </p>
                                 <!-- The list opens on Today, so a shop that has not sold yet today
                                      would otherwise see an empty table over a full ledger. -->
@@ -721,12 +773,19 @@
                                                     <span class="block text-xs text-amber-700 tabular-nums" x-show="invoiceDiscount(inv) > 0" x-cloak>
                                                         −<span x-text="fmt(invoiceDiscount(inv))"></span> off
                                                     </span>
+                                                    <!-- What is still owed on this receipt. -->
+                                                    <span class="block text-xs font-semibold text-red-600 tabular-nums" x-show="isInvoiceDue(inv)" x-cloak>
+                                                        Due <span x-text="fmt(invoiceDue(inv))"></span>
+                                                    </span>
                                                 </td>
                                                 <td class="p-3 text-right tabular-nums font-medium whitespace-nowrap"
                                                     :class="invoiceProfit(inv) === null ? 'text-slate-400' : invoiceProfit(inv) < 0 ? 'text-red-600' : 'text-brand-800'"
                                                     x-text="invoiceProfit(inv) === null ? '—' : fmt(invoiceProfit(inv))"></td>
                                                 <td class="p-3">
                                                     <div class="flex justify-end gap-2">
+                                                        <button @click="openPayment(inv)"
+                                                                class="nb-press px-2.5 py-1.5 rounded-lg text-xs font-semibold border whitespace-nowrap"
+                                                                :class="isInvoiceDue(inv) ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'">Paid</button>
                                                         <button @click="showReceipt(inv)" class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 whitespace-nowrap">Show</button>
                                                         <button @click="printReceipt(inv)" class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-brand-200 whitespace-nowrap">Print</button>
                                                     </div>
@@ -765,12 +824,22 @@
                                                     · −<span x-text="fmt(invoiceDiscount(inv))"></span> off
                                                 </span>
                                             </p>
-                                            <p class="font-bold text-brand-800 tabular-nums" x-text="fmt(invoiceTotal(inv))"></p>
+                                            <div class="text-right">
+                                                <p class="font-bold text-brand-800 tabular-nums" x-text="fmt(invoiceTotal(inv))"></p>
+                                                <p class="text-xs font-semibold text-red-600 tabular-nums" x-show="isInvoiceDue(inv)" x-cloak>
+                                                    Due <span x-text="fmt(invoiceDue(inv))"></span>
+                                                </p>
+                                            </div>
                                         </div>
                                         <p class="mt-1.5 text-xs text-slate-500 italic" x-show="inv.comment" x-cloak x-text="inv.comment"></p>
                                         <div class="mt-3 grid grid-cols-2 gap-2">
                                             <button @click="showReceipt(inv)" class="nb-press min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm font-semibold border border-slate-300">Show Invoice</button>
                                             <button @click="printReceipt(inv)" class="nb-press min-h-[44px] bg-brand-50 hover:bg-brand-100 text-brand-800 rounded-lg text-sm font-semibold border border-brand-200">Print</button>
+                                            <button @click="openPayment(inv)"
+                                                    class="nb-press col-span-2 min-h-[44px] rounded-lg text-sm font-semibold border"
+                                                    :class="isInvoiceDue(inv) ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'">
+                                                Paid
+                                            </button>
                                         </div>
                                     </div>
                                 </template>
@@ -1027,6 +1096,18 @@
 
                 <h2 class="inv-title">Invoice</h2>
 
+                <!-- DUE or PAID, stamped in the top corner of the sheet. Sits on the
+                     title line rather than inside the masthead, which is full: the
+                     logo and the shop's name and address already use its width, and a
+                     stamp over them covers the shop's own name.
+
+                     Only on invoices that carry a paid amount — one issued before due
+                     tracking existed genuinely has no answer, and printing PAID on it
+                     would be a claim the shop cannot stand behind. -->
+                <div class="inv-stamp" :class="isInvoiceDue(currentReceipt) ? 'is-due' : 'is-paid'"
+                     x-show="invoiceTracksPayment(currentReceipt)" x-cloak
+                     x-text="isInvoiceDue(currentReceipt) ? 'DUE' : 'PAID'"></div>
+
                 <div class="inv-sheet">
 
                     <!-- Masthead -->
@@ -1125,6 +1206,15 @@
                             <p class="inv-total-line is-grand">
                                 <span>Total</span>
                                 <span class="tabular-nums" x-text="fmt(invoiceTotal(currentReceipt))"></span>
+                            </p>
+                            <!-- Only on receipts that track payment; see the stamp above. -->
+                            <p class="inv-total-line" x-show="invoiceTracksPayment(currentReceipt)" x-cloak>
+                                <span>Paid</span>
+                                <span class="tabular-nums" x-text="fmt(invoicePaid(currentReceipt))"></span>
+                            </p>
+                            <p class="inv-total-line is-due" x-show="isInvoiceDue(currentReceipt)" x-cloak>
+                                <span>Due</span>
+                                <span class="tabular-nums" x-text="fmt(invoiceDue(currentReceipt))"></span>
                             </p>
                         </div>
                     </div>
@@ -1374,6 +1464,74 @@
                             class="nb-press min-h-[40px] flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white rounded-lg text-sm font-semibold">Delete</button>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- ================= PAYMENT =================
+         A direct child of <body> for the same reasons as the dialogs above.
+         z-[60] rather than z-[55]: this one can be opened from the receipt
+         modal (z-50) while it is still on screen — the shopkeeper looks at the
+         DUE receipt and settles it from there — so it has to sit above it. -->
+    <div id="payment-modal" x-show="isPaymentOpen" x-cloak x-transition.opacity
+         class="no-print fixed inset-0 bg-brand-950/70 z-[60] flex items-center justify-center p-4 overflow-y-auto"
+         role="dialog" aria-modal="true" aria-label="Payment" @keydown.escape.window="closePayment()">
+        <div class="nb-pop bg-white w-full sm:max-w-md rounded-2xl shadow-2xl p-5 sm:p-6">
+            <div class="flex items-start justify-between gap-3 mb-4">
+                <div>
+                    <h2 class="text-lg font-bold text-slate-800">Payment</h2>
+                    <p class="text-xs text-slate-500">
+                        Invoice <span class="tabular-nums font-semibold" x-text="'#' + (paymentDraft.id ?? '')"></span>
+                        · <span x-text="paymentDraft.customer_name"></span>
+                    </p>
+                </div>
+                <button @click="closePayment()" aria-label="Close"
+                        class="nb-press text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">&times;</button>
+            </div>
+
+            <!-- Total and Due are read-only. The invoice's lines are what set the
+                 total, and this dialog deliberately cannot touch them. -->
+            <div class="grid grid-cols-2 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+                <div>
+                    <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Total</p>
+                    <p class="text-base font-bold text-slate-800 tabular-nums" x-text="fmt(paymentDraft.total)"></p>
+                </div>
+                <div>
+                    <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Due</p>
+                    <p class="text-base font-bold tabular-nums"
+                       :class="paymentDue > 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(paymentDue)"></p>
+                </div>
+            </div>
+
+            <form @submit.prevent="submitPayment()" class="mt-4 space-y-4">
+                <div>
+                    <label for="payment-paid" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Paid</label>
+                    <input id="payment-paid" type="number" min="0" step="0.01" inputmode="decimal"
+                           x-model="paymentDraft.paid_amount" @keydown.enter.prevent
+                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
+                    <!-- The whole point of the dialog in one press: the customer came
+                         back and cleared the balance. -->
+                    <button type="button" @click="markFullyPaid()"
+                            class="nb-press mt-2 min-h-[40px] w-full px-4 py-2 rounded-lg border border-brand-200 bg-brand-50 hover:bg-brand-100 text-brand-800 text-sm font-semibold">
+                        Mark fully paid
+                    </button>
+                </div>
+
+                <p class="text-xs text-slate-500">
+                    Once the full amount is paid, the money receipt becomes a <strong>PAID</strong> one.
+                </p>
+
+                <p class="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
+                   x-show="paymentError" x-cloak x-text="paymentError"></p>
+
+                <div class="flex flex-col sm:flex-row sm:justify-end gap-2.5 pt-1">
+                    <button type="button" @click="closePayment()"
+                            class="nb-press min-h-[48px] order-2 sm:order-1 bg-slate-200 hover:bg-slate-300 text-slate-700 px-5 py-2.5 rounded-lg text-sm font-semibold">Cancel</button>
+                    <button type="submit" :disabled="savingPayment"
+                            class="nb-press min-h-[48px] order-1 sm:order-2 bg-brand-700 hover:bg-brand-800 disabled:opacity-60 text-white px-5 py-2.5 rounded-lg text-sm font-semibold shadow">
+                        <span x-text="savingPayment ? 'Saving…' : 'Save'"></span>
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
 

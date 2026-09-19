@@ -10,6 +10,10 @@ const LOW_STOCK_THRESHOLD = 5;
 // have to scroll past all of them to reach the next section.
 const ROWS_COLLAPSED = 5;
 
+// Below this, a remaining balance is float noise rather than money owed. Must
+// match PAID_EPSILON in server.js, which validates the paid amount the same way.
+const PAID_EPSILON = 0.005;
+
 // Local calendar date as YYYY-MM-DD. Deliberately not toISOString(), which is
 // UTC — in Bangladesh (UTC+6) that returns yesterday's date until 6am.
 function todayLocal() {
@@ -142,12 +146,16 @@ function writeSections(sections) {
 // No sale_time here on purpose — the server stamps it at the moment of insert.
 // A value seeded on the client would be the time the form was created, not the
 // time of the sale.
+/* `paid_amount` blank means the customer paid in full — submitSale() sends the
+   cart total for it. The ordinary cash sale is the common one and should cost
+   no typing; a credit sale is where the shopkeeper stops to enter a figure. */
 function blankSale() {
   return {
     customer_name: '',
     customer_contact: '',
     date: todayLocal(),
     comment: '',
+    paid_amount: '',
   };
 }
 
@@ -275,6 +283,8 @@ function shopApp() {
     invSearch: '',
     saleSearch: '',
     dealerSearch: '',
+    // Which money receipts the sales history lists: 'all' | 'due' | 'paid'.
+    saleStatus: 'all',
     // Both start collapsed to five rows; "Show all" opens them fully.
     invLimit: ROWS_COLLAPSED,
     salesLimit: ROWS_COLLAPSED,
@@ -338,6 +348,13 @@ function shopApp() {
     isReceiptOpen: false,
     currentReceipt: {},
     baseTitle: document.title,
+
+    /* Recording a payment against an invoice already issued. `paymentDraft`
+       holds a copy, never the live invoice — see openPayment(). */
+    isPaymentOpen: false,
+    paymentDraft: { id: null, total: 0, paid_amount: '' },
+    paymentError: '',
+    savingPayment: false,
 
     toast: { show: false, message: '', type: 'success' },
     toastTimer: null,
@@ -493,6 +510,16 @@ function shopApp() {
 
     get cartPieces() {
       return this.cart.reduce((sum, l) => sum + (Number(l.quantity) || 0), 0);
+    },
+
+    /* What the customer would still owe on the invoice being built. The
+       shopkeeper types only what was handed over; the due follows from it, and
+       is shown before the receipt is printed rather than after. */
+    get saleDue() {
+      if (this.sale.paid_amount === '') return 0;
+      const paid = Number(this.sale.paid_amount);
+      if (!Number.isFinite(paid)) return 0;
+      return Math.max(0, this.cartTotal - paid);
     },
 
     /* ------------------------------------------------------------- warranty */
@@ -658,6 +685,31 @@ function shopApp() {
       return (inv?.lines || []).reduce((sum, l) => sum + this.saleDiscount(l), 0);
     },
 
+    /* ---------------------------------------------------- due / paid money
+
+       An invoice with no paid_amount was issued before the shop tracked dues.
+       That is not the same as "nothing has been paid", so it is read as settled
+       and carries no DUE or PAID label on its receipt — the app does not know,
+       and should not stamp a claim on paper that it cannot stand behind. */
+    invoiceTracksPayment(inv) {
+      return inv?.paid_amount !== null && inv?.paid_amount !== undefined;
+    },
+
+    invoicePaid(inv) {
+      return this.invoiceTracksPayment(inv) ? Number(inv.paid_amount) : this.invoiceTotal(inv);
+    },
+
+    invoiceDue(inv) {
+      return Math.max(0, this.invoiceTotal(inv) - this.invoicePaid(inv));
+    },
+
+    // Same epsilon as the server's validatePaidAmount: a total summed from
+    // floats leaves a few thousandths behind, and a receipt settled to the last
+    // taka must not sit in the Due list forever because of them.
+    isInvoiceDue(inv) {
+      return this.invoiceDue(inv) > PAID_EPSILON;
+    },
+
     // "Router ×2" or "Router ×2 +3 more", for the history table.
     invoiceSummary(inv) {
       const lines = inv?.lines || [];
@@ -746,6 +798,10 @@ function shopApp() {
       const q = this.saleSearch.trim().toLowerCase();
       return this.invoices.filter((inv) => {
         if (!this.inDateRange(inv)) return false;
+        // The Due / Paid chips. Left out of the search box on purpose: typing
+        // "due" should still find a customer's note that says so.
+        if (this.saleStatus === 'due' && !this.isInvoiceDue(inv)) return false;
+        if (this.saleStatus === 'paid' && this.isInvoiceDue(inv)) return false;
         if (!q) return true;
         const hay = [inv.id, inv.customer_name, inv.customer_contact, inv.comment]
           .map((v) => String(v ?? '').toLowerCase());
@@ -776,6 +832,13 @@ function shopApp() {
 
     get rangeDiscount() {
       return this.filteredLines.reduce((sum, l) => sum + this.saleDiscount(l), 0);
+    },
+
+    // What the shop is still owed over this range. Summed over invoices, not
+    // filteredLines: a due is owed on the receipt as a whole, and no line on it
+    // is the one that went unpaid.
+    get rangeDue() {
+      return this.filteredInvoices.reduce((sum, inv) => sum + this.invoiceDue(inv), 0);
     },
 
     get rangeHasUnknownCost() {
@@ -1036,6 +1099,14 @@ function shopApp() {
         this.notify('Enter a price per piece for this item.', 'error');
         return false;
       }
+      /* Said out loud, not only shown on the line: the shopkeeper's eyes are on
+         the item row they are typing, not on the cart below it. Still added —
+         the shop may well be holding stock the count has lost track of, and
+         refusing the sale would leave it with no receipt to give. */
+      if (this.outOfStock(name)) {
+        this.notify(`${name} is stock out. Added anyway — correct the stock count if that is wrong.`, 'error');
+      }
+
       this.addToCart({ item_name: name, quantity: qty, unit_price: price });
       this.line = blankLine();
       this.$nextTick(() => this.$refs.lineItem?.focus());
@@ -1057,6 +1128,17 @@ function shopApp() {
     overStock(l) {
       const stock = this.stockFor(l.item_name);
       return stock !== null && Number(l.quantity) > stock;
+    },
+
+    /* A known product with nothing left on the shelf. Worth saying louder than
+       "only 2 in stock": that one is a quantity to correct, this one means the
+       shop is selling something it does not have at all.
+
+       Only for products that are in inventory — an item typed free-hand has no
+       stock count to be out of, and calling it stock out would be a guess. */
+    outOfStock(name) {
+      const stock = this.stockFor(name);
+      return stock !== null && stock <= 0;
     },
 
     async submitSale() {
@@ -1092,6 +1174,10 @@ function shopApp() {
             customer_contact: this.sale.customer_contact,
             date: this.sale.date,
             comment: this.sale.comment,
+            // Blank means paid in full, so send the total rather than null —
+            // null would record the invoice as untracked and print no label,
+            // and a cash sale deserves its PAID receipt.
+            paid_amount: this.sale.paid_amount === '' ? this.cartTotal : Number(this.sale.paid_amount),
             items: this.cart.map((l) => ({
               item_name: l.item_name,
               quantity: Number(l.quantity),
@@ -1197,7 +1283,16 @@ function shopApp() {
       // stock decrement and the cost/warranty snapshot both match on item_name,
       // and a hand-typed name can drift from it where a scanned one cannot.
       const line = this.addToCart({ item_name: item.item_name, quantity: 1, unit_price: item.selling_price });
-      this.notify(`${item.item_name} ×${line.quantity} — ${this.fmt(item.selling_price)}`);
+
+      /* At a till the scanner is the whole flow — scan, scan, scan — and the
+         shopkeeper is watching the scan box, not the cart. So the stock-out
+         warning replaces the usual confirmation toast rather than queueing
+         behind it, where it would be overwritten by the next scan. */
+      if (this.outOfStock(item.item_name)) {
+        this.notify(`${item.item_name} is stock out. Added anyway — correct the stock count if that is wrong.`, 'error');
+      } else {
+        this.notify(`${item.item_name} ×${line.quantity} — ${this.fmt(item.selling_price)}`);
+      }
 
       // Focus stays in the scan box: at a till the next action is scanning the
       // next item, not typing.
@@ -1307,6 +1402,76 @@ function shopApp() {
         this.expenseError = 'Connection error. Try again.';
       } finally {
         this.savingExpenseEdit = false;
+      }
+    },
+
+    /* ------------------------------------------ payment on an issued invoice */
+
+    /* A copy, never the live invoice: binding the row itself would rewrite the
+       history table as the shopkeeper types, and cancelling would leave the
+       typed figure sitting in a list it was never saved to. The total is
+       snapshotted alongside so the dialog can show the due without re-walking the
+       lines on every keystroke. */
+    openPayment(inv) {
+      this.paymentDraft = {
+        id: inv.id,
+        customer_name: inv.customer_name,
+        total: this.invoiceTotal(inv),
+        paid_amount: this.invoiceTracksPayment(inv) ? Number(inv.paid_amount) : this.invoiceTotal(inv),
+      };
+      this.paymentError = '';
+      this.isPaymentOpen = true;
+    },
+
+    closePayment() {
+      this.isPaymentOpen = false;
+      this.paymentError = '';
+    },
+
+    // The one-click settle: the customer came back and cleared the balance.
+    markFullyPaid() {
+      this.paymentDraft.paid_amount = this.paymentDraft.total;
+    },
+
+    get paymentDue() {
+      const paid = Number(this.paymentDraft.paid_amount);
+      if (!Number.isFinite(paid)) return this.paymentDraft.total;
+      return Math.max(0, this.paymentDraft.total - paid);
+    },
+
+    async submitPayment() {
+      if (this.savingPayment) return;
+      this.savingPayment = true;
+      this.paymentError = '';
+      try {
+        const res = await fetch(`/api/invoices/${this.paymentDraft.id}/payment`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paid_amount: this.paymentDraft.paid_amount }),
+        });
+        // Left open on failure so the reason is readable where it was typed.
+        if (!res.ok) {
+          this.paymentError = await this.describeFailure(res, 'Could not save the payment.');
+          return;
+        }
+        const id = this.paymentDraft.id;
+        await this.loadData();
+
+        /* The receipt modal may be open behind this dialog, showing the very
+           invoice just settled. currentReceipt holds the old object from before
+           loadData() replaced the array, so without this the corner label would
+           still read DUE until the receipt was closed and reopened. */
+        if (Number(this.currentReceipt?.id) === Number(id)) {
+          const fresh = this.invoices.find((inv) => Number(inv.id) === Number(id));
+          if (fresh) this.currentReceipt = fresh;
+        }
+
+        this.closePayment();
+        this.notify('Payment updated.');
+      } catch (err) {
+        this.paymentError = 'Connection error. Try again.';
+      } finally {
+        this.savingPayment = false;
       }
     },
 

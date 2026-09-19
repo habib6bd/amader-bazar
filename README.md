@@ -146,7 +146,13 @@ padding and type sizes. There is no separate print typography to drift out of sy
 Masthead (logo, shop name, address, mobiles, email) · **Bill To** with the customer's
 name and contact number · **Invoice Details** with invoice number, date `DD-MM-YYYY` and
 time `hh:mm AM/PM` · a numbered item table with **Quantity**, **Price/ Unit** and
-**Amount** · the total spelled out in words · terms and an authorised signature line.
+**Amount** · the total spelled out in words · **Paid** and **Due** lines with a **DUE**
+or **PAID** stamp in the corner, on receipts that track payment · terms and an authorised
+signature line.
+
+The stamp is outlined, not filled. Print dialogs drop background colours by default, so a
+filled badge would come out of the printer white-on-white and the shop would only find out
+from the customer's copy; borders and text colour print either way.
 
 ### Verified behaviour
 
@@ -284,7 +290,7 @@ SQLite, created automatically on first run at `shop.db` next to `server.js`.
 
 ```sql
 inventory(id, item_name, quantity, cost_price, selling_price, barcode, warranty_months)
-invoices(id, customer_name, customer_contact, date, sale_time, comment)
+invoices(id, customer_name, customer_contact, date, sale_time, comment, paid_amount)
 sales(id, invoice_id, line_no, customer_name, customer_contact, item_name, quantity,
       total_price, date, sale_time, warranty_months, cost_price, list_price, comment)
 dealer_purchases(id, dealer_name, item_name, quantity, total_cost, date)
@@ -312,6 +318,27 @@ datalist of heads already used. `date` is the day the money went out and is edit
 `invoices.id`. Customer, date and time are repeated on each line so `sales` reads sensibly
 on its own, but the invoice row is the source of truth, and `comment` lives on the invoice
 only.
+
+**Due money.** `invoices.paid_amount` is what the customer actually handed over; the rest
+becomes the due by itself — the shopkeeper only ever types what was paid. The sale form's
+**Paid** field is blank for an ordinary cash sale and the client sends the cart total, so
+a full payment costs no typing. The receipt
+is stamped **DUE** or **PAID** in the corner, and prints Paid and Due lines under the
+total. When the customer settles up later, the **Paid** button on the invoice row raises
+`paid_amount` to the total and the same receipt becomes a paid one — the Invoice No. the
+customer holds keeps meaning what it meant. `PUT /api/invoices/:id/payment` is the only
+write path to an invoice, and it touches that one column; it re-sums the lines itself and
+rejects a payment above the total rather than clamping it.
+
+`paid_amount` is nullable, and NULL means *"issued before the shop tracked dues"* — not
+"nothing paid". Those invoices read as settled, are left out of the Due total, and print
+**no** stamp: the app does not know, so it does not put a claim on paper it cannot stand
+behind. `NOT NULL DEFAULT 0` would have declared the whole existing ledger outstanding.
+
+The Customer Sales History has **All / Due / Paid** chips next to the date presets — the
+two combine, so "everything still owed, all time" is one chip from each row — and a **Due**
+tile totalling what is out on credit over the range. Due is not
+subtracted from profit: the goods left the shop and the sale is real.
 
 Sales recorded before invoices existed were each wrapped in an invoice of their own on the
 first start after upgrading, **keeping their original number** — so a receipt already
@@ -392,7 +419,8 @@ All endpoints are JSON. **None of them require authentication** — see
 | `POST` | `/api/login` | `{email, password}` | `{success, message}`; `401` if wrong |
 | `POST` | `/api/reset-password` | `{email, new_password}` | `{success, message}` |
 | `GET` | `/api/data` | — | `{inventory, invoices, sales, purchases, expenses}` — `sales` are invoice lines |
-| `POST` | `/api/sales` | `{customer_name, customer_contact?, date, comment?, items: [{item_name, quantity, total_price}]}` | `{id}` (invoice) |
+| `POST` | `/api/sales` | `{customer_name, customer_contact?, date, comment?, paid_amount?, items: [{item_name, quantity, total_price}]}` | `{id}` (invoice); `400` if `paid_amount` exceeds the total |
+| `PUT` | `/api/invoices/:id/payment` | `{paid_amount}` — `null`/`''` clears due tracking | `{id, paid_amount}`; `400` invalid, `404` if gone |
 | `POST` | `/api/dealer` | `{dealer_name, item_name, quantity, cost_price, selling_price, date, barcode?, warranty_months?}` | `{id}` |
 | `POST` | `/api/expenses` | `{category, amount, note?, date?}` | `{id}`; `400` invalid |
 | `PUT` | `/api/expenses/:id` | same as POST | `{success}`; `404` if gone |
@@ -546,16 +574,20 @@ Test a restore at least once — an untested backup is not a backup.
 
 Deliberate scope choices, not defects. Worth knowing before you build on this.
 
-- **No discount, VAT or paid/due lines on the invoice.** The totals block is Sub Total and
-  Total only. A sale made below the set price is recorded and shown as a discount in the
-  dashboard, but the invoice prints only what was actually charged.
+- **No discount or VAT line on the invoice.** The totals block is Sub Total, Total and —
+  where payment is tracked — Paid and Due. A sale made below the set price is recorded and
+  shown as a discount in the dashboard, but the invoice prints only what was charged.
+- **A due carries no payment history.** `paid_amount` is one running figure that is edited
+  in place, so the shop sees what is still owed but not when each instalment came in, and
+  raising it leaves no record of the previous amount.
 - **Expenses are a flat list.** No recurring entries, no attachments, and nothing
   stops stock buying being typed in as an expense beyond the form's labelling and a
   soft warning — which would subtract it from profit twice.
 - **Profit is shown two ways.** "Profit" is what the goods earned; "Net Profit" is that
   minus expenses. Both skip sales with no recorded buying price, and say so.
-- **Invoices cannot be edited or deleted.** *Products* can, but a mistyped invoice still has
-  to be corrected directly in the database — there is no `PUT`/`DELETE` for `/api/sales`.
+- **Invoices cannot be edited or deleted.** Only the paid amount can change, through
+  `PUT /api/invoices/:id/payment`. *Products* can be edited, but a mistyped invoice still
+  has to be corrected directly in the database — there is no `PUT`/`DELETE` for `/api/sales`.
 - **A long invoice continues onto a second page** with the column header repeated, but the
   second page does not repeat the invoice number or customer. About fourteen lines fit on
   one A4 sheet.

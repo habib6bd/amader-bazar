@@ -216,6 +216,15 @@ async function migrate() {
   await addColumnIfMissing('sales', 'line_no', 'INTEGER');
   await run(`CREATE INDEX IF NOT EXISTS idx_sales_invoice ON sales(invoice_id)`);
 
+  /* How much of the invoice the customer has actually handed over. The rest is
+     the due amount, and the receipt is labelled DUE or PAID accordingly.
+
+     Nullable, and NULL does NOT mean "nothing paid" — it means "issued before
+     the shop tracked dues". A NOT NULL DEFAULT 0 column would declare every
+     invoice already in the ledger fully outstanding and invent a receivable
+     that was never owed. The client reads NULL as settled and prints no label. */
+  await addColumnIfMissing('invoices', 'paid_amount', 'REAL');
+
   // Every expense list is filtered by date, so that is what gets the index.
   // setup() creates the table before calling migrate(), so this can never
   // reference a table that does not exist yet.
@@ -304,7 +313,7 @@ async function linkLegacySales() {
    need, since each awaited statement completes before the next is issued. */
 /* Bump whenever setup() or migrate() gains a step. A database already at this
    version skips the whole migration on boot. */
-const SCHEMA_VERSION = '2026-09-18-expenses';
+const SCHEMA_VERSION = '2026-09-19-invoice-paid';
 
 // One read instead of ~20 statements, several of which take a write lock even
 // when they end up changing nothing. On Vercel every cold start runs this, each
@@ -368,13 +377,17 @@ async function setup() {
   // One row per money receipt. Its lines live in `sales`, joined by
   // sales.invoice_id; the customer, date, time and comment are stored here once
   // rather than repeated on every line.
+  //
+  // paid_amount is what the customer handed over; total − paid is the due. See
+  // migrate() for why it is nullable and what NULL means.
   await run(`CREATE TABLE IF NOT EXISTS invoices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     customer_name TEXT NOT NULL,
     customer_contact TEXT,
     date TEXT NOT NULL,
     sale_time TEXT,
-    comment TEXT
+    comment TEXT,
+    paid_amount REAL
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS dealer_purchases (
@@ -686,6 +699,33 @@ app.get('/api/data', async (req, res) => {
   }
 });
 
+/* How much of an invoice has been paid. Returns { error } or { paid_amount }.
+
+   Absent, empty or null means "not tracked" and is answered with null, so a
+   page cached from before this feature keeps saving sales, and clearing the
+   field on an old invoice puts it back the way it was.
+
+   Overpayment is rejected rather than clamped: a figure above the total is a
+   typo or the wrong invoice, and silently swallowing it would hide both. The
+   epsilon is there because the total is a sum of floats — three lines of
+   666.66 add up to 1999.9799999999998, and a customer paying "the full 1999.98"
+   must not be told they are overpaying. */
+const PAID_EPSILON = 0.005;
+
+function validatePaidAmount(value, total) {
+  if (value === undefined || value === null || String(value).trim() === '') {
+    return { paid_amount: null };
+  }
+  const paid = Number(value);
+  if (!Number.isFinite(paid) || paid < 0) {
+    return { error: 'Paid amount must be a number, zero or more.' };
+  }
+  if (paid > total + PAID_EPSILON) {
+    return { error: `Paid amount cannot be more than the invoice total (${total.toFixed(2)}).` };
+  }
+  return { paid_amount: paid };
+}
+
 // API: Record a Sale — one invoice, any number of items
 //
 // The time of sale is stamped here, not sent by the browser. The form used to
@@ -730,6 +770,12 @@ app.post('/api/sales', async (req, res) => {
     items.push({ item_name, quantity, total_price });
   }
 
+  // Validated against the invoice's own total, which is only known now that
+  // every line has been parsed.
+  const invoiceTotal = items.reduce((sum, item) => sum + item.total_price, 0);
+  const paid = validatePaidAmount(body.paid_amount, invoiceTotal);
+  if (paid.error) return res.status(400).json({ error: paid.error });
+
   /* All or nothing. An invoice whose third line failed must not leave the first
      two recorded and their stock deducted — the shop would be short on stock
      with no receipt to show for it. 'write' takes the lock up front. */
@@ -737,9 +783,9 @@ app.post('/api/sales', async (req, res) => {
   try {
     const time = nowLocalTime();
     const invoice = await tx.execute({
-      sql: `INSERT INTO invoices (customer_name, customer_contact, date, sale_time, comment)
-            VALUES (?, ?, ?, ?, ?)`,
-      args: [customer_name, customer_contact, date, time, comment],
+      sql: `INSERT INTO invoices (customer_name, customer_contact, date, sale_time, comment, paid_amount)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [customer_name, customer_contact, date, time, comment, paid.paid_amount],
     });
     const invoiceId = Number(invoice.lastInsertRowid);
 
@@ -1170,6 +1216,42 @@ app.delete('/api/expenses/:id', async (req, res) => {
     const result = await run(`DELETE FROM expenses WHERE id = ?`, [Number(req.params.id)]);
     if (result.changes === 0) return res.status(404).json({ error: 'That expense no longer exists.' });
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ===========================================================================
+   Money receipt payments
+
+   The only write path to an invoice, and it touches one column. A due receipt
+   becomes a paid one by having its paid_amount raised to the invoice total —
+   the customer settling up weeks later is an edit to the receipt already
+   issued, not a new document, so the Invoice No. the customer holds keeps
+   meaning what it meant.
+
+   Nothing else on an invoice is editable here: changing the customer, the date
+   or the lines after a receipt has been handed over is a different decision,
+   and this route deliberately cannot make it.
+   =========================================================================== */
+app.put('/api/invoices/:id/payment', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid invoice.' });
+
+  try {
+    const invoice = await get(`SELECT id FROM invoices WHERE id = ?`, [id]);
+    if (!invoice) return res.status(404).json({ error: 'That invoice no longer exists.' });
+
+    // Summed from the lines, never taken from the request: the client's idea of
+    // the total is exactly what the ceiling below has to be checked against.
+    const row = await get(`SELECT SUM(total_price) AS total FROM sales WHERE invoice_id = ?`, [id]);
+    const total = Number(row?.total || 0);
+
+    const { error, paid_amount } = validatePaidAmount(req.body?.paid_amount, total);
+    if (error) return res.status(400).json({ error });
+
+    await run(`UPDATE invoices SET paid_amount = ? WHERE id = ?`, [paid_amount, id]);
+    res.json({ id, paid_amount });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
