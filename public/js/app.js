@@ -123,7 +123,7 @@ function writeSession(active) {
    shopkeeper settles on survives a refresh. Purely cosmetic: losing it costs
    nothing, which is why every access is wrapped rather than guarded. */
 const SECTIONS_KEY = 'shop-sections';
-const DEFAULT_SECTIONS = { products: true, sales: true, expenses: true, purchases: true };
+const DEFAULT_SECTIONS = { products: true, serials: true, sales: true, expenses: true, purchases: true };
 
 function readSections() {
   try {
@@ -162,7 +162,56 @@ function blankSale() {
 // The "add an item" row above the cart. Price is per piece, matching the
 // invoice's "Price/ Unit" column; the line amount is derived, never typed.
 function blankLine() {
-  return { item_name: '', quantity: 1, unit_price: '' };
+  return { item_name: '', quantity: 1, unit_price: '', serial_no: '' };
+}
+
+// The units scanned in on the Dealer form for one product, newest first.
+// purchase_id is the dealer_purchases row the server grows with each scan.
+function blankBatch() {
+  return { purchase_id: null, item_name: '', units: [] };
+}
+
+/* Serial receiving is one POST per scan, and a scanner can fire the next scan
+   before the last reply is back. Chaining them keeps them in order, which is
+   what lets each scan carry the purchase id the one before it created.
+
+   Module-level, not a component property: Alpine wraps component state in a
+   reactive Proxy, and calling .then on a proxied Promise throws. */
+let scanQueue = Promise.resolve();
+function queueScan(task) {
+  const next = scanQueue.then(task, task);
+  scanQueue = next.catch(() => {});
+  return next;
+}
+
+/* A short tone for each scan, so the cashier knows the result without looking
+   up: one high beep for OK, two low ones for a refusal. Web Audio, no sound
+   file to load; a browser that refuses audio simply stays silent. */
+let audioCtx = null;
+function beep(ok) {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const tones = ok ? [[880, 0]] : [[220, 0], [220, 0.16]];
+    for (const [freq, at] of tones) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.frequency.value = freq;
+      osc.type = ok ? 'sine' : 'square';
+      gain.gain.value = 0.08;
+      osc.connect(gain).connect(audioCtx.destination);
+      const start = audioCtx.currentTime + at;
+      osc.start(start);
+      osc.stop(start + 0.12);
+    }
+  } catch {
+    /* no audio — the toast still says it */
+  }
+}
+
+// Same code, case aside — how serials are compared everywhere, matching the
+// server's COLLATE NOCASE index.
+function sameCode(a, b) {
+  return String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
 }
 
 /* Groups invoice lines under their invoices.
@@ -303,7 +352,7 @@ function shopApp() {
     purchasesOpen: readSections().purchases,
 
     sale: blankSale(),
-    // The invoice being built: [{ key, item_name, quantity, unit_price }].
+    // The invoice being built: [{ key, item_name, quantity, unit_price, serial_no }].
     cart: [],
     line: blankLine(),
     cartSeq: 0,
@@ -318,6 +367,40 @@ function shopApp() {
     scanCode: '',
     unknownBarcode: '',
     dealerScanCode: '',
+
+    /* Serial scanning is the second half of a till scan: the product barcode
+       says *what* was sold, the serial says *which piece*. serialTarget is the
+       cart line the next scanned serial belongs to — the line just added — so
+       the shopkeeper never has to point at a row. */
+    serialCode: '',
+    serialTarget: null,
+    // An unregistered serial scanned for a tracked line, waiting on the
+    // cashier's "Sell anyway": { code, key } or null.
+    serialOverride: null,
+    // The last code each scan box took, and when — see repeatScan().
+    lastScan: {},
+
+    // Dealer form, serial receiving — see scanDealerSerial().
+    dealerSerialCode: '',
+    dealerBatch: blankBatch(),
+
+    // Product screen: the available serials of the product being edited.
+    productSerials: [],
+    productSerialCode: '',
+    productSerialsLoading: false,
+
+    // Serial / IMEI section. Fetched page by page from the server, never
+    // shipped with /api/data — a year of phones is thousands of rows.
+    serialsOpen: readSections().serials,
+    serialQuery: '',
+    serialStatus: 'all',
+    serialProductId: '',
+    serialRows: [],
+    serialTotal: 0,
+    serialLoading: false,
+    serialLoaded: false,
+    // History / return / remove dialog: { mode, row, events, note, error, saving, loading }.
+    serialDialog: null,
 
     // Expenses — the form panel, the list, and the edit dialog.
     expenses: [],
@@ -358,6 +441,7 @@ function shopApp() {
 
     toast: { show: false, message: '', type: 'success' },
     toastTimer: null,
+    refreshTimer: null,
 
     async init() {
       // Restore the tab title after the print/save-as-PDF dialog closes.
@@ -535,6 +619,21 @@ function shopApp() {
       return until
         ? `Warranty: ${n} ${unit} (valid to ${this.fmtDateDMY(until)})`
         : `Warranty: ${n} ${unit}`;
+    },
+
+    // The cart line the next scanned serial will name, for the hint under the
+    // serial box. Null once every piece on the invoice has been named.
+    get serialTargetLine() {
+      if (this.serialTarget === null) return null;
+      return this.cart.find((l) => l.key === this.serialTarget) || null;
+    },
+
+    // "Serial: SN-A9F2210034", or '' for the goods that carry none. Kept beside
+    // warrantyText because they print together and for the same reason.
+    serialText(row) {
+      const code = String(row?.serial_no || '').trim();
+      if (!code) return '';
+      return row.returned_date ? `Serial: ${code} (returned ${this.fmtDateDMY(row.returned_date)})` : `Serial: ${code}`;
     },
 
     /* --------------------------------------------------------------- profit
@@ -718,6 +817,16 @@ function shopApp() {
       return lines.length > 1 ? `${first} +${lines.length - 1} more` : first;
     },
 
+    // The serials on an invoice, joined for the history row. Blank for an
+    // invoice of goods that carry none, which keeps the row from growing an
+    // empty second line under every cable sale.
+    invoiceSerials(inv) {
+      return (inv?.lines || [])
+        .filter((l) => String(l.serial_no || '').trim())
+        .map((l) => `${String(l.serial_no).trim()}${l.returned_date ? ' (returned)' : ''}`)
+        .join(', ');
+    },
+
     get totalRevenue() {
       return this.sales.reduce((sum, s) => sum + Number(s.total_price || 0), 0);
     },
@@ -746,8 +855,16 @@ function shopApp() {
     toggleSection(name) {
       const key = `${name}Open`;
       this[key] = !this[key];
+      // The serial list is fetched on demand, not with the dashboard — see
+      // GET /api/serials — so opening the section is what loads it.
+      if (name === 'serials' && this.serialsOpen && !this.serialLoaded) this.loadSerials();
+      this.saveSections();
+    },
+
+    saveSections() {
       writeSections({
         products: this.productsOpen,
+        serials: this.serialsOpen,
         sales: this.salesOpen,
         expenses: this.expensesOpen,
         purchases: this.purchasesOpen,
@@ -793,7 +910,8 @@ function shopApp() {
     },
 
     // Search matches the invoice number, customer, phone, comment, or any item
-    // on the invoice — "who bought the ONU modem last week?" has to work.
+    // or serial on the invoice — "who bought the ONU modem last week?" has to
+    // work, and so does a customer turning up with a dead fan and its serial.
     get filteredInvoices() {
       const q = this.saleSearch.trim().toLowerCase();
       return this.invoices.filter((inv) => {
@@ -807,7 +925,11 @@ function shopApp() {
           .map((v) => String(v ?? '').toLowerCase());
         return (
           hay.some((v) => v.includes(q)) ||
-          inv.lines.some((l) => (l.item_name || '').toLowerCase().includes(q))
+          inv.lines.some(
+            (l) =>
+              (l.item_name || '').toLowerCase().includes(q) ||
+              String(l.serial_no || '').toLowerCase().includes(q)
+          )
         );
       });
     },
@@ -1032,8 +1154,10 @@ function shopApp() {
     },
 
     // ---------------------------------------------------------------- data
-    async loadData() {
-      this.loading = true;
+    // `quiet` skips the loading state, for the refresh that follows a scan:
+    // blanking every table on each unit scanned in would flicker the page.
+    async loadData({ quiet = false } = {}) {
+      if (!quiet) this.loading = true;
       this.loadError = '';
       try {
         const res = await fetch('/api/data');
@@ -1044,6 +1168,8 @@ function shopApp() {
         this.invoices = buildInvoices(data.invoices || [], this.sales);
         this.purchases = data.purchases || [];
         this.expenses = data.expenses || [];
+        // A sale or a return changes serial statuses too.
+        if (this.serialsOpen) this.loadSerials();
       } catch (err) {
         this.loadError = err.message || 'Could not load shop data.';
         this.notify(this.loadError, 'error');
@@ -1066,20 +1192,44 @@ function shopApp() {
       if (product) this.line.unit_price = product.selling_price;
     },
 
-    // Adding the same product twice raises the quantity on its existing line
-    // rather than printing it on the invoice twice. The existing line keeps its
-    // price, so a discount already agreed on it is not overwritten.
+    /* Adding the same product twice raises the quantity on its existing line
+       rather than printing it on the invoice twice. The existing line keeps its
+       price, so a discount already agreed on it is not overwritten.
+
+       Serial-tracked products never merge: each unit is its own qty-1 line
+       carrying its own serial, because a warranty claim is about one piece and
+       "qty 3, serials SN-34 / SN-35 / SN-36" cannot say which cost what once a
+       discount lands on the line. Everything else — cables, bulbs — merges as
+       it always has. */
     addToCart({ item_name, quantity = 1, unit_price }) {
       const name = String(item_name).trim();
-      const existing = this.cart.find((l) => l.item_name === name);
+      const tracked = this.serialTracked(this.productByName(name));
+      const existing = !tracked && this.cart.find((l) => l.item_name === name && !l.serial_no);
       if (existing) {
         existing.quantity = (Number(existing.quantity) || 0) + Number(quantity);
         return existing;
       }
       this.cartSeq += 1;
-      const entry = { key: this.cartSeq, item_name: name, quantity: Number(quantity), unit_price };
+      const entry = {
+        key: this.cartSeq,
+        item_name: name,
+        quantity: tracked ? 1 : Number(quantity),
+        unit_price,
+        serial_no: '',
+        tracked,
+        serial_override: false,
+      };
       this.cart.push(entry);
       return entry;
+    },
+
+    // The first tracked line still waiting for its serial, or null.
+    nextUnnamed() {
+      return this.cart.find((l) => l.tracked && !String(l.serial_no || '').trim()) || null;
+    },
+
+    get unnamedCount() {
+      return this.cart.filter((l) => l.tracked && !String(l.serial_no || '').trim()).length;
     },
 
     // Returns false when the row is not valid, so submitSale can stop.
@@ -1107,14 +1257,38 @@ function shopApp() {
         this.notify(`${name} is stock out. Added anyway — correct the stock count if that is wrong.`, 'error');
       }
 
-      this.addToCart({ item_name: name, quantity: qty, unit_price: price });
+      /* A typed "3 fans" becomes three lines, each waiting for its serial; the
+         serial box takes them in order. A typed cable is one line as before. */
+      const tracked = this.serialTracked(this.productByName(name));
+      let first = null;
+      for (let k = 0; k < (tracked ? Math.min(qty, 50) : 1); k += 1) {
+        const entry = this.addToCart({ item_name: name, quantity: qty, unit_price: price });
+        first = first || entry;
+      }
       this.line = blankLine();
-      this.$nextTick(() => this.$refs.lineItem?.focus());
+      if (tracked) {
+        this.serialTarget = first.key;
+        this.$nextTick(() => this.$refs.serialInput?.focus());
+      } else {
+        this.$nextTick(() => this.$refs.lineItem?.focus());
+      }
       return true;
     },
 
     removeLine(key) {
       this.cart = this.cart.filter((l) => l.key !== key);
+      // Otherwise the next scanned serial would land on a line that is gone.
+      if (this.serialTarget === key) this.serialTarget = this.nextUnnamed()?.key ?? null;
+      if (this.serialOverride?.key === key) this.serialOverride = null;
+    },
+
+    // The cart's "clear" on a serial: the line goes back to waiting, and the
+    // serial box is where the right label gets scanned.
+    clearSerial(l) {
+      l.serial_no = '';
+      l.serial_override = false;
+      this.serialTarget = l.key;
+      this.$nextTick(() => this.$refs.serialInput?.focus());
     },
 
     // Stock left for a product, or null for an item that is not in inventory.
@@ -1152,6 +1326,16 @@ function shopApp() {
         this.notify('Add at least one item to the invoice.', 'error');
         return;
       }
+      // Every serial-tracked unit has to be named before the receipt exists —
+      // the server refuses otherwise, and this says which line, sooner.
+      const unnamed = this.nextUnnamed();
+      if (unnamed) {
+        this.serialTarget = unnamed.key;
+        this.notify(`Scan the serial for item ${this.cart.indexOf(unnamed) + 1} (${unnamed.item_name}).`, 'error');
+        beep(false);
+        this.$nextTick(() => this.$refs.serialInput?.focus());
+        return;
+      }
       for (const [i, l] of this.cart.entries()) {
         const qty = Number(l.quantity);
         const price = Number(l.unit_price);
@@ -1182,6 +1366,9 @@ function shopApp() {
               item_name: l.item_name,
               quantity: Number(l.quantity),
               total_price: this.lineTotal(l),
+              // Blank for the goods that carry no serial, which is most of them.
+              serial_no: String(l.serial_no || '').trim(),
+              serial_override: Boolean(l.serial_override),
             })),
           }),
         });
@@ -1194,6 +1381,9 @@ function shopApp() {
         this.line = blankLine();
         this.scanCode = '';
         this.unknownBarcode = '';
+        this.serialCode = '';
+        this.serialTarget = null;
+        this.serialOverride = null;
         this.notify('Sale saved — invoice ready.');
 
         // The button promises an invoice, so actually open one.
@@ -1208,6 +1398,11 @@ function shopApp() {
 
     async submitDealer() {
       if (this.savingDealer) return;
+      // Serial units are saved as they are scanned; there is nothing to post.
+      if (this.dealerTracked) {
+        this.finishDealerBatch();
+        return;
+      }
       this.savingDealer = true;
       try {
         const res = await fetch('/api/dealer', {
@@ -1221,6 +1416,7 @@ function shopApp() {
         await this.loadData();
         this.dealer = blankDealer();
         this.dealerScanCode = '';
+        this.dealerBatch = blankBatch();
         this.notify('Purchase saved — stock and prices updated.');
       } catch (err) {
         this.notify(err.message || 'Could not save the purchase.', 'error');
@@ -1262,10 +1458,34 @@ function shopApp() {
       return this.inventory.find((i) => String(i.barcode || '').trim() === wanted) || null;
     },
 
+    /* A scanner can fire twice on one label. The same code into the same box
+       again within half a second is that, never a second unit — a person
+       cannot pick up the next box that fast. */
+    repeatScan(box, code) {
+      const now = Date.now();
+      const last = this.lastScan[box];
+      this.lastScan[box] = { code, at: now };
+      return Boolean(last && sameCode(last.code, code) && now - last.at < 500);
+    },
+
+    scanOk(message) {
+      beep(true);
+      this.notify(message);
+    },
+
+    scanFailed(message) {
+      beep(false);
+      this.notify(message, 'error');
+    },
+
     // Sale form: fill the line from the scanned product.
     scanBarcode() {
       const code = String(this.scanCode || '').trim();
       if (!code) return;
+      if (this.repeatScan('barcode', code)) {
+        this.scanCode = '';
+        return;
+      }
 
       const item = this.findByBarcode(code);
       if (!item) {
@@ -1273,7 +1493,7 @@ function shopApp() {
         // offer the product form rather than leaving a dead end.
         this.unknownBarcode = code;
         this.$refs.scanInput?.select();
-        this.notify(`No product with barcode ${code}.`, 'error');
+        this.scanFailed(`No product with barcode ${code}.`);
         return;
       }
 
@@ -1284,26 +1504,180 @@ function shopApp() {
       // and a hand-typed name can drift from it where a scanned one cannot.
       const line = this.addToCart({ item_name: item.item_name, quantity: 1, unit_price: item.selling_price });
 
+      /* Where focus lands is the whole ergonomics of the till. A serial-tracked
+         unit's next scan is its serial, so focus moves to the serial box and
+         this line becomes the one that serial names. A cable or a bulb needs
+         nothing more, so focus stays put and scan-scan-scan is untouched. A
+         product barcode scanned into the serial box is redirected back here
+         (see scanSerial), so a wrong guess costs nothing. */
+      if (line.tracked) {
+        this.serialTarget = line.key;
+        this.$nextTick(() => this.$refs.serialInput?.focus());
+      } else {
+        this.$nextTick(() => this.$refs.scanInput?.focus());
+      }
+
       /* At a till the scanner is the whole flow — scan, scan, scan — and the
          shopkeeper is watching the scan box, not the cart. So the stock-out
          warning replaces the usual confirmation toast rather than queueing
          behind it, where it would be overwritten by the next scan. */
       if (this.outOfStock(item.item_name)) {
-        this.notify(`${item.item_name} is stock out. Added anyway — correct the stock count if that is wrong.`, 'error');
+        this.scanFailed(
+          line.tracked
+            ? `${item.item_name} has no serials in stock. Scan the unit's serial, or Sell anyway.`
+            : `${item.item_name} is stock out. Added anyway — correct the stock count if that is wrong.`
+        );
+      } else if (line.tracked) {
+        this.scanOk(`${item.item_name} — now scan its serial.`);
       } else {
-        this.notify(`${item.item_name} ×${line.quantity} — ${this.fmt(item.selling_price)}`);
+        this.scanOk(`${item.item_name} ×${line.quantity} — ${this.fmt(item.selling_price)}`);
+      }
+    },
+
+    /* Is this product sold by the unit, one serial each? Set by the server the
+       moment its first serial is scanned in, and nowhere else — goods nobody
+       ever scanned a serial into sell exactly as they always did. */
+    serialTracked(item) {
+      return Number(item?.track_serial) === 1;
+    },
+
+    /* Sale form: the scanned serial names one unit on the invoice.
+
+       Asked of the server, not guessed from the page: whether a unit is in
+       stock, and which product it is, is only known there. The server checks
+       again when the invoice is saved, so this is for the cashier's benefit —
+       they hear the answer on the scan, not at the end. */
+    async scanSerial() {
+      const code = String(this.serialCode || '').trim();
+      this.serialCode = '';
+      if (!code) return;
+      if (this.repeatScan('serial', code)) return;
+
+      /* Both scan boxes are fed by the same scanner, so the next *product* is
+         easily scanned while focus is still sitting here. A code that is a
+         known product barcode is treated as the product scan it obviously is,
+         rather than recorded as some fan's serial number. */
+      if (this.findByBarcode(code)) {
+        this.scanCode = code;
+        this.scanBarcode();
+        return;
       }
 
-      // Focus stays in the scan box: at a till the next action is scanning the
-      // next item, not typing.
-      this.$nextTick(() => this.$refs.scanInput?.focus());
+      // One serial is one piece, so the same one twice on one invoice is a
+      // mis-scan — nearly always the scanner firing twice on one label.
+      const clash = this.cart.find((l) => sameCode(l.serial_no, code));
+      if (clash) {
+        this.scanFailed(`${code} is already on this invoice (${clash.item_name}).`);
+        return;
+      }
+
+      this.serialOverride = null;
+      let found = null;
+      try {
+        const res = await fetch(`/api/serials/lookup?code=${encodeURIComponent(code)}`);
+        if (res.ok) found = await res.json();
+        else if (res.status !== 404) throw new Error(await this.describeFailure(res, 'Could not check the serial.'));
+      } catch (err) {
+        this.scanFailed(`${err.message || 'Could not check the serial.'} Scan it again.`);
+        return;
+      }
+
+      // The line this serial names: the one just scanned if it still waits,
+      // otherwise the first that does.
+      let target = this.serialTargetLine;
+      if (!target || !target.tracked || target.serial_no) target = this.nextUnnamed();
+
+      if (found) {
+        if (found.status === 'sold') {
+          const who = [found.customer_name, found.sold_date && this.fmtDate(found.sold_date)].filter(Boolean).join(', ');
+          this.scanFailed(`${found.serial_no} was already sold — invoice #${found.invoice_id}${who ? `, ${who}` : ''}.`);
+          return;
+        }
+        const product = this.inventory.find((i) => Number(i.id) === Number(found.product_id));
+        if (!product) {
+          this.scanFailed(`${found.serial_no} belongs to a product that is no longer in stock.`);
+          return;
+        }
+        if (target && target.item_name !== product.item_name) {
+          // A second waiting line of the right product is where it belongs.
+          const other = this.cart.find((l) => l.tracked && !l.serial_no && l.item_name === product.item_name);
+          if (!other) {
+            this.scanFailed(`${found.serial_no} is a ${product.item_name}, not ${target.item_name}. Scan the ${target.item_name}'s serial.`);
+            return;
+          }
+          target = other;
+        }
+        // Nothing waiting: the serial alone says which product, so the
+        // barcode scan can be skipped altogether.
+        if (!target) target = this.addToCart({ item_name: product.item_name, quantity: 1, unit_price: product.selling_price });
+        target.serial_no = found.serial_no;
+        target.serial_override = false;
+        this.serialNamed(target);
+        return;
+      }
+
+      if (!target) {
+        this.scanFailed(`${code} is not registered. Scan the product first, then its serial.`);
+        return;
+      }
+      // Probably a unit from before the shop began scanning serials in. Held
+      // for the cashier to confirm rather than refused outright.
+      this.serialOverride = { code, key: target.key };
+      this.scanFailed(`${code} is not in stock for ${target.item_name}. Check the label, or Sell anyway.`);
+    },
+
+    // A serial has been attached to `line`: move on to the next unit waiting,
+    // or back to the barcode box for the next product.
+    serialNamed(line) {
+      this.serialOverride = null;
+      const next = this.nextUnnamed();
+      this.serialTarget = next ? next.key : null;
+      this.scanOk(`${line.item_name} — ${line.serial_no}${next ? `. Next: serial for ${next.item_name}.` : ''}`);
+      this.$nextTick(() => (next ? this.$refs.serialInput : this.$refs.scanInput)?.focus());
+    },
+
+    // "Sell anyway": the server registers the unit and sells it in one step.
+    sellAnyway() {
+      const pending = this.serialOverride;
+      const line = pending && this.cart.find((l) => l.key === pending.key);
+      if (!line) {
+        this.serialOverride = null;
+        return;
+      }
+      line.serial_no = pending.code;
+      line.serial_override = true;
+      this.serialNamed(line);
+    },
+
+    cancelOverride() {
+      this.serialOverride = null;
+      this.$nextTick(() => this.$refs.serialInput?.focus());
+    },
+
+    /* ------------------------------------------------ dealer form: receiving
+
+       Goods without serials use the Quantity field and "Save Dealer Batch" as
+       before. Goods with serials are received one scan per unit: scan the
+       product's barcode once, then its serials one after another, each saved
+       the moment it is scanned. */
+
+    get dealerProduct() {
+      return this.productByName(this.dealer.item_name);
+    },
+
+    // Serial mode: the product is already tracked, or this batch has begun
+    // scanning serials into it — scanning into the serial box is the switch.
+    get dealerTracked() {
+      return this.serialTracked(this.dealerProduct) || this.dealerBatch.units.length > 0;
     },
 
     // Dealer form: a known code fills the product being restocked; an unknown
     // one is simply kept, since this form is also how new products are created.
     scanDealerBarcode() {
       const code = String(this.dealerScanCode || '').trim();
+      this.dealerScanCode = '';
       if (!code) return;
+      if (this.repeatScan('dealer-barcode', code)) return;
       this.dealer.barcode = code;
 
       const item = this.findByBarcode(code);
@@ -1312,13 +1686,139 @@ function shopApp() {
         this.dealer.cost_price = item.cost_price;
         this.dealer.selling_price = item.selling_price;
         this.dealer.warranty_months = item.warranty_months ?? 0;
-        this.notify(`Restocking ${item.item_name}.`);
-        this.$nextTick(() => this.$refs.dealerQty?.focus());
+        if (this.dealerBatch.item_name !== item.item_name) this.dealerBatch = blankBatch();
+        if (this.serialTracked(item)) {
+          this.scanOk(`${item.item_name} (${item.quantity} in stock) — scan each unit's serial.`);
+          this.$nextTick(() => this.$refs.dealerSerial?.focus());
+        } else {
+          this.scanOk(`Restocking ${item.item_name}.`);
+          this.$nextTick(() => this.$refs.dealerQty?.focus());
+        }
       } else {
-        this.notify(`New barcode ${code} — fill in the product details.`);
+        this.dealerBatch = blankBatch();
+        this.scanOk(`New barcode ${code} — fill in the product details.`);
         this.$nextTick(() => this.$refs.dealerItem?.focus());
       }
-      this.dealerScanCode = '';
+    },
+
+    scanDealerSerial() {
+      const code = String(this.dealerSerialCode || '').trim();
+      this.dealerSerialCode = '';
+      if (!code) return;
+      if (this.repeatScan('dealer-serial', code)) return;
+
+      // The next product's barcode, scanned while focus sat here: switch to
+      // that product, which is exactly what the shopkeeper meant.
+      if (this.findByBarcode(code)) {
+        this.dealerScanCode = code;
+        this.scanDealerBarcode();
+        return;
+      }
+      queueScan(() => this.receiveDealerSerial(code));
+    },
+
+    async receiveDealerSerial(code) {
+      const d = this.dealer;
+      const name = String(d.item_name || '').trim();
+      const missing = !String(d.dealer_name || '').trim()
+        ? ['Enter the dealer name first.', 'dealerName']
+        : !name
+          ? ['Scan the product barcode first.', 'dealerScan']
+          : d.cost_price === '' || d.cost_price == null
+            ? ['Enter the buying price first.', 'dealerBuy']
+            : null;
+      if (missing) {
+        this.scanFailed(missing[0]);
+        this.$nextTick(() => this.$refs[missing[1]]?.focus());
+        return;
+      }
+
+      if (this.dealerBatch.item_name !== name) this.dealerBatch = { ...blankBatch(), item_name: name };
+      if (this.dealerBatch.units.some((u) => sameCode(u.serial_no, code))) {
+        this.scanFailed(`${code} is already scanned in this batch.`);
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/serials/receive', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            dealer_name: d.dealer_name,
+            item_name: name,
+            barcode: d.barcode,
+            cost_price: d.cost_price,
+            selling_price: d.selling_price,
+            warranty_months: d.warranty_months,
+            date: d.date,
+            serial_no: code,
+            purchase_id: this.dealerBatch.purchase_id,
+          }),
+        });
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not register the serial.'));
+        const out = await res.json();
+        this.dealerBatch.purchase_id = out.purchase_id;
+        this.dealerBatch.units.unshift({ id: out.serial.id, serial_no: out.serial.serial_no });
+        this.putProduct(out.product);
+        this.scanOk(`${name} | Qty: ${this.dealerBatch.units.length} | ${out.serial.serial_no}`);
+        this.refreshSoon();
+      } catch (err) {
+        this.scanFailed(err.message || 'Could not register the serial.');
+      }
+    },
+
+    // ✕ on a unit just scanned in: a mis-scan, taken back out of stock.
+    async removeDealerUnit(unit) {
+      const out = await this.deleteSerial(unit.id);
+      if (!out) return;
+      this.dealerBatch.units = this.dealerBatch.units.filter((u) => u.id !== unit.id);
+      // The server drops a batch left empty, so the next scan starts afresh.
+      if (!this.dealerBatch.units.length) this.dealerBatch.purchase_id = null;
+      this.notify(`${unit.serial_no} removed.`);
+    },
+
+    // The batch is already saved scan by scan; this only clears the form for
+    // the next product, keeping the dealer and date that usually carry over.
+    finishDealerBatch() {
+      const n = this.dealerBatch.units.length;
+      const name = this.dealerBatch.item_name || this.dealer.item_name;
+      this.dealer = { ...blankDealer(), dealer_name: this.dealer.dealer_name, date: this.dealer.date };
+      this.dealerBatch = blankBatch();
+      this.loadData({ quiet: true });
+      this.notify(n ? `Saved — ${n} unit(s) of ${name} received.` : 'Ready for the next product.');
+      this.$nextTick(() => this.$refs.dealerScan?.focus());
+    },
+
+    // Shared by every ✕ on a serial. Returns the server's reply, or null
+    // after saying why it failed.
+    async deleteSerial(id) {
+      try {
+        const res = await fetch(`/api/serials/${id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not remove the serial.'));
+        const out = await res.json();
+        if (out.product) this.putProduct(out.product);
+        this.refreshSoon();
+        return out;
+      } catch (err) {
+        this.notify(err.message || 'Could not remove the serial.', 'error');
+        return null;
+      }
+    },
+
+    // A product row the server just returned, put straight into the list so
+    // the stock count moves with the scan instead of after the next reload.
+    putProduct(product) {
+      if (!product) return;
+      const i = this.inventory.findIndex((p) => Number(p.id) === Number(product.id));
+      if (i === -1) this.inventory.push(product);
+      else this.inventory.splice(i, 1, product);
+    },
+
+    // One quiet reload after a run of scans settles, for the purchase history
+    // and totals — not one per scan.
+    refreshSoon() {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = setTimeout(() => this.loadData({ quiet: true }), 1500);
     },
 
     /* --------------------------------------------------------- খরচ entry */
@@ -1483,6 +1983,14 @@ function shopApp() {
       this.productError = '';
       this.confirmDelete = false;
       this.isProductOpen = true;
+      this.productSerials = [];
+      this.productSerialCode = '';
+    },
+
+    // Stock on this form is the serial count: an existing tracked product, or
+    // a new one with serials scanned in before it is added.
+    get productSerialMode() {
+      return this.serialTracked(this.product) || (this.productMode === 'add' && this.productSerials.length > 0);
     },
 
     // Spread, never the live row: binding x-model straight to an inventory
@@ -1494,6 +2002,120 @@ function shopApp() {
       this.productError = '';
       this.confirmDelete = false;
       this.isProductOpen = true;
+      this.productSerials = [];
+      this.productSerialCode = '';
+      this.loadProductSerials();
+    },
+
+    /* ----------------------------------------- product screen: serials in stock
+
+       How stock the shop already had becomes serial-tracked: open the product,
+       scan every unit on the shelf. Each scan is saved at once, with no dealer
+       purchase — these units were bought long ago. From the first scan on, the
+       product's stock is the number of serials scanned here. */
+
+    async loadProductSerials() {
+      const id = this.product.id;
+      if (!id) return;
+      this.productSerialsLoading = true;
+      try {
+        const res = await fetch(`/api/serials?product_id=${id}&status=available&limit=1000`);
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not load the serials.'));
+        const data = await res.json();
+        // The modal may have moved on to another product while this loaded.
+        if (this.product.id === id) this.productSerials = data.rows || [];
+      } catch (err) {
+        this.productError = err.message || 'Could not load the serials.';
+      } finally {
+        this.productSerialsLoading = false;
+      }
+    },
+
+    scanProductSerial() {
+      const code = String(this.productSerialCode || '').trim();
+      this.productSerialCode = '';
+      if (!code) return;
+      if (this.repeatScan('product-serial', code)) return;
+      if (this.findByBarcode(code)) {
+        this.scanFailed(`${code} is a product barcode, not a serial number.`);
+        return;
+      }
+      if (this.productSerials.some((u) => sameCode(u.serial_no, code))) {
+        this.scanFailed(`${code} is already scanned for this product.`);
+        return;
+      }
+      if (sameCode(code, this.product.barcode)) {
+        this.scanFailed(`${code} is this product's barcode, not a serial number.`);
+        return;
+      }
+      if (this.productMode === 'add') {
+        queueScan(() => this.holdNewProductSerial(code));
+        return;
+      }
+      const id = this.product.id;
+      queueScan(async () => {
+        try {
+          const res = await fetch('/api/serials/receive', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ product_id: id, serial_no: code }),
+          });
+          if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not register the serial.'));
+          const out = await res.json();
+          this.putProduct(out.product);
+          if (this.product.id === id) {
+            this.productSerials.unshift(out.serial);
+            this.product.quantity = out.product.quantity;
+            this.product.track_serial = out.product.track_serial;
+          }
+          this.scanOk(`${out.product.item_name} | Stock: ${out.product.quantity} | ${out.serial.serial_no}`);
+        } catch (err) {
+          this.scanFailed(err.message || 'Could not register the serial.');
+        }
+      });
+    },
+
+    /* Add Product: the product does not exist yet, so a scanned serial is held
+       here and sent with it — POST /api/inventory registers them together.
+       Asked of the server now all the same, so a serial already taken is
+       refused on the scan rather than when Add Product is pressed. */
+    async holdNewProductSerial(code) {
+      try {
+        const res = await fetch(`/api/serials/lookup?code=${encodeURIComponent(code)}`);
+        if (res.ok) {
+          const found = await res.json();
+          this.scanFailed(
+            found.status === 'sold'
+              ? `${found.serial_no} was already sold — invoice #${found.invoice_id}.`
+              : `${found.serial_no} is already in stock for ${found.item_name || 'another product'}.`
+          );
+          return;
+        }
+        if (res.status !== 404) throw new Error(await this.describeFailure(res, 'Could not check the serial.'));
+      } catch (err) {
+        this.scanFailed(`${err.message || 'Could not check the serial.'} Scan it again.`);
+        return;
+      }
+      if (this.productMode !== 'add' || this.productSerials.some((u) => sameCode(u.serial_no, code))) return;
+      this.productSerials.unshift({ id: `new-${Date.now()}-${code}`, serial_no: code, received_date: todayLocal(), pending: true });
+      this.product.quantity = this.productSerials.length;
+      this.scanOk(`${this.product.item_name || 'New product'} | Qty: ${this.productSerials.length} | ${code}`);
+    },
+
+    async removeProductSerial(unit) {
+      if (unit.pending) {
+        this.productSerials = this.productSerials.filter((u) => u.id !== unit.id);
+        this.product.quantity = this.productSerials.length;
+        return;
+      }
+      const out = await this.deleteSerial(unit.id);
+      if (!out) return;
+      this.productSerials = this.productSerials.filter((u) => u.id !== unit.id);
+      if (out.product && this.product.id === out.product.id) {
+        this.product.quantity = out.product.quantity;
+        this.product.track_serial = out.product.track_serial;
+      }
+      this.notify(`${unit.serial_no} removed from stock.`);
     },
 
     closeProduct() {
@@ -1558,6 +2180,8 @@ function shopApp() {
               cost_price: this.product.cost_price,
               selling_price: this.product.selling_price,
               warranty_months: this.product.warranty_months,
+              // Serials scanned before the product existed, registered with it.
+              ...(editing ? {} : { serials: this.productSerials.map((u) => u.serial_no) }),
             }),
           }
         );
@@ -1601,6 +2225,108 @@ function shopApp() {
         this.productError = 'Connection error. Try again.';
       } finally {
         this.savingProduct = false;
+      }
+    },
+
+    /* ------------------------------------------------- Serial / IMEI section */
+
+    async loadSerials(more = false) {
+      this.serialLoading = true;
+      try {
+        const params = new URLSearchParams({ limit: '50', offset: String(more ? this.serialRows.length : 0) });
+        if (this.serialQuery.trim()) params.set('q', this.serialQuery.trim());
+        if (this.serialStatus !== 'all') params.set('status', this.serialStatus);
+        if (this.serialProductId) params.set('product_id', this.serialProductId);
+        const res = await fetch(`/api/serials?${params}`);
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not load the serials.'));
+        const data = await res.json();
+        this.serialRows = more ? [...this.serialRows, ...(data.rows || [])] : data.rows || [];
+        this.serialTotal = data.total || 0;
+        this.serialLoaded = true;
+      } catch (err) {
+        this.notify(err.message || 'Could not load the serials.', 'error');
+      } finally {
+        this.serialLoading = false;
+      }
+    },
+
+    // "Serials" on a product row: this section, filtered to that product.
+    openSerialsFor(item) {
+      this.serialsOpen = true;
+      this.saveSections();
+      this.serialProductId = String(item.id);
+      this.serialQuery = '';
+      this.serialStatus = 'all';
+      this.loadSerials();
+      this.$nextTick(() => document.getElementById('serials-section')?.scrollIntoView({ behavior: 'smooth' }));
+    },
+
+    // The invoice a sold serial went out on, opened as its receipt.
+    openSerialInvoice(row) {
+      const inv = this.invoices.find((i) => Number(i.id) === Number(row.invoice_id));
+      if (inv) this.showReceipt(inv);
+      else this.notify(`Invoice #${row.invoice_id} is not loaded.`, 'error');
+    },
+
+    async openSerialHistory(row) {
+      this.serialDialog = { mode: 'history', row, events: [], note: '', error: '', saving: false, loading: true };
+      try {
+        const res = await fetch(`/api/serials/${row.id}/history`);
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not load the history.'));
+        const data = await res.json();
+        if (this.serialDialog?.row === row) this.serialDialog.events = data.events || [];
+      } catch (err) {
+        if (this.serialDialog) this.serialDialog.error = err.message || 'Could not load the history.';
+      } finally {
+        if (this.serialDialog) this.serialDialog.loading = false;
+      }
+    },
+
+    openSerialAction(row, mode) {
+      this.serialDialog = { mode, row, events: [], note: '', error: '', saving: false, loading: false };
+    },
+
+    closeSerialDialog() {
+      this.serialDialog = null;
+    },
+
+    serialEventText(e) {
+      if (e.event === 'received') {
+        return e.dealer_name ? `Received from ${e.dealer_name}` : e.note || 'Added to stock';
+      }
+      if (e.event === 'sold') return `Sold — invoice #${e.invoice_id}${e.customer_name ? `, ${e.customer_name}` : ''}`;
+      if (e.event === 'returned') {
+        return `Returned from invoice #${e.invoice_id}${e.customer_name ? `, ${e.customer_name}` : ''}${e.note ? ` — ${e.note}` : ''}`;
+      }
+      return e.event;
+    },
+
+    // Return (a sold unit back into stock) or Remove (a mis-scan taken out).
+    async confirmSerialAction() {
+      const dlg = this.serialDialog;
+      if (!dlg || dlg.saving) return;
+      dlg.saving = true;
+      dlg.error = '';
+      try {
+        if (dlg.mode === 'return') {
+          const res = await fetch(`/api/serials/${dlg.row.id}/return`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ note: dlg.note }),
+          });
+          if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not record the return.'));
+          this.notify(`${dlg.row.serial_no} is back in stock. Record any cash refund yourself.`);
+        } else {
+          const res = await fetch(`/api/serials/${dlg.row.id}`, { method: 'DELETE' });
+          if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not remove the serial.'));
+          this.notify(`${dlg.row.serial_no} removed from stock.`);
+        }
+        this.serialDialog = null;
+        await this.loadData({ quiet: true });
+      } catch (err) {
+        dlg.error = err.message || 'Something went wrong.';
+      } finally {
+        dlg.saving = false;
       }
     },
 
