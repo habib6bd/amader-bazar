@@ -289,11 +289,16 @@ Two safeguards, both at the bottom of `input.css` and both worth keeping:
 SQLite, created automatically on first run at `shop.db` next to `server.js`.
 
 ```sql
-inventory(id, item_name, quantity, cost_price, selling_price, barcode, warranty_months)
+inventory(id, item_name, quantity, cost_price, selling_price, barcode, warranty_months,
+          track_serial, pre_serial_quantity)
 invoices(id, customer_name, customer_contact, date, sale_time, comment, paid_amount)
 sales(id, invoice_id, line_no, customer_name, customer_contact, item_name, quantity,
-      total_price, date, sale_time, warranty_months, cost_price, list_price, comment)
+      total_price, date, sale_time, warranty_months, cost_price, list_price, comment,
+      serial_no, returned_date)
 dealer_purchases(id, dealer_name, item_name, quantity, total_cost, date)
+product_serials(id, product_id, serial_no, status, purchase_id, sale_id, invoice_id,
+                received_date, received_time)   -- one row per physical unit
+serial_events(id, serial_id, event, date, time, invoice_id, purchase_id, note)
 expenses(id, category, amount, note, date, created_time)
 admin(id, email, password)
 app_meta(key, value)   -- holds schema_version
@@ -302,6 +307,9 @@ CREATE UNIQUE INDEX idx_inventory_barcode ON inventory(barcode)
   WHERE barcode IS NOT NULL AND barcode != '';
 CREATE INDEX idx_sales_invoice ON sales(invoice_id);
 CREATE INDEX idx_expenses_date ON expenses(date);
+CREATE UNIQUE INDEX idx_serial_no ON product_serials(serial_no COLLATE NOCASE);
+CREATE INDEX idx_serial_product ON product_serials(product_id, status);
+CREATE INDEX idx_serial_events ON serial_events(serial_id);
 ```
 
 **Expenses are the shop's running costs** — rent, electricity, salary, tea,
@@ -376,6 +384,74 @@ A `PRAGMA index_list(inventory)` line is logged at boot. That is the only cheap 
 index exists — without it, a failed creation would be invisible until two products ended
 up sharing a code. Don't remove it.
 
+### Serial numbers
+
+A barcode says *what* a product is; a serial says *which unit*. Products with serials
+(fans, routers, phones) are **serial-tracked**: every unit the shop holds is a row in
+`product_serials`, and the product's stock is simply the number of those rows that are
+`available`. Everything else — cables, bulbs, small goods — never gets a serial and works
+exactly as before: typed quantity in, `quantity - n` out, no serial box ever asked for.
+
+**There is no setting to switch it on.** A product becomes serial-tracked
+(`inventory.track_serial = 1`) the moment its first serial is scanned in. From then on
+`syncSerialStock()` in [`server.js`](server.js) recounts its `quantity` inside every
+transaction that changes a serial, and a typed quantity is ignored. Undoing a product's
+only serial puts it back to untracked with the count it had before
+(`pre_serial_quantity`), so a cable given a serial by mistake is not stuck.
+
+**Receiving** (Dealer Purchase form): scan the product barcode, then scan each unit's
+serial. Each scan is saved the moment it is scanned (`POST /api/serials/receive`) — there
+is no batch to lose and no Finish to forget. The first scan of a batch creates its
+`dealer_purchases` row; each later scan adds one unit and its cost to that row, so the
+purchase history always equals what was scanned. Scanning another product's barcode into
+the serial box switches product. ✕ on a scanned unit takes it back out.
+
+**Existing stock** is converted from the product's **Edit** screen: scan every unit on the
+shelf into *Serials in stock*. No purchase is recorded for those — they were bought long ago.
+A **new** product can take its serials on the **Add Product** screen the same way; they are
+held in the form and saved with the product in one transaction.
+
+**Selling:** scan the product barcode (focus jumps to the serial box), then its serial. The
+till asks the server about each serial as it is scanned (`GET /api/serials/lookup`) and
+refuses, with a beep and a specific message, a serial that:
+
+- belongs to another product — *"RC-1 is a Rice Cooker, not Walton Fan"*;
+- was already sold — *"…invoice #12, Rahim, 21 Sept"*;
+- is already on this invoice (a scanner double-fire);
+- is not registered at all — with a **Sell anyway** button, for units the shop had before it
+  scanned serials in. The server registers and sells it in one step.
+
+A serial scanned with no product waiting adds its own product, so the barcode scan is
+optional for serial goods. The server checks all of this again when the invoice is saved,
+inside the same transaction that marks the unit sold, and the `status = 'available'` guard
+on that update means two tills can never sell one unit.
+
+**One unit per line.** A serial-tracked product never merges into an existing line; each
+unit is its own qty-1 line. A line reading "qty 3, serials SN-34 / SN-35 / SN-36" cannot
+say which piece cost what once a discount lands on it, and a warranty claim is about one
+piece.
+
+**Serial / IMEI section** lists every unit — search by serial, product or customer (a scan
+works), filter by product and status. Each row shows where the unit came from, and for a
+sold one the invoice (click to open the receipt) and customer. **History** shows every
+event: received, sold, returned, sold again. **Return** puts a sold unit back in stock and
+marks its sale line returned (printed on the receipt as *returned*). A return does **not**
+refund money or change the invoice total — see Known limitations. **Remove** takes out an
+available unit that was mis-scanned.
+
+The serial number is unique across the whole shop (case-insensitive), which is what
+guarantees a serial is registered once and belongs to one product. `sales.serial_no` stays
+on the line as the printed snapshot, like cost and warranty.
+
+The character set is wider than a barcode's — `[0-9A-Za-z/._-]{1,64}` — because serials
+printed on a carton carry dots, slashes and underscores often enough that rejecting them
+would mean retyping what was just scanned. Spaces stay out: a scanner emits none, so a
+space means two codes ran together. A product barcode is never accepted as a serial.
+
+**Scanner comfort:** a high beep for a good scan and a low double beep for a refusal, so
+the cashier need not look up; the same code twice in one box within half a second is
+ignored as a double-fire.
+
 ### Migrations
 
 Existing databases are migrated in place on startup by `migrate()` in
@@ -419,19 +495,26 @@ All endpoints are JSON. **None of them require authentication** — see
 | `POST` | `/api/login` | `{email, password}` | `{success, message}`; `401` if wrong |
 | `POST` | `/api/reset-password` | `{email, new_password}` | `{success, message}` |
 | `GET` | `/api/data` | — | `{inventory, invoices, sales, purchases, expenses}` — `sales` are invoice lines |
-| `POST` | `/api/sales` | `{customer_name, customer_contact?, date, comment?, paid_amount?, items: [{item_name, quantity, total_price}]}` | `{id}` (invoice); `400` if `paid_amount` exceeds the total |
+| `POST` | `/api/sales` | `{customer_name, customer_contact?, date, comment?, paid_amount?, items: [{item_name, quantity, total_price, serial_no?, serial_override?}]}` | `{id}` (invoice); `400` if `paid_amount` exceeds the total, or a serial repeats on the invoice; `409` if a serial-tracked line's serial is missing, sold, another product's, or unregistered without `serial_override` |
 | `PUT` | `/api/invoices/:id/payment` | `{paid_amount}` — `null`/`''` clears due tracking | `{id, paid_amount}`; `400` invalid, `404` if gone |
-| `POST` | `/api/dealer` | `{dealer_name, item_name, quantity, cost_price, selling_price, date, barcode?, warranty_months?}` | `{id}` |
+| `POST` | `/api/dealer` | `{dealer_name, item_name, quantity, cost_price, selling_price, date, barcode?, warranty_months?}` | `{id}`; `409` for a serial-tracked product |
+| `POST` | `/api/serials/receive` | `{serial_no, purchase_id?, dealer_name, item_name, cost_price, selling_price?, barcode?, warranty_months?, date?}` — or `{serial_no, product_id}` from the product screen | `{purchase_id, serial, product}`; `409` if already registered |
+| `DELETE` | `/api/serials/:id` | — | `{success, product}`; `409` if sold |
+| `GET` | `/api/serials/lookup?code=` | — | the serial with product and invoice; `404` if unregistered |
+| `GET` | `/api/serials?q=&product_id=&status=&limit=&offset=` | — | `{rows, total}` |
+| `GET` | `/api/serials/:id/history` | — | `{serial, events}` |
+| `POST` | `/api/serials/:id/return` | `{note?}` | `{success, product}`; `409` if not sold |
 | `POST` | `/api/expenses` | `{category, amount, note?, date?}` | `{id}`; `400` invalid |
 | `PUT` | `/api/expenses/:id` | same as POST | `{success}`; `404` if gone |
 | `DELETE` | `/api/expenses/:id` | — | `{success}`; `404` if gone |
-| `POST` | `/api/inventory` | `{item_name, quantity, cost_price, selling_price, barcode?, warranty_months?}` | `{id}`; `400` invalid, `409` duplicate |
+| `POST` | `/api/inventory` | `{item_name, quantity, cost_price, selling_price, barcode?, warranty_months?, serials?: [..]}` — with serials, stock is their count | `{id}`; `400` invalid, `409` duplicate barcode, name or serial |
 | `PUT` | `/api/inventory/:id` | same as POST | `{success, renamed}`; `404`/`400`/`409` |
-| `DELETE` | `/api/inventory/:id` | — | `{success}`; `404` if gone |
+| `DELETE` | `/api/inventory/:id` | — | `{success}`; `404` if gone. Its serials go too |
 
 **`POST /api/sales`** records one invoice. The body carries the customer, `date` and
-optional `comment`, plus `items: [{item_name, quantity, total_price}, …]` — up to 100
-lines, where `total_price` is the line amount. Everything is written in one transaction:
+optional `comment`, plus `items: [{item_name, quantity, total_price, serial_no?}, …]` — up
+to 100 lines, where `total_price` is the line amount and `serial_no` is the piece's own
+serial where it has one. Everything is written in one transaction:
 the invoice, every line, and every stock decrement succeed together or not at all, so a
 failure on one line cannot leave the others sold with no receipt. Lines are validated
 before anything is written, and errors name the line. A body with a single top-level
@@ -598,7 +681,10 @@ Deliberate scope choices, not defects. Worth knowing before you build on this.
 - **Profit excludes sales with no recorded cost.** The five sales that predate this feature
   have no `cost_price`, so they are skipped rather than counted as pure profit. The
   dashboard says when that is happening.
-- **Stock can go negative.** Selling more than you have is not blocked
+- **A serial return does not touch money.** The unit goes back in stock and the line is
+  marked returned, but the invoice total, revenue and profit are unchanged, and any cash
+  refund has to be recorded by the shop.
+- **Stock can go negative** for goods without serials. Selling more than you have is not blocked
   ([`server.js:300`](server.js#L300)); the quantity just goes below zero.
 - **Selling an unknown item still records the sale.** The stock update matches nothing and
   silently does nothing, so the sale exists with no corresponding inventory row.

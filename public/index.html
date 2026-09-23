@@ -209,6 +209,46 @@
                                         </div>
                                     </div>
 
+                                    <!-- The second half of a till scan for serial-tracked goods: the
+                                         barcode above says what was sold, this says which unit. Focus
+                                         arrives here on its own after scanning such a product, so the
+                                         shopkeeper scans the box label and then the serial label without
+                                         touching the keyboard. Cables and other untracked goods never
+                                         come here. Scanning the next *product* here is safe — a known
+                                         barcode is redirected back to the box above — and a serial on
+                                         its own adds its product, so the barcode scan can be skipped. -->
+                                    <div>
+                                        <label for="sale-serial" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+                                            🔢 Scan Serial / IMEI <span class="normal-case font-normal text-slate-400">(only for products with serials)</span>
+                                        </label>
+                                        <input id="sale-serial" type="text" x-model="serialCode" x-ref="serialInput"
+                                               autocomplete="off" enterkeyhint="done" placeholder="Scan the serial / IMEI…"
+                                               @keydown.enter.prevent.stop="scanSerial()"
+                                               :class="unnamedCount ? 'border-amber-400 bg-amber-50' : 'border-slate-300 bg-white'"
+                                               class="w-full p-3 sm:p-2.5 border rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
+                                        <p class="mt-1 text-xs font-semibold text-amber-800" x-show="unnamedCount" x-cloak>
+                                            Waiting: serial for <span x-text="(serialTargetLine && !serialTargetLine.serial_no ? serialTargetLine : nextUnnamed())?.item_name"></span>
+                                            <span x-show="unnamedCount > 1" x-cloak>
+                                                (<span class="tabular-nums" x-text="unnamedCount"></span> units still need a serial)
+                                            </span>
+                                        </p>
+                                        <!-- An unregistered serial is refused, not silently accepted, but the
+                                             shop may hold units from before it scanned serials in. -->
+                                        <div class="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2"
+                                             x-show="serialOverride" x-cloak>
+                                            <span class="text-xs text-red-700">
+                                                <span class="font-semibold tabular-nums" x-text="serialOverride?.code"></span> is not in stock.
+                                                Selling it adds it to stock and sells it at once.
+                                            </span>
+                                            <span class="ml-auto flex gap-2">
+                                                <button type="button" @click="cancelOverride()"
+                                                        class="nb-press bg-white border border-slate-300 text-slate-700 px-2.5 py-1 rounded-lg text-xs font-semibold hover:bg-slate-50">Cancel</button>
+                                                <button type="button" @click="sellAnyway()"
+                                                        class="nb-press bg-red-600 hover:bg-red-700 text-white px-2.5 py-1 rounded-lg text-xs font-semibold">Sell anyway</button>
+                                            </span>
+                                        </div>
+                                    </div>
+
                                     <!-- Or type / pick an item. Picking a known product fills its set price. -->
                                     <div class="rounded-lg border border-dashed border-slate-300 bg-white p-2.5 space-y-2">
                                         <div>
@@ -267,7 +307,9 @@
                                                             class="nb-press shrink-0 h-7 w-7 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 text-lg leading-none">&times;</button>
                                                 </div>
                                                 <div class="mt-2 grid grid-cols-[4.5rem_auto_1fr_auto] items-center gap-1.5 text-sm">
+                                                    <!-- One unit per serial-tracked line; more units are more scans. -->
                                                     <input type="number" min="1" step="1" x-model="l.quantity" :aria-label="'Quantity of ' + l.item_name"
+                                                           :readonly="l.tracked" :class="l.tracked ? 'bg-slate-100 text-slate-500' : ''"
                                                            @keydown.enter.prevent class="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm tabular-nums transition">
                                                     <span class="text-slate-400">×</span>
                                                     <input type="number" min="0" step="0.01" x-model="l.unit_price" :aria-label="'Price per piece of ' + l.item_name"
@@ -275,12 +317,31 @@
                                                     <span class="pl-1 font-bold text-brand-900 tabular-nums whitespace-nowrap" x-text="fmt(lineTotal(l))"></span>
                                                 </div>
                                                 <!-- Stock out is its own message, in red: "Only 0 in stock"
-                                                     reads like a quantity to fix, not like an empty shelf. -->
-                                                <p class="mt-1.5 text-xs font-semibold text-red-600" x-show="outOfStock(l.item_name)" x-cloak>
+                                                     reads like a quantity to fix, not like an empty shelf.
+                                                     Not shown on a tracked line: its serial check says more. -->
+                                                <p class="mt-1.5 text-xs font-semibold text-red-600" x-show="outOfStock(l.item_name) && !l.tracked" x-cloak>
                                                     ⚠️ This item is stock out.
                                                 </p>
-                                                <p class="mt-1.5 text-xs text-amber-700" x-show="overStock(l) && !outOfStock(l.item_name)" x-cloak>
+                                                <p class="mt-1.5 text-xs text-amber-700" x-show="overStock(l) && !outOfStock(l.item_name) && !l.tracked" x-cloak>
                                                     Only <span class="font-semibold tabular-nums" x-text="stockFor(l.item_name)"></span> in stock.
+                                                </p>
+                                                <!-- Only on serial-tracked lines, so the cart does not grow an
+                                                     empty box under every cable and bulb. Read-only: a serial is
+                                                     only ever scanned and checked, and a mis-scan is fixed with
+                                                     "clear" and a fresh scan. -->
+                                                <p class="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-amber-800" x-show="l.tracked && !l.serial_no" x-cloak>
+                                                    ⏳ Waiting for serial
+                                                    <button type="button" @click="clearSerial(l)"
+                                                            class="nb-press underline hover:no-underline font-normal">scan now</button>
+                                                </p>
+                                                <p class="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500" x-show="l.serial_no" x-cloak>
+                                                    <span class="font-semibold uppercase tracking-wide">Serial</span>
+                                                    <span class="min-w-0 flex-1 font-semibold text-slate-800 tabular-nums break-all" x-text="l.serial_no"></span>
+                                                    <span class="shrink-0 rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-semibold text-red-700"
+                                                          x-show="l.serial_override" x-cloak>new — added at till</span>
+                                                    <button type="button" @click="clearSerial(l)"
+                                                            :aria-label="'Clear serial on ' + l.item_name"
+                                                            class="nb-press shrink-0 underline hover:no-underline">clear</button>
                                                 </p>
                                             </li>
                                         </template>
@@ -341,18 +402,19 @@
                         <!-- Dealer purchase -->
                         <div class="nb-pop bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200" x-show="activeForm === 'dealer'" x-cloak>
                             <h2 class="text-base sm:text-lg font-bold mb-1 text-amber-700 flex items-center gap-2">🚚 Dealer Purchase &amp; Product Entry</h2>
-                            <p class="text-xs text-slate-500 mb-4">Adds stock and sets the product's prices. Restocking updates them.</p>
+                            <p class="text-xs text-slate-500 mb-4">Adds stock and sets the product's prices. Restocking updates them.
+                                Products with serials: scan the barcode, then each unit's serial — every scan is saved at once.</p>
                             <form @submit.prevent="submitDealer" class="space-y-4">
                                 <div>
                                     <label for="dealer-name" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Dealer Name</label>
-                                    <input id="dealer-name" type="text" x-model="dealer.dealer_name" placeholder="e.g. City Wholesale"
+                                    <input id="dealer-name" type="text" x-model="dealer.dealer_name" x-ref="dealerName" placeholder="e.g. City Wholesale"
                                            class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base sm:text-sm transition" required>
                                 </div>
 
                                 <!-- The scanner types the code then presses Enter, and Enter inside a
                                      form submits it — .prevent is what stops a half-empty save. -->
                                 <div>
-                                    <label for="dealer-scan" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">📷 Scan Barcode <span class="normal-case font-normal text-slate-400">(optional)</span></label>
+                                    <label for="dealer-scan" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">📷 Scan Product Barcode <span class="normal-case font-normal text-slate-400">(optional)</span></label>
                                     <input id="dealer-scan" type="text" x-model="dealerScanCode" x-ref="dealerScan"
                                            autocomplete="off" enterkeyhint="done" placeholder="Scan to restock, or scan a new code…"
                                            @keydown.enter.prevent.stop="scanDealerBarcode()"
@@ -369,10 +431,13 @@
                                            class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base sm:text-sm transition" required>
                                 </div>
                                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                    <div>
+                                    <!-- Counted goods only. A serial-tracked product's quantity is the
+                                         number of serials scanned in below, never a typed figure. -->
+                                    <div x-show="!dealerTracked">
                                         <label for="dealer-qty" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Quantity Bought</label>
                                         <input id="dealer-qty" type="number" min="1" step="1" x-model="dealer.quantity" x-ref="dealerQty" placeholder="50"
-                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base sm:text-sm transition" required>
+                                               :required="!dealerTracked"
+                                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base sm:text-sm transition">
                                     </div>
                                     <div>
                                         <label for="dealer-warranty" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Warranty (months)</label>
@@ -383,7 +448,7 @@
                                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                     <div>
                                         <label for="dealer-buy" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Buying Price <span class="normal-case font-normal text-slate-400">(per piece)</span></label>
-                                        <input id="dealer-buy" type="number" min="0" step="0.01" x-model="dealer.cost_price" placeholder="0.00"
+                                        <input id="dealer-buy" type="number" min="0" step="0.01" x-model="dealer.cost_price" x-ref="dealerBuy" placeholder="0.00"
                                                class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base sm:text-sm transition" required>
                                     </div>
                                     <div>
@@ -393,8 +458,45 @@
                                     </div>
                                 </div>
 
+                                <!-- Serial receiving. Shown for every product: scanning a serial here
+                                     is what makes a product serial-tracked, so there is no setting to
+                                     find first. Cables and other counted goods simply leave it empty. -->
+                                <div class="rounded-lg border px-3 py-2.5 space-y-2"
+                                     :class="dealerTracked ? 'border-amber-300 bg-amber-50' : 'border-dashed border-slate-300 bg-white'">
+                                    <label for="dealer-serial" class="block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                        🔢 Scan Serial / IMEI
+                                        <span class="normal-case font-normal text-slate-400" x-show="!dealerTracked">(only for products with serials — skip for cables etc.)</span>
+                                    </label>
+                                    <input id="dealer-serial" type="text" x-model="dealerSerialCode" x-ref="dealerSerial"
+                                           autocomplete="off" enterkeyhint="done" placeholder="Scan each unit's serial…"
+                                           @keydown.enter.prevent.stop="scanDealerSerial()"
+                                           class="w-full p-3 sm:p-2.5 border border-amber-300 bg-white rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base sm:text-sm transition">
+                                    <p class="text-xs text-amber-800" x-show="dealerTracked" x-cloak>
+                                        <span class="font-semibold" x-text="dealer.item_name"></span>
+                                        — <span class="tabular-nums font-semibold" x-text="dealerBatch.units.length"></span> scanned now,
+                                        <span class="tabular-nums" x-text="dealerProduct ? dealerProduct.quantity : 0"></span> in stock.
+                                        Each scan is saved as it is scanned.
+                                    </p>
+                                    <ol class="max-h-56 overflow-y-auto divide-y divide-amber-100 rounded-md border border-amber-200 bg-white text-sm"
+                                        x-show="dealerBatch.units.length" x-cloak>
+                                        <template x-for="(u, i) in dealerBatch.units" :key="'du-' + u.id">
+                                            <li class="flex items-center gap-2 px-2.5 py-1.5">
+                                                <span class="min-w-0 flex-1 truncate">
+                                                    <span class="text-slate-600" x-text="dealerBatch.item_name"></span>
+                                                    <span class="text-slate-400">| Qty:</span>
+                                                    <span class="tabular-nums" x-text="dealerBatch.units.length - i"></span>
+                                                    <span class="text-slate-400">|</span>
+                                                    <span class="font-semibold text-slate-800 tabular-nums" x-text="u.serial_no"></span>
+                                                </span>
+                                                <button type="button" @click="removeDealerUnit(u)" :aria-label="'Remove ' + u.serial_no"
+                                                        class="nb-press shrink-0 h-7 w-7 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 text-lg leading-none">&times;</button>
+                                            </li>
+                                        </template>
+                                    </ol>
+                                </div>
+
                                 <!-- What this batch costs and what it stands to earn, before saving. -->
-                                <div class="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5 space-y-1.5">
+                                <div class="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5 space-y-1.5" x-show="!dealerTracked">
                                     <div class="flex items-baseline justify-between">
                                         <span class="text-xs font-semibold uppercase tracking-wide text-amber-800">Total Cost (<span class="tabular-nums" x-text="dealer.quantity || 0"></span> pcs)</span>
                                         <span class="text-base font-bold text-amber-900 tabular-nums" x-text="fmt(dealerTotalCost)"></span>
@@ -417,7 +519,7 @@
                                 </div>
                                 <button type="submit" :disabled="savingDealer"
                                         class="nb-press w-full min-h-[48px] bg-amber-700 hover:bg-amber-800 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold p-3 rounded-lg shadow transition">
-                                    <span x-text="savingDealer ? 'Saving…' : 'Save Dealer Batch'"></span>
+                                    <span x-text="savingDealer ? 'Saving…' : (dealerTracked ? 'Done — next product' : 'Save Dealer Batch')"></span>
                                 </button>
                             </form>
                         </div>
@@ -546,6 +648,8 @@
                                                     <!-- Barcode as a sub-line, not its own column: it would
                                                          squeeze the only prose column in the table. -->
                                                     <span class="block text-xs text-slate-400 tabular-nums" x-show="item.barcode" x-cloak x-text="item.barcode"></span>
+                                                    <span class="mt-0.5 inline-block rounded bg-indigo-50 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-700 whitespace-nowrap"
+                                                          x-show="serialTracked(item)" x-cloak>🔢 Serial-tracked</span>
                                                 </td>
                                                 <td class="p-3">
                                                     <span class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold tabular-nums"
@@ -561,6 +665,7 @@
                                                     x-text="item.warranty_months ? item.warranty_months + ' mo' : '—'"></td>
                                                 <td class="p-3">
                                                     <div class="flex justify-end gap-2">
+                                                        <button @click="openSerialsFor(item)" x-show="serialTracked(item)" x-cloak class="nb-press bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-indigo-200">Serials</button>
                                                         <button @click="openEditProduct(item)" class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300">Edit</button>
                                                         <button @click="openEditProduct(item); confirmDelete = true" class="nb-press bg-red-50 hover:bg-red-100 text-red-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-red-200">Delete</button>
                                                     </div>
@@ -579,6 +684,8 @@
                                             <div class="min-w-0">
                                                 <p class="font-semibold text-slate-800" x-text="item.item_name"></p>
                                                 <p class="text-xs text-slate-400 tabular-nums" x-show="item.barcode" x-cloak x-text="item.barcode"></p>
+                                                <span class="mt-0.5 inline-block rounded bg-indigo-50 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-700 whitespace-nowrap"
+                                                      x-show="serialTracked(item)" x-cloak>🔢 Serial-tracked</span>
                                             </div>
                                             <span class="shrink-0 inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold tabular-nums"
                                                   :class="isLowStock(item) ? 'bg-red-100 text-red-700' : 'bg-brand-100 text-brand-800'">
@@ -593,7 +700,8 @@
                                             <div><dt class="text-xs text-slate-500">Warranty</dt>
                                                 <dd class="text-slate-700 tabular-nums" x-text="item.warranty_months ? item.warranty_months + ' months' : '—'"></dd></div>
                                         </dl>
-                                        <div class="mt-3 grid grid-cols-2 gap-2">
+                                        <div class="mt-3 grid gap-2" :class="serialTracked(item) ? 'grid-cols-3' : 'grid-cols-2'">
+                                            <button @click="openSerialsFor(item)" x-show="serialTracked(item)" x-cloak class="nb-press min-h-[44px] bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-sm font-semibold border border-indigo-200">Serials</button>
                                             <button @click="openEditProduct(item)" class="nb-press min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm font-semibold border border-slate-300">Edit</button>
                                             <button @click="openEditProduct(item); confirmDelete = true" class="nb-press min-h-[44px] bg-red-50 hover:bg-red-100 text-red-700 rounded-lg text-sm font-semibold border border-red-200">Delete</button>
                                         </div>
@@ -613,6 +721,92 @@
                             </div>
                         </section>
 
+                        <!-- Serial / IMEI — every unit of every serial-tracked product: where it
+                             came from, whether it is on the shelf, and who bought it. Fetched page
+                             by page from the server rather than with the dashboard. -->
+                        <section id="serials-section" class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <button type="button" @click="toggleSection('serials')"
+                                        :aria-expanded="serialsOpen" aria-controls="serials-body"
+                                        class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
+                                    <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="serialsOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                                    <span>🔢 Serial / IMEI</span>
+                                    <span class="rounded-full bg-slate-100 text-slate-600 px-2 py-0.5 text-xs font-bold tabular-nums"
+                                          x-show="serialLoaded" x-cloak x-text="serialTotal"></span>
+                                </button>
+                                <!-- The search box takes a scan: a customer at the counter with a dead
+                                     unit is one scan away from its invoice. -->
+                                <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto" x-show="serialsOpen" x-cloak>
+                                    <input type="search" x-model="serialQuery" @input.debounce.300ms="loadSerials()" @keydown.enter.prevent="loadSerials()"
+                                           placeholder="Scan or search serial, product, customer…" aria-label="Search serials"
+                                           class="flex-1 sm:flex-none sm:w-64 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
+                                    <select x-model="serialProductId" @change="loadSerials()" aria-label="Filter by product"
+                                            class="p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500 outline-none">
+                                        <option value="">All products</option>
+                                        <template x-for="item in inventory.filter((i) => serialTracked(i))" :key="'sp-' + item.id">
+                                            <option :value="String(item.id)" x-text="item.item_name"></option>
+                                        </template>
+                                    </select>
+                                    <select x-model="serialStatus" @change="loadSerials()" aria-label="Filter by status"
+                                            class="p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500 outline-none">
+                                        <option value="all">All</option>
+                                        <option value="available">Available</option>
+                                        <option value="sold">Sold</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div id="serials-body" x-show="serialsOpen" x-cloak class="mt-4">
+                                <p x-show="serialLoading && !serialRows.length" class="nb-loading text-sm font-semibold py-6 text-center">Loading serials…</p>
+                                <p x-show="!serialLoading && serialLoaded && !serialRows.length" x-cloak class="text-sm text-slate-500 py-8 text-center">
+                                    <span x-text="serialQuery || serialProductId || serialStatus !== 'all'
+                                        ? 'No serial matches that search.'
+                                        : 'No serials yet — scan them in on the Dealer Purchase form, or from a product\'s Edit screen.'"></span>
+                                </p>
+
+                                <!-- One list for every width: a table would need a second, mobile
+                                     layout, and each row here is short enough to wrap cleanly. -->
+                                <ul class="divide-y divide-slate-100" x-show="serialRows.length" x-cloak>
+                                    <template x-for="row in serialRows" :key="'sr-' + row.id">
+                                        <li class="nb-row flex flex-wrap items-center gap-x-4 gap-y-1.5 py-2.5">
+                                            <div class="min-w-0 flex-1 basis-56">
+                                                <p class="flex flex-wrap items-center gap-2">
+                                                    <span class="font-semibold text-slate-800 tabular-nums break-all" x-text="row.serial_no"></span>
+                                                    <span class="rounded-full px-2 py-0.5 text-[11px] font-bold"
+                                                          :class="row.status === 'sold' ? 'bg-slate-200 text-slate-700' : 'bg-brand-100 text-brand-800'"
+                                                          x-text="row.status === 'sold' ? 'Sold' : 'Available'"></span>
+                                                </p>
+                                                <p class="text-xs text-slate-500" x-text="row.item_name || '(deleted product)'"></p>
+                                            </div>
+                                            <div class="min-w-0 flex-1 basis-56 text-xs text-slate-500">
+                                                <p>In: <span x-text="fmtDate(row.received_date)"></span><span x-show="row.dealer_name" x-text="' — ' + row.dealer_name"></span></p>
+                                                <p x-show="row.status === 'sold'" x-cloak>
+                                                    Out:
+                                                    <button type="button" @click="openSerialInvoice(row)" class="font-semibold text-brand-800 underline hover:no-underline"
+                                                            x-text="'#' + row.invoice_id"></button>
+                                                    <span x-text="[row.customer_name, row.customer_contact, fmtDate(row.sold_date)].filter(Boolean).join(' · ')"></span>
+                                                </p>
+                                            </div>
+                                            <div class="flex shrink-0 gap-2">
+                                                <button type="button" @click="openSerialHistory(row)"
+                                                        class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300">History</button>
+                                                <button type="button" @click="openSerialAction(row, 'return')" x-show="row.status === 'sold'" x-cloak
+                                                        class="nb-press bg-amber-50 hover:bg-amber-100 text-amber-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-amber-200">Return</button>
+                                                <button type="button" @click="openSerialAction(row, 'remove')" x-show="row.status !== 'sold'" x-cloak
+                                                        class="nb-press bg-red-50 hover:bg-red-100 text-red-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-red-200">Remove</button>
+                                            </div>
+                                        </li>
+                                    </template>
+                                </ul>
+                                <div class="mt-4 text-center" x-show="serialRows.length < serialTotal" x-cloak>
+                                    <button type="button" @click="loadSerials(true)" :disabled="serialLoading"
+                                            class="nb-press min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+                                        Show more (<span class="tabular-nums" x-text="serialTotal - serialRows.length"></span> left)
+                                    </button>
+                                </div>
+                            </div>
+                        </section>
+
                         <!-- Sales history -->
                         <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
                             <div class="flex flex-wrap items-center justify-between gap-3">
@@ -624,7 +818,7 @@
                                     <span class="rounded-full bg-slate-100 text-slate-600 px-2 py-0.5 text-xs font-bold tabular-nums"
                                           x-show="invoices.length" x-cloak x-text="invoices.length"></span>
                                 </button>
-                                <input type="search" x-model="saleSearch" placeholder="Search customer or item…" aria-label="Search sales"
+                                <input type="search" x-model="saleSearch" placeholder="Search customer, item or serial…" aria-label="Search sales"
                                        x-show="salesOpen" x-cloak
                                        class="w-full sm:w-60 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
                             </div>
@@ -765,6 +959,11 @@
                                                 </td>
                                                 <td class="p-3 text-slate-600">
                                                     <span x-text="invoiceSummary(inv)"></span>
+                                                    <!-- Every serial on the invoice, so a customer holding a dead
+                                                         device can be matched to their receipt at a glance once
+                                                         the search has narrowed the list to it. -->
+                                                    <span class="block text-xs text-slate-400 tabular-nums" x-show="invoiceSerials(inv)" x-cloak
+                                                          x-text="invoiceSerials(inv)"></span>
                                                     <span class="block text-xs text-slate-400" x-show="inv.lines.length > 1" x-cloak
                                                           x-text="inv.lines.length + ' items'"></span>
                                                 </td>
@@ -811,7 +1010,10 @@
                                         <ul class="mt-2 space-y-0.5 text-sm text-slate-600">
                                             <template x-for="l in inv.lines" :key="'ml-' + l.id">
                                                 <li class="flex justify-between gap-3">
-                                                    <span><span x-text="l.item_name"></span> <span class="text-slate-400">×</span> <span class="tabular-nums" x-text="l.quantity"></span></span>
+                                                    <span>
+                                                        <span x-text="l.item_name"></span> <span class="text-slate-400">×</span> <span class="tabular-nums" x-text="l.quantity"></span>
+                                                        <span class="block text-xs text-slate-400 tabular-nums" x-show="l.serial_no" x-cloak x-text="l.serial_no + (l.returned_date ? ' (returned)' : '')"></span>
+                                                    </span>
                                                     <span class="tabular-nums text-slate-500" x-text="fmt(l.total_price)"></span>
                                                 </li>
                                             </template>
@@ -1172,6 +1374,12 @@
                                              product carries its own warranty. -->
                                         <span class="inv-item-warranty" x-show="warrantyText(l)" x-cloak
                                               x-text="warrantyText(l)"></span>
+                                        <!-- The piece this line was sold as. Printed for the same
+                                             reason and in the same place as the warranty: a claim
+                                             needs both, and the customer's copy is the only record
+                                             they hold. -->
+                                        <span class="inv-item-serial" x-show="serialText(l)" x-cloak
+                                              x-text="serialText(l)"></span>
                                     </td>
                                     <td class="col-qty tabular-nums" x-text="l.quantity"></td>
                                     <td class="col-rate tabular-nums" x-text="fmtNum(unitPrice(l))"></td>
@@ -1300,8 +1508,11 @@
                 <div class="grid grid-cols-2 gap-4">
                     <div>
                         <label for="prod-qty" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">In Stock</label>
+                        <!-- Read-only once serial-tracked: the count is the serials below. -->
                         <input id="prod-qty" type="number" min="0" step="1" x-model="product.quantity" placeholder="0"
+                               :readonly="productSerialMode" :class="productSerialMode ? 'bg-slate-100 text-slate-500' : ''"
                                class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
+                        <p class="mt-1 text-xs text-indigo-700" x-show="productSerialMode" x-cloak>= serials in stock</p>
                     </div>
                     <div>
                         <label for="prod-warranty" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Warranty (months)</label>
@@ -1352,6 +1563,44 @@
                     </p>
                 </div>
 
+                <!-- Serials in stock. How stock the shop already had becomes
+                     serial-tracked: scan every unit on the shelf here. Each scan is
+                     saved at once, so this panel needs no Save; cables and other
+                     counted goods just leave it empty. On Add Product the scans are
+                     held here and saved together with the new product. -->
+                <div class="rounded-lg border px-3 py-2.5 space-y-2"
+                     :class="productSerialMode ? 'border-indigo-200 bg-indigo-50' : 'border-dashed border-slate-300'">
+                    <div class="flex items-baseline justify-between gap-2">
+                        <label for="prod-serial" class="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            🔢 Serials in stock <span class="normal-case font-normal text-slate-400" x-show="!productSerialMode">(optional — skip for cables etc.)</span>
+                        </label>
+                        <span class="text-xs font-bold text-indigo-800 tabular-nums" x-show="productSerialMode" x-cloak
+                              x-text="productSerials.length + ' available'"></span>
+                    </div>
+                    <p class="text-xs text-indigo-800" x-show="productMode === 'add' && productSerials.length" x-cloak>
+                        Saved with the product when you press Add Product.
+                    </p>
+                    <p class="text-xs text-amber-800" x-show="productMode === 'edit' && !serialTracked(product) && Number(product.quantity) > 0" x-cloak>
+                        Current count: <span class="font-semibold tabular-nums" x-text="product.quantity"></span>.
+                        Once you scan the first serial, stock = serials scanned — scan every unit on the shelf.
+                    </p>
+                    <input id="prod-serial" type="text" x-model="productSerialCode" autocomplete="off" enterkeyhint="done"
+                           placeholder="Scan a unit's serial / IMEI…" @keydown.enter.prevent.stop="scanProductSerial()"
+                           class="w-full p-3 sm:p-2.5 border border-indigo-300 bg-white rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-base sm:text-sm transition">
+                    <p x-show="productSerialsLoading" class="text-xs text-slate-500">Loading serials…</p>
+                    <ul class="max-h-48 overflow-y-auto divide-y divide-indigo-100 rounded-md border border-indigo-100 bg-white text-sm"
+                        x-show="productSerials.length" x-cloak>
+                        <template x-for="u in productSerials" :key="'ps-' + u.id">
+                            <li class="flex items-center gap-2 px-2.5 py-1.5">
+                                <span class="min-w-0 flex-1 truncate font-semibold text-slate-800 tabular-nums" x-text="u.serial_no"></span>
+                                <span class="shrink-0 text-xs text-slate-400" x-text="fmtDate(u.received_date)"></span>
+                                <button type="button" @click="removeProductSerial(u)" :aria-label="'Remove ' + u.serial_no"
+                                        class="nb-press shrink-0 h-7 w-7 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 text-lg leading-none">&times;</button>
+                            </li>
+                        </template>
+                    </ul>
+                </div>
+
                 <p class="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
                    x-show="productError" x-cloak x-text="productError"></p>
 
@@ -1386,6 +1635,79 @@
                 </div>
             </div>
 
+        </div>
+    </div>
+
+    <!-- ================= SERIAL DIALOG =================
+         History, Return and Remove for one serial. A direct child of <body> and
+         no-print, for the same reasons as the product modal above. -->
+    <div id="serial-modal" x-show="serialDialog" x-cloak x-transition.opacity
+         class="no-print fixed inset-0 bg-brand-950/70 z-[55] flex items-center justify-center p-4 overflow-y-auto"
+         role="dialog" aria-modal="true" aria-label="Serial" @keydown.escape.window="closeSerialDialog()">
+        <div class="nb-pop bg-white w-full max-w-md rounded-2xl shadow-2xl p-5 sm:p-6" x-show="serialDialog">
+            <div class="flex items-start justify-between gap-3 mb-3">
+                <div class="min-w-0">
+                    <h2 class="text-lg font-bold text-slate-800 break-all" x-text="serialDialog?.row.serial_no"></h2>
+                    <p class="text-sm text-slate-500" x-text="serialDialog?.row.item_name"></p>
+                </div>
+                <button @click="closeSerialDialog()" aria-label="Close"
+                        class="nb-press text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">&times;</button>
+            </div>
+
+            <!-- History: everything that has happened to this unit, oldest first. -->
+            <template x-if="serialDialog?.mode === 'history'">
+                <div>
+                    <p x-show="serialDialog.loading" class="text-sm text-slate-500 py-4 text-center">Loading…</p>
+                    <ol class="space-y-2" x-show="!serialDialog.loading">
+                        <template x-for="e in serialDialog.events" :key="'se-' + e.id">
+                            <li class="flex gap-3 text-sm">
+                                <span class="shrink-0 w-24 text-xs text-slate-500 tabular-nums pt-0.5"
+                                      x-text="fmtDate(e.date) + (e.time ? ' ' + fmtTime(e.time) : '')"></span>
+                                <span class="text-slate-800" x-text="serialEventText(e)"></span>
+                            </li>
+                        </template>
+                    </ol>
+                </div>
+            </template>
+
+            <!-- Return: back on the shelf. Money is not touched — say so. -->
+            <template x-if="serialDialog?.mode === 'return'">
+                <div class="space-y-3">
+                    <p class="text-sm text-slate-700">
+                        Sold on invoice <span class="font-semibold" x-text="'#' + serialDialog.row.invoice_id"></span>
+                        to <span class="font-semibold" x-text="serialDialog.row.customer_name"></span>.
+                        Returning puts this unit back in stock so it can be sold again.
+                    </p>
+                    <p class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                        This does not refund money or change the invoice total. Record any cash refund yourself.
+                    </p>
+                    <div>
+                        <label for="return-note" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Reason <span class="normal-case font-normal text-slate-400">(optional)</span></label>
+                        <input id="return-note" type="text" x-model="serialDialog.note" maxlength="200" placeholder="e.g. faulty, replaced"
+                               @keydown.enter.prevent="confirmSerialAction()"
+                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
+                    </div>
+                </div>
+            </template>
+
+            <template x-if="serialDialog?.mode === 'remove'">
+                <p class="text-sm text-slate-700">
+                    Remove this serial from stock? Use this for a mis-scan — a unit that never really arrived.
+                    Stock goes down by one.
+                </p>
+            </template>
+
+            <p class="mt-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
+               x-show="serialDialog?.error" x-cloak x-text="serialDialog?.error"></p>
+
+            <div class="mt-4 flex gap-2.5" x-show="serialDialog && serialDialog.mode !== 'history'">
+                <button type="button" @click="closeSerialDialog()"
+                        class="nb-press min-h-[44px] flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-sm font-semibold">Cancel</button>
+                <button type="button" @click="confirmSerialAction()" :disabled="serialDialog?.saving"
+                        :class="serialDialog?.mode === 'remove' ? 'bg-red-600 hover:bg-red-700' : 'bg-amber-600 hover:bg-amber-700'"
+                        class="nb-press min-h-[44px] flex-1 disabled:opacity-60 text-white rounded-lg text-sm font-semibold"
+                        x-text="serialDialog?.saving ? 'Saving…' : (serialDialog?.mode === 'remove' ? 'Remove' : 'Return to stock')"></button>
+            </div>
         </div>
     </div>
 

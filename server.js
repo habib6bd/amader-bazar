@@ -189,6 +189,17 @@ async function migrate() {
   // the dashboard only; deliberately never rendered on the customer's invoice.
   await addColumnIfMissing('sales', 'comment', 'TEXT');
 
+  /* The unit's own serial / IMEI, captured by a second scan at the till and
+     printed on the money receipt so a warranty claim can be tied to the exact
+     piece that was sold. TEXT for the same reason as barcode, and one per line:
+     each scanned serial gets its own qty-1 line (see splitForSerial() on the
+     client), so a serial never has to describe two pieces at once.
+
+     Deliberately NOT unique. A returned piece that is resold, or an invoice
+     deleted and re-entered, would both hit a unique index at the till with no
+     way past it; the client warns about a serial it has seen before instead. */
+  await addColumnIfMissing('sales', 'serial_no', 'TEXT');
+
   // TEXT, not INTEGER: an INTEGER column would eat the leading zeros off an
   // EAN-13, and Code 39 barcodes are alphanumeric.
   await addColumnIfMissing('inventory', 'barcode', 'TEXT');
@@ -229,6 +240,28 @@ async function migrate() {
   // setup() creates the table before calling migrate(), so this can never
   // reference a table that does not exist yet.
   await run(`CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date)`);
+
+  /* Serial-tracked stock. A product becomes tracked the moment its first
+     serial is registered (see POST /api/serials/receive) — there is no switch
+     to forget. From then on its quantity is the count of its available
+     serials, kept in step by syncSerialStock(), rather than a number anyone
+     types. Cables, bulbs and the rest never get a serial and stay 0 here,
+     selling exactly as they always have. */
+  await addColumnIfMissing('inventory', 'track_serial', 'INTEGER NOT NULL DEFAULT 0');
+  // The typed count a product had when its first serial was scanned in, kept
+  // so undoing that scan gives the count back instead of leaving stock at 0.
+  await addColumnIfMissing('inventory', 'pre_serial_quantity', 'INTEGER');
+
+  // Set when the unit on this line comes back. The line itself stays: the
+  // receipt was handed over and its Invoice No. has to keep meaning the same.
+  await addColumnIfMissing('sales', 'returned_date', 'TEXT');
+
+  /* The stand-in for "a serial can be registered once, and to one product".
+     Global and case-insensitive: a scanner reads SN-a9f and SN-A9F from the
+     same label depending on its settings, and they are the same unit. */
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_serial_no ON product_serials(serial_no COLLATE NOCASE)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_serial_product ON product_serials(product_id, status)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_serial_events ON serial_events(serial_id)`);
 
   await linkLegacySales();
 }
@@ -313,7 +346,7 @@ async function linkLegacySales() {
    need, since each awaited statement completes before the next is issued. */
 /* Bump whenever setup() or migrate() gains a step. A database already at this
    version skips the whole migration on boot. */
-const SCHEMA_VERSION = '2026-09-19-invoice-paid';
+const SCHEMA_VERSION = '2026-09-23-serial-stock';
 
 // One read instead of ~20 statements, several of which take a write lock even
 // when they end up changing nothing. On Vercel every cold start runs this, each
@@ -350,7 +383,9 @@ async function setup() {
     cost_price REAL NOT NULL,
     selling_price REAL NOT NULL,
     barcode TEXT,
-    warranty_months INTEGER NOT NULL DEFAULT 0
+    warranty_months INTEGER NOT NULL DEFAULT 0,
+    track_serial INTEGER NOT NULL DEFAULT 0,
+    pre_serial_quantity INTEGER
   )`);
 
   // `sale_time` rather than `time`, because TIME is an SQL function name.
@@ -371,7 +406,9 @@ async function setup() {
     list_price REAL,
     comment TEXT,
     invoice_id INTEGER,
-    line_no INTEGER
+    line_no INTEGER,
+    serial_no TEXT,
+    returned_date TEXT
   )`);
 
   // One row per money receipt. Its lines live in `sales`, joined by
@@ -416,6 +453,40 @@ async function setup() {
     note TEXT,
     date TEXT NOT NULL,
     created_time TEXT
+  )`);
+
+  /* One row per physical unit of a serial-tracked product.
+
+     status is 'available' or 'sold'. A return puts a unit back to 'available'
+     rather than inventing a third state, because a returned unit is on the
+     shelf and sellable — anything else about it lives in serial_events.
+
+     purchase_id is the dealer batch it arrived on, NULL when it was scanned in
+     from the product screen (stock the shop already had). sale_id/invoice_id
+     are set only while it is sold, and cleared by a return; the history of
+     every sale it has been through stays in serial_events. */
+  await run(`CREATE TABLE IF NOT EXISTS product_serials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL,
+    serial_no TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'available',
+    purchase_id INTEGER,
+    sale_id INTEGER,
+    invoice_id INTEGER,
+    received_date TEXT NOT NULL,
+    received_time TEXT
+  )`);
+
+  // What happened to a unit, in order: received, sold, returned, sold again.
+  await run(`CREATE TABLE IF NOT EXISTS serial_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    serial_id INTEGER NOT NULL,
+    event TEXT NOT NULL,
+    date TEXT NOT NULL,
+    time TEXT,
+    invoice_id INTEGER,
+    purchase_id INTEGER,
+    note TEXT
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS admin (
@@ -726,6 +797,200 @@ function validatePaidAmount(value, total) {
   return { paid_amount: paid };
 }
 
+/* ---------------------------------------------------------------------------
+   Shared plumbing for the routes that write several rows at once.
+   --------------------------------------------------------------------------- */
+
+// A refusal the shopkeeper can act on, thrown from inside a transaction so the
+// rollback and the message travel together. Anything else is a real failure.
+class Refusal extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+// The same run/get/all shape as the top-level wrappers, bound to a transaction,
+// so a helper can be written once and called inside or outside one.
+function onTx(tx) {
+  const exec = (sql, args = []) => tx.execute({ sql, args });
+  return {
+    run: async (sql, args) => {
+      const r = await exec(sql, args);
+      return { lastID: r.lastInsertRowid == null ? null : Number(r.lastInsertRowid), changes: r.rowsAffected };
+    },
+    get: async (sql, args) => (await exec(sql, args)).rows[0],
+    all: async (sql, args) => (await exec(sql, args)).rows,
+  };
+}
+
+// 'write' takes the lock up front — see the rename in PUT /api/inventory/:id
+// for why a bare BEGIN would not do.
+async function inWriteTx(fn) {
+  const tx = await db.transaction('write');
+  try {
+    const out = await fn(onTx(tx));
+    await tx.commit();
+    return out;
+  } catch (err) {
+    await tx.rollback().catch(() => {});
+    throw err;
+  }
+}
+
+function sendFailure(res, err) {
+  if (err instanceof Refusal) return res.status(err.status).json({ error: err.message });
+  if (String(err.code).startsWith('SQLITE_CONSTRAINT')) {
+    return res.status(409).json({ error: 'That barcode or serial is already registered.' });
+  }
+  return res.status(500).json({ error: err.message });
+}
+
+/* ---------------------------------------------------------------------------
+   Serial numbers
+
+   The character set is wider than a barcode's on purpose — a barcode is
+   machine-assigned and tidy, whereas serials printed on a carton carry dots,
+   slashes and underscores often enough that rejecting them would force the
+   shopkeeper to retype what they just scanned. Spaces stay out: a scanner
+   emits none, so a space means two codes ran together.
+   --------------------------------------------------------------------------- */
+const SERIAL_PATTERN = /^[0-9A-Za-z/._-]{1,64}$/;
+const SERIAL_RULE = 'at most 64 letters, digits, / . _ or -, with no spaces';
+
+// A registered serial with the product it belongs to and, while sold, the
+// invoice it went out on — everything a refusal message needs to be specific.
+async function findSerial(q, code) {
+  return q.get(
+    `SELECT ps.*, i.item_name, v.customer_name, v.date AS sold_date
+       FROM product_serials ps
+       LEFT JOIN inventory i ON i.id = ps.product_id
+       LEFT JOIN invoices v ON v.id = ps.invoice_id
+      WHERE ps.serial_no = ? COLLATE NOCASE`,
+    [code]
+  );
+}
+
+/* Why this serial cannot be taken in / sold as `product`, or null if it can.
+   Worded for the person holding the scanner, not for a log. */
+function serialClash(found, product, { forSale }) {
+  if (!found) return null;
+  const code = found.serial_no;
+  if (found.product_id !== product.id) {
+    return `${code} belongs to ${found.item_name || 'a deleted product'}, not ${product.item_name}.`;
+  }
+  if (found.status === 'sold') {
+    const who = found.customer_name ? `, ${found.customer_name}` : '';
+    return `${code} was already sold — invoice #${found.invoice_id}${who}. Return it first to sell it again.`;
+  }
+  return forSale ? null : `${code} is already in stock for ${product.item_name}.`;
+}
+
+// A product barcode scanned into a serial box would otherwise become some
+// fan's serial number. The client redirects those; this is the backstop.
+async function refuseProductBarcode(q, code) {
+  const owner = await q.get(`SELECT item_name FROM inventory WHERE barcode = ? COLLATE NOCASE`, [code]);
+  if (owner) throw new Refusal(409, `${code} is the barcode of ${owner.item_name}, not a serial number.`);
+}
+
+/* The one place a tracked product's stock is written. Counting rather than
+   adding or subtracting means a count can never drift from the serials it
+   describes, whatever order the writes happened in. Untracked products are
+   left alone by the WHERE, so calling this on a cable is harmless. */
+async function syncSerialStock(q, productId) {
+  await q.run(
+    `UPDATE inventory
+        SET quantity = (SELECT COUNT(*) FROM product_serials WHERE product_id = inventory.id AND status = 'available')
+      WHERE id = ? AND track_serial = 1`,
+    [productId]
+  );
+}
+
+async function logSerialEvent(q, { serial_id, event, invoice_id = null, purchase_id = null, note = null }) {
+  await q.run(
+    `INSERT INTO serial_events (serial_id, event, date, time, invoice_id, purchase_id, note) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [serial_id, event, todayLocal(), nowLocalTime(), invoice_id, purchase_id, note]
+  );
+}
+
+// Registers one unit. Tracking starts here: the first serial on a product is
+// what turns it into a serial-tracked one.
+async function registerSerial(q, product, code, { purchase_id = null, note = null } = {}) {
+  const r = await q.run(
+    `INSERT INTO product_serials (product_id, serial_no, status, purchase_id, received_date, received_time)
+     VALUES (?, ?, 'available', ?, ?, ?)`,
+    [product.id, code, purchase_id, todayLocal(), nowLocalTime()]
+  );
+  await logSerialEvent(q, { serial_id: r.lastID, event: 'received', purchase_id, note });
+  await q.run(
+    `UPDATE inventory SET track_serial = 1, pre_serial_quantity = quantity WHERE id = ? AND track_serial = 0`,
+    [product.id]
+  );
+  return r.lastID;
+}
+
+/* Creates or updates the product a dealer purchase is for, and returns it.
+   Shared by the quantity form (POST /api/dealer) and the serial scanner
+   (POST /api/serials/receive) so both apply the same price, barcode and
+   warranty rules. Restocking *updates* the product's prices; earlier sales
+   keep their own snapshotted cost_price, so this never rewrites profit
+   already earned. `addQty` is 0 for the scanner, whose stock is counted. */
+async function upsertPurchasedProduct(q, body, addQty) {
+  const name = String(body.item_name ?? '').trim();
+  if (!name) throw new Refusal(400, 'Item name is required.');
+
+  const cost = Number(body.cost_price);
+  if (!Number.isFinite(cost) || cost < 0) throw new Refusal(400, 'Buying price must be a number, zero or more.');
+
+  const existing = await q.get(`SELECT * FROM inventory WHERE item_name = ?`, [name]);
+
+  // Falls back to the product's current price, then to the old cost × 1.2
+  // guess for a brand-new item whose page did not send one.
+  const sell = body.selling_price !== undefined && body.selling_price !== '' && Number.isFinite(Number(body.selling_price))
+    ? Number(body.selling_price)
+    : existing
+      ? existing.selling_price
+      : cost * 1.2;
+  if (!Number.isFinite(sell) || sell < 0) throw new Refusal(400, 'Selling price must be a number, zero or more.');
+
+  const code = String(body.barcode ?? '').trim() || null;
+  if (code && !/^[0-9A-Za-z-]{4,64}$/.test(code)) {
+    throw new Refusal(400, 'Barcode must be 4–64 letters, digits or hyphens, with no spaces.');
+  }
+  if (code) {
+    // The scan fills the item name in the form, so by submit time the two
+    // agree. If they do not, the barcode belongs to something else and
+    // silently moving it would be worse than refusing.
+    const owner = await q.get(`SELECT item_name FROM inventory WHERE barcode = ? AND item_name != ?`, [code, name]);
+    if (owner) throw new Refusal(409, `That barcode is already on "${owner.item_name}".`);
+  }
+
+  const rawWarranty = body.warranty_months;
+  const warranty = rawWarranty !== undefined && rawWarranty !== '' && Number.isFinite(Number(rawWarranty))
+    ? Number(rawWarranty)
+    : existing?.warranty_months ?? 0;
+  if (!Number.isInteger(warranty) || warranty < 0 || warranty > 600) {
+    throw new Refusal(400, 'Warranty must be a whole number of months between 0 and 600.');
+  }
+
+  if (existing) {
+    await q.run(
+      `UPDATE inventory
+          SET quantity = quantity + ?, cost_price = ?, selling_price = ?,
+              warranty_months = ?, barcode = COALESCE(?, barcode)
+        WHERE id = ?`,
+      [addQty, cost, sell, warranty, code, existing.id]
+    );
+  } else {
+    await q.run(
+      `INSERT INTO inventory (item_name, quantity, cost_price, selling_price, barcode, warranty_months)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [name, addQty, cost, sell, code, warranty]
+    );
+  }
+  return { product: await q.get(`SELECT * FROM inventory WHERE item_name = ?`, [name]), cost };
+}
+
 // API: Record a Sale — one invoice, any number of items
 //
 // The time of sale is stamped here, not sent by the browser. The form used to
@@ -767,7 +1032,39 @@ app.post('/api/sales', async (req, res) => {
     if (!Number.isFinite(total_price) || total_price < 0) {
       return res.status(400).json({ error: `Item ${n} (${item_name}): amount must be a number, zero or more.` });
     }
-    items.push({ item_name, quantity, total_price });
+
+    /* The piece's own serial / IMEI. Only serial-tracked products need one —
+       that is checked in the transaction below, where the product is known —
+       and an older cached page does not send the field at all. See
+       SERIAL_PATTERN for the character set. */
+    const serial_no = String(raw?.serial_no ?? '').trim() || null;
+    if (serial_no && !SERIAL_PATTERN.test(serial_no)) {
+      return res.status(400).json({ error: `Item ${n} (${item_name}): serial must be ${SERIAL_RULE}.` });
+    }
+
+    // Set by the till's "Sell anyway" on a serial that was never received —
+    // a unit the shop had before it started scanning serials in.
+    const serial_override = raw?.serial_override === true;
+
+    items.push({ item_name, quantity, total_price, serial_no, serial_override });
+  }
+
+  /* One serial identifies one piece, so the same one twice on a single invoice
+     is always a mis-scan — usually the scanner firing twice on one label. Caught
+     here rather than only on the client, since the client is where a stale page
+     would have skipped the check. Serials sold on *earlier* invoices are checked
+     against product_serials inside the transaction; a returned piece is back to
+     available there, which is how it gets resold. */
+  const seenSerials = new Map();
+  for (const [i, item] of items.entries()) {
+    if (!item.serial_no) continue;
+    const key = item.serial_no.toLowerCase();
+    if (seenSerials.has(key)) {
+      return res.status(400).json({
+        error: `Serial ${item.serial_no} is on item ${seenSerials.get(key)} and item ${i + 1}. Each piece has its own serial.`,
+      });
+    }
+    seenSerials.set(key, i + 1);
   }
 
   // Validated against the invoice's own total, which is only known now that
@@ -778,172 +1075,420 @@ app.post('/api/sales', async (req, res) => {
 
   /* All or nothing. An invoice whose third line failed must not leave the first
      two recorded and their stock deducted — the shop would be short on stock
-     with no receipt to show for it. 'write' takes the lock up front. */
-  const tx = await db.transaction('write');
+     with no receipt to show for it. Nor may a serial be marked sold on an
+     invoice that then fails. */
   try {
-    const time = nowLocalTime();
-    const invoice = await tx.execute({
-      sql: `INSERT INTO invoices (customer_name, customer_contact, date, sale_time, comment, paid_amount)
-            VALUES (?, ?, ?, ?, ?, ?)`,
-      args: [customer_name, customer_contact, date, time, comment, paid.paid_amount],
+    const invoiceId = await inWriteTx(async (q) => {
+      const time = nowLocalTime();
+      const invoice = await q.run(
+        `INSERT INTO invoices (customer_name, customer_contact, date, sale_time, comment, paid_amount)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [customer_name, customer_contact, date, time, comment, paid.paid_amount]
+      );
+      const invoiceId = invoice.lastID;
+
+      for (const [i, item] of items.entries()) {
+        const n = i + 1;
+        /* Snapshot what the product was worth at this moment.
+
+           Exact match, not COLLATE NOCASE, because the stock decrement below
+           matches exactly too — two different notions of "the same product" in
+           one request would let a line inherit a cost while never reducing stock.
+
+           An item that is not in inventory leaves all three NULL, which is a real
+           path: the item field is free text. NULL renders as no warranty line and
+           excludes the line from profit, which is right — the shop cannot cost, or
+           honour a warranty on, something it has no record of. */
+        const product = await q.get(
+          `SELECT id, item_name, cost_price, selling_price, warranty_months, track_serial
+             FROM inventory WHERE item_name = ?`,
+          [item.item_name]
+        );
+        const tracked = Boolean(product && Number(product.track_serial) === 1);
+
+        /* A serial-tracked unit has to be one the shop actually holds. Checked
+           before the line is written so the refusal can say exactly why.
+           Untracked goods skip all of this — a cable sells as it always has. */
+        let serialRow = null;
+        let serialCode = item.serial_no;
+        if (tracked) {
+          if (item.quantity !== 1) {
+            throw new Refusal(400, `Item ${n} (${item.item_name}): one unit per line — each has its own serial.`);
+          }
+          if (!serialCode) {
+            throw new Refusal(400, `Item ${n} (${item.item_name}) needs its serial scanned.`);
+          }
+          serialRow = await findSerial(q, serialCode);
+          const clash = serialClash(serialRow, product, { forSale: true });
+          if (clash) throw new Refusal(409, `Item ${n}: ${clash}`);
+          if (!serialRow && !item.serial_override) {
+            throw new Refusal(
+              409,
+              `Item ${n}: ${serialCode} is not in stock for ${product.item_name}. Check the label, or use Sell anyway.`
+            );
+          }
+          if (!serialRow) await refuseProductBarcode(q, serialCode);
+          // Printed as registered, so the receipt matches the stock record even
+          // when the scanner read the label in a different case.
+          if (serialRow) serialCode = serialRow.serial_no;
+        }
+
+        // Customer, date and time are repeated on each line so the sales table
+        // still reads sensibly on its own; the invoice row is the source of truth.
+        // The comment belongs to the invoice only.
+        const line = await q.run(
+          `INSERT INTO sales (invoice_id, line_no, customer_name, customer_contact, item_name,
+                              quantity, total_price, date, sale_time,
+                              warranty_months, cost_price, list_price, serial_no)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            invoiceId,
+            n,
+            customer_name,
+            customer_contact,
+            item.item_name,
+            item.quantity,
+            item.total_price,
+            date,
+            time,
+            product ? product.warranty_months : null,
+            product ? product.cost_price : null,
+            product ? product.selling_price : null,
+            serialCode,
+          ]
+        );
+
+        if (!tracked) {
+          // Matches on the exact item_name; a name that is not in stock silently
+          // decrements nothing, which is long-standing behaviour (see README).
+          await q.run(`UPDATE inventory SET quantity = quantity - ? WHERE item_name = ?`, [item.quantity, item.item_name]);
+          continue;
+        }
+
+        // Sell anyway: the unit was on the shelf before serials were scanned
+        // in, so it is received and sold in the same breath.
+        const serialId = serialRow
+          ? serialRow.id
+          : await registerSerial(q, product, serialCode, { note: 'Added at the till (Sell anyway)' });
+
+        // Guarded on status as well, so two tills selling the same unit at
+        // once cannot both succeed — the second finds nothing to update.
+        const sold = await q.run(
+          `UPDATE product_serials SET status = 'sold', sale_id = ?, invoice_id = ?
+            WHERE id = ? AND status = 'available'`,
+          [line.lastID, invoiceId, serialId]
+        );
+        if (sold.changes !== 1) throw new Refusal(409, `Item ${n}: ${serialCode} was sold a moment ago.`);
+        await logSerialEvent(q, { serial_id: serialId, event: 'sold', invoice_id: invoiceId });
+        await syncSerialStock(q, product.id);
+      }
+      return invoiceId;
     });
-    const invoiceId = Number(invoice.lastInsertRowid);
-
-    for (const [i, item] of items.entries()) {
-      /* Snapshot what the product was worth at this moment.
-
-         Exact match, not COLLATE NOCASE, because the stock decrement below
-         matches exactly too — two different notions of "the same product" in
-         one request would let a line inherit a cost while never reducing stock.
-
-         An item that is not in inventory leaves all three NULL, which is a real
-         path: the item field is free text. NULL renders as no warranty line and
-         excludes the line from profit, which is right — the shop cannot cost, or
-         honour a warranty on, something it has no record of. */
-      const product = (
-        await tx.execute({
-          sql: `SELECT cost_price, selling_price, warranty_months FROM inventory WHERE item_name = ?`,
-          args: [item.item_name],
-        })
-      ).rows[0];
-
-      // Customer, date and time are repeated on each line so the sales table
-      // still reads sensibly on its own; the invoice row is the source of truth.
-      // The comment belongs to the invoice only.
-      await tx.execute({
-        sql: `INSERT INTO sales (invoice_id, line_no, customer_name, customer_contact, item_name,
-                                 quantity, total_price, date, sale_time,
-                                 warranty_months, cost_price, list_price)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
-          invoiceId,
-          i + 1,
-          customer_name,
-          customer_contact,
-          item.item_name,
-          item.quantity,
-          item.total_price,
-          date,
-          time,
-          product ? product.warranty_months : null,
-          product ? product.cost_price : null,
-          product ? product.selling_price : null,
-        ],
-      });
-
-      // Matches on the exact item_name; a name that is not in stock silently
-      // decrements nothing, which is long-standing behaviour (see README).
-      await tx.execute({
-        sql: `UPDATE inventory SET quantity = quantity - ? WHERE item_name = ?`,
-        args: [item.quantity, item.item_name],
-      });
-    }
-
-    await tx.commit();
     res.json({ id: invoiceId });
   } catch (err) {
-    await tx.rollback().catch(() => {});
+    if (err instanceof Refusal) return res.status(err.status).json({ error: err.message });
     res.status(400).json({ error: err.message });
   }
 });
 
-/* API: Record Dealer Purchase — the shop's product-entry path.
+/* API: Record Dealer Purchase — the shop's product-entry path for goods that
+   are counted, not serial-numbered.
 
    This is where stock comes in, so it is also where prices are set: the form
    takes a buying price and a selling price per unit, and both are written onto
-   the product. Restocking therefore *updates* the product's prices rather than
-   leaving them frozen at whatever the first-ever purchase implied, which is
-   what used to happen (selling price was guessed as cost × 1.2 once, and could
-   never be changed). Earlier sales keep their own snapshotted cost_price, so
-   correcting prices here never rewrites profit already earned.
+   the product — see upsertPurchasedProduct(). total_cost stays the stored
+   figure on dealer_purchases, derived here from quantity × buying price so
+   there is one source of truth.
 
-   total_cost stays the stored figure on dealer_purchases, derived here from
-   quantity × buying price so there is one source of truth. */
+   Serial-tracked products come in through POST /api/serials/receive instead,
+   one scan per unit, and are refused here: a typed quantity of fans would add
+   stock no serial stands behind. */
 app.post('/api/dealer', async (req, res) => {
-  const { dealer_name, item_name, quantity, date, barcode, warranty_months } = req.body;
-
-  const name = String(item_name ?? '').trim();
-  const dealer = String(dealer_name ?? '').trim();
-  const qty = Number(quantity);
+  const body = req.body || {};
+  const dealer = String(body.dealer_name ?? '').trim();
+  const qty = Number(body.quantity);
 
   if (!dealer) return res.status(400).json({ error: 'Dealer name is required.' });
-  if (!name) return res.status(400).json({ error: 'Item name is required.' });
+  if (!String(body.item_name ?? '').trim()) return res.status(400).json({ error: 'Item name is required.' });
   if (!Number.isInteger(qty) || qty <= 0) {
     return res.status(400).json({ error: 'Quantity must be a whole number, one or more.' });
   }
 
-  // A page cached from before this change still posts total_cost and no prices.
-  // Derive the unit cost from it rather than rejecting the sale of a shop that
-  // has not reloaded yet.
-  const legacyTotal = Number(req.body.total_cost);
-  const cost = Number.isFinite(Number(req.body.cost_price))
-    ? Number(req.body.cost_price)
-    : Number.isFinite(legacyTotal)
-      ? legacyTotal / qty
-      : NaN;
-  if (!Number.isFinite(cost) || cost < 0) {
-    return res.status(400).json({ error: 'Buying price must be a number, zero or more.' });
+  // A page cached from before per-unit prices still posts total_cost and no
+  // prices. Derive the unit cost from it rather than rejecting the purchase of
+  // a shop that has not reloaded yet.
+  const fields = { ...body };
+  if (!Number.isFinite(Number(body.cost_price)) && Number.isFinite(Number(body.total_cost))) {
+    fields.cost_price = Number(body.total_cost) / qty;
   }
 
   try {
-    const existing = await get(`SELECT * FROM inventory WHERE item_name = ?`, [name]);
-
-    // Falls back to the product's current price, then to the old cost × 1.2
-    // guess for a brand-new item whose page did not send one.
-    const sell = Number.isFinite(Number(req.body.selling_price))
-      ? Number(req.body.selling_price)
-      : existing
-        ? existing.selling_price
-        : cost * 1.2;
-    if (!Number.isFinite(sell) || sell < 0) {
-      return res.status(400).json({ error: 'Selling price must be a number, zero or more.' });
-    }
-
-    const code = String(barcode ?? '').trim() || null;
-    if (code && !/^[0-9A-Za-z-]{4,64}$/.test(code)) {
-      return res.status(400).json({ error: 'Barcode must be 4–64 letters, digits or hyphens, with no spaces.' });
-    }
-    if (code) {
-      // The scan fills the item name in the form, so by submit time the two
-      // agree. If they do not, the barcode belongs to something else and
-      // silently moving it would be worse than refusing.
-      const owner = await get(`SELECT item_name FROM inventory WHERE barcode = ? AND item_name != ?`, [code, name]);
-      if (owner) return res.status(409).json({ error: `That barcode is already on "${owner.item_name}".` });
-    }
-
-    const warranty = Number.isFinite(Number(warranty_months)) ? Number(warranty_months) : existing?.warranty_months ?? 0;
-    if (!Number.isInteger(warranty) || warranty < 0 || warranty > 600) {
-      return res.status(400).json({ error: 'Warranty must be a whole number of months between 0 and 600.' });
-    }
-
-    const totalCost = cost * qty;
-    const purchase = await run(
-      `INSERT INTO dealer_purchases (dealer_name, item_name, quantity, total_cost, date) VALUES (?, ?, ?, ?, ?)`,
-      [dealer, name, qty, totalCost, date || todayLocal()]
-    );
-
-    if (existing) {
-      await run(
-        `UPDATE inventory
-            SET quantity = quantity + ?, cost_price = ?, selling_price = ?,
-                warranty_months = ?, barcode = COALESCE(?, barcode)
-          WHERE id = ?`,
-        [qty, cost, sell, warranty, code, existing.id]
+    const id = await inWriteTx(async (q) => {
+      const tracked = await q.get(`SELECT item_name FROM inventory WHERE item_name = ? AND track_serial = 1`, [
+        String(body.item_name).trim(),
+      ]);
+      if (tracked) {
+        throw new Refusal(409, `${tracked.item_name} is serial-tracked — scan each unit's serial instead of typing a quantity.`);
+      }
+      const { product, cost } = await upsertPurchasedProduct(q, fields, qty);
+      const purchase = await q.run(
+        `INSERT INTO dealer_purchases (dealer_name, item_name, quantity, total_cost, date) VALUES (?, ?, ?, ?, ?)`,
+        [dealer, product.item_name, qty, cost * qty, body.date || todayLocal()]
       );
-    } else {
-      await run(
-        `INSERT INTO inventory (item_name, quantity, cost_price, selling_price, barcode, warranty_months)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [name, qty, cost, sell, code, warranty]
-      );
-    }
-
-    res.json({ id: purchase.lastID });
+      return purchase.lastID;
+    });
+    res.json({ id });
   } catch (err) {
+    if (err instanceof Refusal) return res.status(err.status).json({ error: err.message });
     if (String(err.code).startsWith('SQLITE_CONSTRAINT')) {
       return res.status(409).json({ error: 'That barcode is already used by another product.' });
     }
     res.status(400).json({ error: err.message });
+  }
+});
+
+/* ===========================================================================
+   Serial / IMEI stock
+
+   Receiving is one scan per unit, saved the moment it is scanned: there is no
+   batch to lose if the browser closes, and no "Finish" to forget. The dealer
+   purchase row for the batch is created by the first scan and grows by one
+   with each one after, so the purchase history always matches what was
+   actually scanned in.
+   =========================================================================== */
+
+/* API: Receive one unit.
+
+   Two callers:
+     - the Dealer Purchase form: dealer_name + the product's details, exactly
+       as POST /api/dealer takes them, plus purchase_id from the previous scan
+       of the same batch (absent on the first);
+     - the product screen: product_id only, no dealer — the units the shop
+       already had before it began scanning serials in. No purchase is
+       recorded for those; they were bought long ago. */
+app.post('/api/serials/receive', async (req, res) => {
+  const body = req.body || {};
+  const code = String(body.serial_no ?? '').trim();
+  if (!code) return res.status(400).json({ error: 'Scan a serial number.' });
+  if (!SERIAL_PATTERN.test(code)) return res.status(400).json({ error: `Serial must be ${SERIAL_RULE}.` });
+
+  const dealer = String(body.dealer_name ?? '').trim();
+  const productId = Number(body.product_id);
+  if (!dealer && !productId) return res.status(400).json({ error: 'Dealer name is required.' });
+
+  try {
+    const out = await inWriteTx(async (q) => {
+      let product;
+      let cost = null;
+      if (dealer) {
+        ({ product, cost } = await upsertPurchasedProduct(q, body, 0));
+      } else {
+        product = await q.get(`SELECT * FROM inventory WHERE id = ?`, [productId]);
+        if (!product) throw new Refusal(404, 'That product no longer exists.');
+      }
+
+      const clash = serialClash(await findSerial(q, code), product, { forSale: false });
+      if (clash) throw new Refusal(409, clash);
+      await refuseProductBarcode(q, code);
+
+      let purchaseId = null;
+      if (dealer) {
+        const date = body.date || todayLocal();
+        const prior = Number(body.purchase_id)
+          ? await q.get(`SELECT * FROM dealer_purchases WHERE id = ?`, [Number(body.purchase_id)])
+          : null;
+        // Only the same batch keeps growing. A different product, dealer or
+        // date starts a new purchase row, so none can absorb another's units.
+        if (prior && prior.item_name === product.item_name && prior.dealer_name === dealer && prior.date === date) {
+          await q.run(`UPDATE dealer_purchases SET quantity = quantity + 1, total_cost = total_cost + ? WHERE id = ?`, [
+            cost,
+            prior.id,
+          ]);
+          purchaseId = prior.id;
+        } else {
+          const r = await q.run(
+            `INSERT INTO dealer_purchases (dealer_name, item_name, quantity, total_cost, date) VALUES (?, ?, 1, ?, ?)`,
+            [dealer, product.item_name, cost, date]
+          );
+          purchaseId = r.lastID;
+        }
+      }
+
+      const serialId = await registerSerial(q, product, code, { purchase_id: purchaseId });
+      await syncSerialStock(q, product.id);
+      return {
+        purchase_id: purchaseId,
+        serial: await q.get(`SELECT * FROM product_serials WHERE id = ?`, [serialId]),
+        product: await q.get(`SELECT * FROM inventory WHERE id = ?`, [product.id]),
+      };
+    });
+    res.json(out);
+  } catch (err) {
+    sendFailure(res, err);
+  }
+});
+
+/* API: Undo a mis-scanned unit.
+
+   Only while it is still on the shelf: a sold unit is on a customer's receipt
+   and comes back through a return, never by being deleted. The unit's batch
+   shrinks by one at that batch's own unit price, and a batch left empty goes
+   with it. Nothing is kept of the serial — it never really arrived.
+
+   If that was the product's last serial of any status, the product goes back
+   to being untracked with the count it had before, so a cable given a serial
+   by mistake is not stuck asking for serials at the till forever. */
+app.delete('/api/serials/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const product = await inWriteTx(async (q) => {
+      const unit = await q.get(`SELECT * FROM product_serials WHERE id = ?`, [id]);
+      if (!unit) throw new Refusal(404, 'That serial is not registered.');
+      if (unit.status !== 'available') {
+        throw new Refusal(409, `${unit.serial_no} has been sold. Use Return to bring it back into stock.`);
+      }
+
+      if (unit.purchase_id) {
+        const batch = await q.get(`SELECT * FROM dealer_purchases WHERE id = ?`, [unit.purchase_id]);
+        if (batch && Number(batch.quantity) > 1) {
+          await q.run(
+            `UPDATE dealer_purchases SET quantity = quantity - 1, total_cost = total_cost - total_cost / quantity WHERE id = ?`,
+            [batch.id]
+          );
+        } else if (batch) {
+          await q.run(`DELETE FROM dealer_purchases WHERE id = ?`, [batch.id]);
+        }
+      }
+
+      await q.run(`DELETE FROM serial_events WHERE serial_id = ?`, [id]);
+      await q.run(`DELETE FROM product_serials WHERE id = ?`, [id]);
+      const left = await q.get(`SELECT COUNT(*) AS n FROM product_serials WHERE product_id = ?`, [unit.product_id]);
+      if (Number(left.n) === 0) {
+        await q.run(
+          `UPDATE inventory SET track_serial = 0, quantity = COALESCE(pre_serial_quantity, 0), pre_serial_quantity = NULL
+            WHERE id = ?`,
+          [unit.product_id]
+        );
+      } else {
+        await syncSerialStock(q, unit.product_id);
+      }
+      return q.get(`SELECT * FROM inventory WHERE id = ?`, [unit.product_id]);
+    });
+    res.json({ success: true, product: product ?? null });
+  } catch (err) {
+    sendFailure(res, err);
+  }
+});
+
+// API: What is this serial? One lookup per till scan, so the cashier hears
+// the answer before the invoice is saved rather than after.
+app.get('/api/serials/lookup', async (req, res) => {
+  const code = String(req.query.code ?? '').trim();
+  if (!code) return res.status(400).json({ error: 'Scan a serial number.' });
+  try {
+    const found = await findSerial({ get }, code);
+    if (!found) return res.status(404).json({ error: `${code} is not registered.` });
+    res.json(found);
+  } catch (err) {
+    sendFailure(res, err);
+  }
+});
+
+/* API: The Serial / IMEI list — search, filter, page.
+
+   Server-side rather than shipped with /api/data: a shop that has sold phones
+   for a year has thousands of serials, and the dashboard does not need any of
+   them to load. */
+app.get('/api/serials', async (req, res) => {
+  const where = [];
+  const args = [];
+  const q = String(req.query.q ?? '').trim();
+  if (q) {
+    where.push(`(ps.serial_no LIKE ? OR i.item_name LIKE ? OR v.customer_name LIKE ?)`);
+    args.push(`%${q}%`, `%${q}%`, `%${q}%`);
+  }
+  if (Number(req.query.product_id)) {
+    where.push(`ps.product_id = ?`);
+    args.push(Number(req.query.product_id));
+  }
+  if (['available', 'sold'].includes(req.query.status)) {
+    where.push(`ps.status = ?`);
+    args.push(req.query.status);
+  }
+  const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 1000);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  const from = `FROM product_serials ps
+                LEFT JOIN inventory i ON i.id = ps.product_id
+                LEFT JOIN invoices v ON v.id = ps.invoice_id
+                LEFT JOIN dealer_purchases d ON d.id = ps.purchase_id
+                ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
+  try {
+    const [rows, count] = await Promise.all([
+      all(
+        `SELECT ps.*, i.item_name, v.customer_name, v.customer_contact, v.date AS sold_date, d.dealer_name
+           ${from}
+          ORDER BY ps.id DESC LIMIT ? OFFSET ?`,
+        [...args, limit, offset]
+      ),
+      get(`SELECT COUNT(*) AS n ${from}`, args),
+    ]);
+    res.json({ rows, total: Number(count.n) });
+  } catch (err) {
+    sendFailure(res, err);
+  }
+});
+
+// API: Everything that has happened to one unit, oldest first.
+app.get('/api/serials/:id/history', async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const unit = await get(
+      `SELECT ps.*, i.item_name FROM product_serials ps LEFT JOIN inventory i ON i.id = ps.product_id WHERE ps.id = ?`,
+      [id]
+    );
+    if (!unit) return res.status(404).json({ error: 'That serial is not registered.' });
+    const events = await all(
+      `SELECT e.*, v.customer_name, v.customer_contact, d.dealer_name
+         FROM serial_events e
+         LEFT JOIN invoices v ON v.id = e.invoice_id
+         LEFT JOIN dealer_purchases d ON d.id = e.purchase_id
+        WHERE e.serial_id = ?
+        ORDER BY e.id`,
+      [id]
+    );
+    res.json({ serial: unit, events });
+  } catch (err) {
+    sendFailure(res, err);
+  }
+});
+
+/* API: A customer brings a unit back.
+
+   The unit goes back on the shelf and can be sold again. Its sale line is
+   marked returned rather than removed: the receipt was handed over, and the
+   Invoice No. on it has to keep meaning what it meant. Money is deliberately
+   not touched here — whether the customer got cash back, a replacement or
+   nothing is the shop's decision, and any refund is recorded by the shop. */
+app.post('/api/serials/:id/return', async (req, res) => {
+  const id = Number(req.params.id);
+  const note = String(req.body?.note ?? '').trim().slice(0, 200) || null;
+  try {
+    const product = await inWriteTx(async (q) => {
+      const unit = await q.get(`SELECT * FROM product_serials WHERE id = ?`, [id]);
+      if (!unit) throw new Refusal(404, 'That serial is not registered.');
+      if (unit.status !== 'sold') throw new Refusal(409, `${unit.serial_no} is already in stock — there is nothing to return.`);
+
+      if (unit.sale_id) {
+        await q.run(`UPDATE sales SET returned_date = ? WHERE id = ?`, [todayLocal(), unit.sale_id]);
+      }
+      await q.run(`UPDATE product_serials SET status = 'available', sale_id = NULL, invoice_id = NULL WHERE id = ?`, [id]);
+      await logSerialEvent(q, { serial_id: id, event: 'returned', invoice_id: unit.invoice_id, note });
+      await syncSerialStock(q, unit.product_id);
+      return q.get(`SELECT * FROM inventory WHERE id = ?`, [unit.product_id]);
+    });
+    res.json({ success: true, product: product ?? null });
+  } catch (err) {
+    sendFailure(res, err);
   }
 });
 
@@ -1016,21 +1561,55 @@ async function findConflict(item, excludeId = null) {
 }
 
 // API: Create a product
+//
+// `serials` is optional: the units of a new serial-tracked product, scanned in
+// the Add Product form before it existed. They are registered in the same
+// transaction as the product, so a serial that turns out to be taken leaves
+// no half-created product behind. With serials, stock is their count and any
+// typed quantity is ignored.
 app.post('/api/inventory', async (req, res) => {
   const { error, item } = validateItem(req.body);
   if (error) return res.status(400).json({ error });
+
+  const serials = Array.isArray(req.body?.serials)
+    ? req.body.serials.map((c) => String(c ?? '').trim()).filter(Boolean)
+    : [];
+  if (serials.length > 1000) return res.status(400).json({ error: 'At most 1000 serials at once.' });
+  const seen = new Set();
+  for (const code of serials) {
+    if (!SERIAL_PATTERN.test(code)) return res.status(400).json({ error: `Serial ${code} must be ${SERIAL_RULE}.` });
+    if (seen.has(code.toLowerCase())) return res.status(400).json({ error: `Serial ${code} is scanned twice.` });
+    seen.add(code.toLowerCase());
+  }
 
   try {
     const conflict = await findConflict(item);
     if (conflict) return res.status(409).json({ error: conflict });
 
-    const result = await run(
-      `INSERT INTO inventory (item_name, quantity, cost_price, selling_price, barcode, warranty_months)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [item.item_name, item.quantity, item.cost_price, item.selling_price, item.barcode, item.warranty_months]
-    );
-    res.json({ id: result.lastID });
+    const id = await inWriteTx(async (q) => {
+      const result = await q.run(
+        `INSERT INTO inventory (item_name, quantity, cost_price, selling_price, barcode, warranty_months)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        // 0 rather than the typed count when serials come along: that is the
+        // count an undo of every serial would fall back to.
+        [item.item_name, serials.length ? 0 : item.quantity, item.cost_price, item.selling_price, item.barcode, item.warranty_months]
+      );
+      const product = { id: result.lastID, item_name: item.item_name };
+      for (const code of serials) {
+        const clash = serialClash(await findSerial(q, code), product, { forSale: false });
+        if (clash) throw new Refusal(409, clash);
+        if (item.barcode && code.toLowerCase() === item.barcode.toLowerCase()) {
+          throw new Refusal(409, `${code} is this product's barcode, not a serial number.`);
+        }
+        await refuseProductBarcode(q, code);
+        await registerSerial(q, product, code);
+      }
+      if (serials.length) await syncSerialStock(q, product.id);
+      return product.id;
+    });
+    res.json({ id });
   } catch (err) {
+    if (err instanceof Refusal) return res.status(err.status).json({ error: err.message });
     // The partial index is the actual guarantee; the pre-check above only
     // exists to produce a message a shopkeeper can act on.
     if (String(err.code).startsWith('SQLITE_CONSTRAINT')) {
@@ -1052,6 +1631,10 @@ app.put('/api/inventory/:id', async (req, res) => {
 
     const conflict = await findConflict(item, id);
     if (conflict) return res.status(409).json({ error: conflict });
+
+    // A serial-tracked product's stock is its count of available serials, so
+    // a typed quantity is ignored rather than allowed to disagree with them.
+    if (Number(existing.track_serial) === 1) item.quantity = Number(existing.quantity);
 
     const oldName = existing.item_name;
     const renamed = oldName !== item.item_name;
@@ -1122,13 +1705,24 @@ app.put('/api/inventory/:id', async (req, res) => {
 // attached — refusing those would block the very case this exists for. Nothing
 // on a printed invoice is lost: each sale snapshots the name, price, cost and
 // warranty it was issued with. The UI confirms with the reference count first.
+//
+// Its registered serials go with it: they describe units of a product that no
+// longer exists. Receipts already printed keep the serial on their own line.
 app.delete('/api/inventory/:id', async (req, res) => {
+  const id = Number(req.params.id);
   try {
-    const result = await run(`DELETE FROM inventory WHERE id = ?`, [Number(req.params.id)]);
-    if (result.changes === 0) return res.status(404).json({ error: 'That product no longer exists.' });
+    await inWriteTx(async (q) => {
+      await q.run(
+        `DELETE FROM serial_events WHERE serial_id IN (SELECT id FROM product_serials WHERE product_id = ?)`,
+        [id]
+      );
+      await q.run(`DELETE FROM product_serials WHERE product_id = ?`, [id]);
+      const result = await q.run(`DELETE FROM inventory WHERE id = ?`, [id]);
+      if (result.changes === 0) throw new Refusal(404, 'That product no longer exists.');
+    });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendFailure(res, err);
   }
 });
 

@@ -492,6 +492,19 @@
   color: var(--inv-muted);
 }
 
+/* The serial sits with the warranty under the item name, not in a column of
+   its own: the column widths are fixed percentages and Item name is the only
+   prose column, so a sixth column would squeeze it. Darker than the warranty
+   line and tabular, because this is the string a customer reads back over the
+   phone and a digit misread is a warranty refused. */
+.inv-item-serial {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--inv-ink);
+}
+
 /* Keeps a one-line invoice from collapsing to a sliver: the item block always
    occupies a sensible share of the sheet, as a pre-printed pad would. */
 .inv-fill-row td {
