@@ -168,10 +168,10 @@
                             <form @submit.prevent="submitSale" class="space-y-4">
 
                                 <div>
-                                    <label for="sale-customer" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Customer Name</label>
+                                    <label for="sale-customer" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Customer Name <span class="normal-case font-normal text-slate-400">(optional)</span></label>
                                     <input id="sale-customer" type="text" x-model="sale.customer_name" placeholder="e.g. S.A Net City"
                                            @keydown.enter.prevent
-                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition" required>
+                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
                                 </div>
                                 <div>
                                     <label for="sale-contact" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Contact No. <span class="normal-case font-normal text-slate-400">(optional)</span></label>
@@ -953,7 +953,7 @@
                                                     <span class="block text-xs text-slate-500" x-text="fmtDate(inv.date)"></span>
                                                 </td>
                                                 <td class="p-3">
-                                                    <span class="font-medium text-slate-800" x-text="inv.customer_name"></span>
+                                                    <span class="font-medium text-slate-800" x-text="inv.customer_name || 'Walk-in'"></span>
                                                     <!-- Admin's private note, never printed on the invoice. -->
                                                     <span class="block text-xs text-slate-500 italic" x-show="inv.comment" x-cloak x-text="inv.comment"></span>
                                                 </td>
@@ -1002,7 +1002,7 @@
                                         <div class="flex items-start justify-between gap-3">
                                             <p class="font-semibold text-slate-800">
                                                 <span class="tabular-nums text-slate-500" x-text="'#' + inv.id"></span>
-                                                <span x-text="inv.customer_name"></span>
+                                                <span x-text="inv.customer_name || 'Walk-in'"></span>
                                             </p>
                                             <p class="shrink-0 text-xs text-slate-500" x-text="fmtDate(inv.date)"></p>
                                         </div>
@@ -1675,7 +1675,7 @@
                 <div class="space-y-3">
                     <p class="text-sm text-slate-700">
                         Sold on invoice <span class="font-semibold" x-text="'#' + serialDialog.row.invoice_id"></span>
-                        to <span class="font-semibold" x-text="serialDialog.row.customer_name"></span>.
+                        to <span class="font-semibold" x-text="serialDialog.row.customer_name || 'a walk-in customer'"></span>.
                         Returning puts this unit back in stock so it can be sold again.
                     </p>
                     <p class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
@@ -1803,7 +1803,7 @@
                     <h2 class="text-lg font-bold text-slate-800">Payment</h2>
                     <p class="text-xs text-slate-500">
                         Invoice <span class="tabular-nums font-semibold" x-text="'#' + (paymentDraft.id ?? '')"></span>
-                        · <span x-text="paymentDraft.customer_name"></span>
+                        · <span x-text="paymentDraft.customer_name || 'Walk-in'"></span>
                     </p>
                 </div>
                 <button @click="closePayment()" aria-label="Close"

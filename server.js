@@ -1015,7 +1015,6 @@ app.post('/api/sales', async (req, res) => {
     ? body.items
     : [{ item_name: body.item_name, quantity: body.quantity, total_price: body.total_price }];
 
-  if (!customer_name) return res.status(400).json({ error: 'Customer name is required.' });
   if (rawItems.length === 0) return res.status(400).json({ error: 'Add at least one item to the invoice.' });
   if (rawItems.length > 100) return res.status(400).json({ error: 'An invoice can have at most 100 items.' });
 

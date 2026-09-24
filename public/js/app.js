@@ -921,7 +921,7 @@ function shopApp() {
         if (this.saleStatus === 'due' && !this.isInvoiceDue(inv)) return false;
         if (this.saleStatus === 'paid' && this.isInvoiceDue(inv)) return false;
         if (!q) return true;
-        const hay = [inv.id, inv.customer_name, inv.customer_contact, inv.comment]
+        const hay = [inv.id, inv.customer_name || 'Walk-in', inv.customer_contact, inv.comment]
           .map((v) => String(v ?? '').toLowerCase());
         return (
           hay.some((v) => v.includes(q)) ||
