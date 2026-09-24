@@ -1545,32 +1545,6 @@
                     </div>
                 </div>
 
-                <div class="rounded-lg bg-brand-50 border border-brand-100 px-3 py-2.5 space-y-1.5">
-                    <div class="flex items-baseline justify-between">
-                        <span class="text-xs font-semibold uppercase tracking-wide text-brand-800">Profit / piece</span>
-                        <span class="text-base font-bold tabular-nums"
-                              :class="productMargin < 0 ? 'text-red-600' : 'text-brand-900'" x-text="fmt(productMargin)"></span>
-                    </div>
-                    <div class="border-t border-brand-200 pt-1.5 space-y-1 text-xs">
-                        <div class="flex items-baseline justify-between text-slate-600">
-                            <span>Total buying (<span class="tabular-nums" x-text="productQty"></span> pcs)</span>
-                            <span class="tabular-nums font-semibold" x-text="fmt(productTotalCost)"></span>
-                        </div>
-                        <div class="flex items-baseline justify-between text-slate-600">
-                            <span>Total selling (<span class="tabular-nums" x-text="productQty"></span> pcs)</span>
-                            <span class="tabular-nums font-semibold" x-text="fmt(productTotalSale)"></span>
-                        </div>
-                        <div class="flex items-baseline justify-between">
-                            <span class="font-semibold text-brand-800">Total profit if all sold</span>
-                            <span class="tabular-nums font-bold"
-                                  :class="productTotalProfit < 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(productTotalProfit)"></span>
-                        </div>
-                    </div>
-                    <p class="text-xs text-red-600" x-show="productMargin < 0" x-cloak>
-                        Selling price is below the buying price.
-                    </p>
-                </div>
-
                 <!-- Serials in stock. How stock the shop already had becomes
                      serial-tracked: scan every unit on the shelf here. Each scan is
                      saved at once, so this panel needs no Save; cables and other
@@ -1607,6 +1581,32 @@
                             </li>
                         </template>
                     </ul>
+                </div>
+
+                <div class="rounded-lg bg-brand-50 border border-brand-100 px-3 py-2.5 space-y-1.5">
+                    <div class="flex items-baseline justify-between">
+                        <span class="text-xs font-semibold uppercase tracking-wide text-brand-800">Profit / piece</span>
+                        <span class="text-base font-bold tabular-nums"
+                              :class="productMargin < 0 ? 'text-red-600' : 'text-brand-900'" x-text="fmt(productMargin)"></span>
+                    </div>
+                    <div class="border-t border-brand-200 pt-1.5 space-y-1 text-xs">
+                        <div class="flex items-baseline justify-between text-slate-600">
+                            <span>Total buying (<span class="tabular-nums" x-text="productQty"></span> pcs)</span>
+                            <span class="tabular-nums font-semibold" x-text="fmt(productTotalCost)"></span>
+                        </div>
+                        <div class="flex items-baseline justify-between text-slate-600">
+                            <span>Total selling (<span class="tabular-nums" x-text="productQty"></span> pcs)</span>
+                            <span class="tabular-nums font-semibold" x-text="fmt(productTotalSale)"></span>
+                        </div>
+                        <div class="flex items-baseline justify-between">
+                            <span class="font-semibold text-brand-800">Total profit if all sold</span>
+                            <span class="tabular-nums font-bold"
+                                  :class="productTotalProfit < 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(productTotalProfit)"></span>
+                        </div>
+                    </div>
+                    <p class="text-xs text-red-600" x-show="productMargin < 0" x-cloak>
+                        Selling price is below the buying price.
+                    </p>
                 </div>
 
                 <p class="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
