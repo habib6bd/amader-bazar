@@ -130,7 +130,7 @@
                         <p class="mt-1.5 text-lg sm:text-2xl font-bold tabular-nums"
                            :class="netProfit < 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(netProfit)"></p>
                         <p class="text-xs text-slate-500 mt-0.5">
-                            Sales <span x-text="fmt(profitOf(sales))"></span> − খরচ <span x-text="fmt(totalExpenses)"></span>
+                            Sales <span x-text="fmt(profitOf(sales))"></span> − Expenses <span x-text="fmt(totalExpenses)"></span>
                         </p>
                     </div>
                     <div class="nb-lift bg-white rounded-2xl border p-4 shadow-sm hover:shadow-md"
@@ -527,7 +527,7 @@
                         <!-- Expense. x-show, not x-if, for the same reason as the sale panel:
                              the shared datalists must stay in the DOM. -->
                         <div class="nb-pop bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200" x-show="activeForm === 'expense'" x-cloak>
-                            <h2 class="text-base sm:text-lg font-bold mb-1 text-rose-700 flex items-center gap-2">💸 খরচ — Shop Expense</h2>
+                            <h2 class="text-base sm:text-lg font-bold mb-1 text-rose-700 flex items-center gap-2">💸 Shop Expense</h2>
                             <!-- Said plainly, because nothing in the data can catch it: stock bought
                                  for resale is already inside each sale's buying price, so entering it
                                  here too would subtract it from profit twice. -->
