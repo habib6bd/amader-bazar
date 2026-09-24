@@ -1336,10 +1336,18 @@
 
                     <!-- Customer | invoice meta -->
                     <div class="inv-split inv-parties">
+                        <!-- Both lines always print. Name and contact are optional at the
+                             till, and a blank one leaves a dotted line to fill in by hand. -->
                         <div>
-                            <p class="inv-party-name" x-text="currentReceipt.customer_name || '—'"></p>
-                            <p class="inv-party-line" x-show="currentReceipt.customer_contact" x-cloak>
-                                Contact No. : <span x-text="currentReceipt.customer_contact"></span>
+                            <p class="inv-party-line">
+                                Customer Name :
+                                <span class="inv-party-name" x-show="currentReceipt.customer_name" x-text="currentReceipt.customer_name"></span>
+                                <span class="inv-blank" x-show="!currentReceipt.customer_name"></span>
+                            </p>
+                            <p class="inv-party-line">
+                                Contact No. :
+                                <span x-show="currentReceipt.customer_contact" x-text="currentReceipt.customer_contact"></span>
+                                <span class="inv-blank" x-show="!currentReceipt.customer_contact"></span>
                             </p>
                         </div>
                         <div class="inv-meta">

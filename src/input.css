@@ -416,12 +416,25 @@
 .inv-party-name {
   font-size: 0.82rem;
   font-weight: 700;
+  color: var(--inv-ink);
 }
 
 .inv-party-line {
   font-size: 0.72rem;
   color: var(--inv-muted);
   margin-top: 0.3rem;
+}
+
+.inv-party-line:first-child {
+  margin-top: 0;
+}
+
+/* Room to write a name or number in by hand on a receipt printed without one. */
+.inv-blank {
+  display: inline-block;
+  min-width: 45mm;
+  border-bottom: 1px dotted currentColor;
+  vertical-align: bottom;
 }
 
 .inv-meta {
