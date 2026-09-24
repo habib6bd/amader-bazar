@@ -721,92 +721,6 @@
                             </div>
                         </section>
 
-                        <!-- Serial / IMEI — every unit of every serial-tracked product: where it
-                             came from, whether it is on the shelf, and who bought it. Fetched page
-                             by page from the server rather than with the dashboard. -->
-                        <section id="serials-section" class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
-                            <div class="flex flex-wrap items-center justify-between gap-3">
-                                <button type="button" @click="toggleSection('serials')"
-                                        :aria-expanded="serialsOpen" aria-controls="serials-body"
-                                        class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
-                                    <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="serialsOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
-                                    <span>🔢 Serial / IMEI</span>
-                                    <span class="rounded-full bg-slate-100 text-slate-600 px-2 py-0.5 text-xs font-bold tabular-nums"
-                                          x-show="serialLoaded" x-cloak x-text="serialTotal"></span>
-                                </button>
-                                <!-- The search box takes a scan: a customer at the counter with a dead
-                                     unit is one scan away from its invoice. -->
-                                <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto" x-show="serialsOpen" x-cloak>
-                                    <input type="search" x-model="serialQuery" @input.debounce.300ms="loadSerials()" @keydown.enter.prevent="loadSerials()"
-                                           placeholder="Scan or search serial, product, customer…" aria-label="Search serials"
-                                           class="flex-1 sm:flex-none sm:w-64 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
-                                    <select x-model="serialProductId" @change="loadSerials()" aria-label="Filter by product"
-                                            class="p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500 outline-none">
-                                        <option value="">All products</option>
-                                        <template x-for="item in inventory.filter((i) => serialTracked(i))" :key="'sp-' + item.id">
-                                            <option :value="String(item.id)" x-text="item.item_name"></option>
-                                        </template>
-                                    </select>
-                                    <select x-model="serialStatus" @change="loadSerials()" aria-label="Filter by status"
-                                            class="p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500 outline-none">
-                                        <option value="all">All</option>
-                                        <option value="available">Available</option>
-                                        <option value="sold">Sold</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div id="serials-body" x-show="serialsOpen" x-cloak class="mt-4">
-                                <p x-show="serialLoading && !serialRows.length" class="nb-loading text-sm font-semibold py-6 text-center">Loading serials…</p>
-                                <p x-show="!serialLoading && serialLoaded && !serialRows.length" x-cloak class="text-sm text-slate-500 py-8 text-center">
-                                    <span x-text="serialQuery || serialProductId || serialStatus !== 'all'
-                                        ? 'No serial matches that search.'
-                                        : 'No serials yet — scan them in on the Dealer Purchase form, or from a product\'s Edit screen.'"></span>
-                                </p>
-
-                                <!-- One list for every width: a table would need a second, mobile
-                                     layout, and each row here is short enough to wrap cleanly. -->
-                                <ul class="divide-y divide-slate-100" x-show="serialRows.length" x-cloak>
-                                    <template x-for="row in serialRows" :key="'sr-' + row.id">
-                                        <li class="nb-row flex flex-wrap items-center gap-x-4 gap-y-1.5 py-2.5">
-                                            <div class="min-w-0 flex-1 basis-56">
-                                                <p class="flex flex-wrap items-center gap-2">
-                                                    <span class="font-semibold text-slate-800 tabular-nums break-all" x-text="row.serial_no"></span>
-                                                    <span class="rounded-full px-2 py-0.5 text-[11px] font-bold"
-                                                          :class="row.status === 'sold' ? 'bg-slate-200 text-slate-700' : 'bg-brand-100 text-brand-800'"
-                                                          x-text="row.status === 'sold' ? 'Sold' : 'Available'"></span>
-                                                </p>
-                                                <p class="text-xs text-slate-500" x-text="row.item_name || '(deleted product)'"></p>
-                                            </div>
-                                            <div class="min-w-0 flex-1 basis-56 text-xs text-slate-500">
-                                                <p>In: <span x-text="fmtDate(row.received_date)"></span><span x-show="row.dealer_name" x-text="' — ' + row.dealer_name"></span></p>
-                                                <p x-show="row.status === 'sold'" x-cloak>
-                                                    Out:
-                                                    <button type="button" @click="openSerialInvoice(row)" class="font-semibold text-brand-800 underline hover:no-underline"
-                                                            x-text="'#' + row.invoice_id"></button>
-                                                    <span x-text="[row.customer_name, row.customer_contact, fmtDate(row.sold_date)].filter(Boolean).join(' · ')"></span>
-                                                </p>
-                                            </div>
-                                            <div class="flex shrink-0 gap-2">
-                                                <button type="button" @click="openSerialHistory(row)"
-                                                        class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300">History</button>
-                                                <button type="button" @click="openSerialAction(row, 'return')" x-show="row.status === 'sold'" x-cloak
-                                                        class="nb-press bg-amber-50 hover:bg-amber-100 text-amber-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-amber-200">Return</button>
-                                                <button type="button" @click="openSerialAction(row, 'remove')" x-show="row.status !== 'sold'" x-cloak
-                                                        class="nb-press bg-red-50 hover:bg-red-100 text-red-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-red-200">Remove</button>
-                                            </div>
-                                        </li>
-                                    </template>
-                                </ul>
-                                <div class="mt-4 text-center" x-show="serialRows.length < serialTotal" x-cloak>
-                                    <button type="button" @click="loadSerials(true)" :disabled="serialLoading"
-                                            class="nb-press min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">
-                                        Show more (<span class="tabular-nums" x-text="serialTotal - serialRows.length"></span> left)
-                                    </button>
-                                </div>
-                            </div>
-                        </section>
-
                         <!-- Sales history -->
                         <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
                             <div class="flex flex-wrap items-center justify-between gap-3">
@@ -892,7 +806,7 @@
                                         <p class="text-sm sm:text-base font-bold text-amber-700 tabular-nums" x-text="fmt(rangeDiscount)"></p>
                                     </div>
                                     <div>
-                                        <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">খরচ Expenses</p>
+                                        <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Expenses</p>
                                         <p class="text-sm sm:text-base font-bold text-rose-700 tabular-nums" x-text="fmt(rangeExpenses)"></p>
                                     </div>
                                     <!-- Money sold but not yet collected. Not subtracted from profit:
@@ -911,7 +825,7 @@
                                 </div>
                                 <!-- Said plainly rather than quietly understating the figure. -->
                                 <p class="mt-2 text-xs text-slate-500">
-                                    Net profit = profit on sales − খরচ, over this range.
+                                    Net profit = profit on sales − expenses, over this range.
                                 </p>
                                 <p class="mt-1 text-xs text-slate-500" x-show="rangeHasUnknownCost" x-cloak>
                                     Some sales have no buying price recorded, so profit — and net profit — exclude them.
@@ -1058,14 +972,14 @@
                             </div>
                         </section>
 
-                        <!-- খরচ / Expenses -->
+                        <!-- Expenses -->
                         <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
                             <div class="flex flex-wrap items-center justify-between gap-3">
                                 <button type="button" @click="toggleSection('expenses')"
                                         :aria-expanded="expensesOpen" aria-controls="expenses-body"
                                         class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
                                     <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="expensesOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
-                                    <span>💸 খরচ — Expenses</span>
+                                    <span>💸 Expenses</span>
                                     <span class="rounded-full bg-slate-100 text-slate-600 px-2 py-0.5 text-xs font-bold tabular-nums"
                                           x-show="expenses.length" x-cloak x-text="expenses.length"></span>
                                 </button>
@@ -1096,7 +1010,7 @@
                                     <div class="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-2.5 border-t border-slate-200 pt-3">
                                         <div>
                                             <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500" x-text="rangeLabel"></p>
-                                            <p class="text-sm font-bold text-slate-800 tabular-nums"><span x-text="filteredExpenses.length"></span> খরচ</p>
+                                            <p class="text-sm font-bold text-slate-800 tabular-nums"><span x-text="filteredExpenses.length"></span> expenses</p>
                                         </div>
                                         <div>
                                             <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Profit (sales)</p>
@@ -1104,7 +1018,7 @@
                                                :class="rangeProfit < 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(rangeProfit)"></p>
                                         </div>
                                         <div>
-                                            <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">খরচ Expenses</p>
+                                            <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Expenses</p>
                                             <p class="text-sm sm:text-base font-bold text-rose-700 tabular-nums" x-text="fmt(rangeExpenses)"></p>
                                         </div>
                                         <div>
@@ -1272,6 +1186,92 @@
                                     <span x-show="purchasesExpanded" x-cloak>Show less</span>
                                 </button>
                             </div>
+                            </div>
+                        </section>
+
+                        <!-- Serial / IMEI — every unit of every serial-tracked product: where it
+                             came from, whether it is on the shelf, and who bought it. Fetched page
+                             by page from the server rather than with the dashboard. -->
+                        <section id="serials-section" class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <button type="button" @click="toggleSection('serials')"
+                                        :aria-expanded="serialsOpen" aria-controls="serials-body"
+                                        class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
+                                    <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="serialsOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                                    <span>🔢 Serial / IMEI</span>
+                                    <span class="rounded-full bg-slate-100 text-slate-600 px-2 py-0.5 text-xs font-bold tabular-nums"
+                                          x-show="serialLoaded" x-cloak x-text="serialTotal"></span>
+                                </button>
+                                <!-- The search box takes a scan: a customer at the counter with a dead
+                                     unit is one scan away from its invoice. -->
+                                <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto" x-show="serialsOpen" x-cloak>
+                                    <input type="search" x-model="serialQuery" @input.debounce.300ms="loadSerials()" @keydown.enter.prevent="loadSerials()"
+                                           placeholder="Scan or search serial, product, customer…" aria-label="Search serials"
+                                           class="flex-1 sm:flex-none sm:w-64 p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
+                                    <select x-model="serialProductId" @change="loadSerials()" aria-label="Filter by product"
+                                            class="p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500 outline-none">
+                                        <option value="">All products</option>
+                                        <template x-for="item in inventory.filter((i) => serialTracked(i))" :key="'sp-' + item.id">
+                                            <option :value="String(item.id)" x-text="item.item_name"></option>
+                                        </template>
+                                    </select>
+                                    <select x-model="serialStatus" @change="loadSerials()" aria-label="Filter by status"
+                                            class="p-2.5 text-base sm:text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500 outline-none">
+                                        <option value="all">All</option>
+                                        <option value="available">Available</option>
+                                        <option value="sold">Sold</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div id="serials-body" x-show="serialsOpen" x-cloak class="mt-4">
+                                <p x-show="serialLoading && !serialRows.length" class="nb-loading text-sm font-semibold py-6 text-center">Loading serials…</p>
+                                <p x-show="!serialLoading && serialLoaded && !serialRows.length" x-cloak class="text-sm text-slate-500 py-8 text-center">
+                                    <span x-text="serialQuery || serialProductId || serialStatus !== 'all'
+                                        ? 'No serial matches that search.'
+                                        : 'No serials yet — scan them in on the Dealer Purchase form, or from a product\'s Edit screen.'"></span>
+                                </p>
+
+                                <!-- One list for every width: a table would need a second, mobile
+                                     layout, and each row here is short enough to wrap cleanly. -->
+                                <ul class="divide-y divide-slate-100" x-show="serialRows.length" x-cloak>
+                                    <template x-for="row in serialRows" :key="'sr-' + row.id">
+                                        <li class="nb-row flex flex-wrap items-center gap-x-4 gap-y-1.5 py-2.5">
+                                            <div class="min-w-0 flex-1 basis-56">
+                                                <p class="flex flex-wrap items-center gap-2">
+                                                    <span class="font-semibold text-slate-800 tabular-nums break-all" x-text="row.serial_no"></span>
+                                                    <span class="rounded-full px-2 py-0.5 text-[11px] font-bold"
+                                                          :class="row.status === 'sold' ? 'bg-slate-200 text-slate-700' : 'bg-brand-100 text-brand-800'"
+                                                          x-text="row.status === 'sold' ? 'Sold' : 'Available'"></span>
+                                                </p>
+                                                <p class="text-xs text-slate-500" x-text="row.item_name || '(deleted product)'"></p>
+                                            </div>
+                                            <div class="min-w-0 flex-1 basis-56 text-xs text-slate-500">
+                                                <p>In: <span x-text="fmtDate(row.received_date)"></span><span x-show="row.dealer_name" x-text="' — ' + row.dealer_name"></span></p>
+                                                <p x-show="row.status === 'sold'" x-cloak>
+                                                    Out:
+                                                    <button type="button" @click="openSerialInvoice(row)" class="font-semibold text-brand-800 underline hover:no-underline"
+                                                            x-text="'#' + row.invoice_id"></button>
+                                                    <span x-text="[row.customer_name, row.customer_contact, fmtDate(row.sold_date)].filter(Boolean).join(' · ')"></span>
+                                                </p>
+                                            </div>
+                                            <div class="flex shrink-0 gap-2">
+                                                <button type="button" @click="openSerialHistory(row)"
+                                                        class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300">History</button>
+                                                <button type="button" @click="openSerialAction(row, 'return')" x-show="row.status === 'sold'" x-cloak
+                                                        class="nb-press bg-amber-50 hover:bg-amber-100 text-amber-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-amber-200">Return</button>
+                                                <button type="button" @click="openSerialAction(row, 'remove')" x-show="row.status !== 'sold'" x-cloak
+                                                        class="nb-press bg-red-50 hover:bg-red-100 text-red-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-red-200">Remove</button>
+                                            </div>
+                                        </li>
+                                    </template>
+                                </ul>
+                                <div class="mt-4 text-center" x-show="serialRows.length < serialTotal" x-cloak>
+                                    <button type="button" @click="loadSerials(true)" :disabled="serialLoading"
+                                            class="nb-press min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+                                        Show more (<span class="tabular-nums" x-text="serialTotal - serialRows.length"></span> left)
+                                    </button>
+                                </div>
                             </div>
                         </section>
 
