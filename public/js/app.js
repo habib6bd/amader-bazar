@@ -1479,7 +1479,7 @@ function shopApp() {
     },
 
     // Sale form: fill the line from the scanned product.
-    scanBarcode() {
+    async scanBarcode() {
       const code = String(this.scanCode || '').trim();
       if (!code) return;
       if (this.repeatScan('barcode', code)) {
@@ -1489,6 +1489,21 @@ function shopApp() {
 
       const item = this.findByBarcode(code);
       if (!item) {
+        /* Focus rests here between items, so a unit's serial label is often
+           scanned into this box first. A registered serial says which product
+           it is, so it is sold as though it had gone into the serial box. */
+        const found = await this.lookupSerial(code);
+        if (found === undefined) return;
+        if (found) {
+          this.unknownBarcode = '';
+          this.scanCode = '';
+          if (this.cart.find((l) => sameCode(l.serial_no, code))) {
+            this.scanFailed(`${code} is already on this invoice.`);
+            return;
+          }
+          this.applySerial(code, found);
+          return;
+        }
         // Keep the code on screen and selected so a re-scan overwrites it, and
         // offer the product form rather than leaving a dead end.
         this.unknownBarcode = code;
@@ -1571,16 +1586,28 @@ function shopApp() {
         return;
       }
 
-      this.serialOverride = null;
-      let found = null;
+      const found = await this.lookupSerial(code);
+      if (found === undefined) return;
+      this.applySerial(code, found);
+    },
+
+    /* The registered serial `code`, null if there is none, or undefined when
+       the server could not be asked — already reported to the cashier. */
+    async lookupSerial(code) {
       try {
         const res = await fetch(`/api/serials/lookup?code=${encodeURIComponent(code)}`);
-        if (res.ok) found = await res.json();
-        else if (res.status !== 404) throw new Error(await this.describeFailure(res, 'Could not check the serial.'));
+        if (res.ok) return await res.json();
+        if (res.status === 404) return null;
+        throw new Error(await this.describeFailure(res, 'Could not check the serial.'));
       } catch (err) {
         this.scanFailed(`${err.message || 'Could not check the serial.'} Scan it again.`);
-        return;
+        return undefined;
       }
+    },
+
+    // Put a scanned serial on the invoice, given what the server knows of it.
+    applySerial(code, found) {
+      this.serialOverride = null;
 
       // The line this serial names: the one just scanned if it still waits,
       // otherwise the first that does.
@@ -1616,8 +1643,10 @@ function shopApp() {
         return;
       }
 
+      // Nothing says which product this is: the barcode has to come first.
       if (!target) {
-        this.scanFailed(`${code} is not registered. Scan the product first, then its serial.`);
+        this.scanFailed('First scan the barcode please.');
+        this.$nextTick(() => this.$refs.scanInput?.focus());
         return;
       }
       // Probably a unit from before the shop began scanning serials in. Held
