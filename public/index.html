@@ -901,6 +901,10 @@
                                                     <template x-for="l in inv.lines.filter((x) => x.returned_qty > 0)" :key="'rt-' + l.id">
                                                         <span class="block text-xs font-medium text-rose-700" x-text="l.item_name + ' — ' + returnedText(l)"></span>
                                                     </template>
+                                                    <template x-for="c in inv.claims" :key="'ic-' + c.id">
+                                                        <span class="block text-xs font-medium" :class="c.status === 'open' ? 'text-amber-700' : 'text-indigo-700'"
+                                                              x-text="claimText(c)"></span>
+                                                    </template>
                                                 </td>
                                                 <td class="p-3 text-right whitespace-nowrap">
                                                     <!-- The net figure. The sold total stays visible, struck, once
@@ -923,7 +927,7 @@
                                                     :class="invoiceProfit(inv) === null ? 'text-slate-400' : invoiceProfit(inv) < 0 ? 'text-red-600' : 'text-brand-800'"
                                                     x-text="invoiceProfit(inv) === null ? '—' : fmt(invoiceProfit(inv))"></td>
                                                 <td class="p-3">
-                                                    <div class="flex justify-end gap-2">
+                                                    <div class="flex flex-wrap justify-end gap-2">
                                                         <button @click="openPayment(inv)"
                                                                 class="nb-press px-2.5 py-1.5 rounded-lg text-xs font-semibold border whitespace-nowrap"
                                                                 :class="isInvoiceDue(inv) ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'">Paid</button>
@@ -931,6 +935,8 @@
                                                         <button @click="printReceipt(inv)" class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-brand-200 whitespace-nowrap">Print</button>
                                                         <button @click="openReturn(inv)" x-show="!invoiceFullyReturned(inv)" x-cloak
                                                                 class="nb-press bg-amber-50 hover:bg-amber-100 text-amber-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-amber-200 whitespace-nowrap">Return</button>
+                                                        <button @click="openClaim(inv)" x-show="invoiceClaimable(inv)" x-cloak
+                                                                class="nb-press bg-indigo-50 hover:bg-indigo-100 text-indigo-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-indigo-200 whitespace-nowrap">Warranty</button>
                                                     </div>
                                                 </td>
                                             </tr>
@@ -958,6 +964,9 @@
                                                         <span x-text="l.item_name"></span> <span class="text-slate-400">×</span> <span class="tabular-nums" x-text="l.quantity"></span>
                                                         <span class="block text-xs text-slate-400 tabular-nums" x-show="l.serial_no" x-cloak x-text="l.serial_no"></span>
                                                         <span class="block text-xs font-medium text-rose-700" x-show="l.returned_qty > 0" x-cloak x-text="returnedText(l)"></span>
+                                                        <template x-for="c in (l.claims || [])" :key="'mc-' + c.id">
+                                                            <span class="block text-xs font-medium" :class="c.status === 'open' ? 'text-amber-700' : 'text-indigo-700'" x-text="claimText(c)"></span>
+                                                        </template>
                                                     </span>
                                                     <span class="tabular-nums text-slate-500" x-text="fmt(l.total_price)"></span>
                                                 </li>
@@ -992,8 +1001,12 @@
                                                 Paid
                                             </button>
                                             <button @click="openReturn(inv)" x-show="!invoiceFullyReturned(inv)" x-cloak
-                                                    class="nb-press col-span-2 min-h-[44px] bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-lg text-sm font-semibold border border-amber-200">
+                                                    class="nb-press min-h-[44px] bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-lg text-sm font-semibold border border-amber-200">
                                                 Return items
+                                            </button>
+                                            <button @click="openClaim(inv)" x-show="invoiceClaimable(inv)" x-cloak
+                                                    class="nb-press min-h-[44px] bg-indigo-50 hover:bg-indigo-100 text-indigo-800 rounded-lg text-sm font-semibold border border-indigo-200">
+                                                Warranty
                                             </button>
                                         </div>
                                     </div>
@@ -1008,6 +1021,69 @@
                                     <span x-show="salesExpanded" x-cloak>Show less</span>
                                 </button>
                             </div>
+                            </div>
+                        </section>
+
+                        <!-- Warranty claims. Open ones first: a unit in the shop that the
+                             customer is waiting on is the thing not to forget. -->
+                        <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200" x-show="claims.length" x-cloak>
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <button type="button" @click="toggleSection('warranty')"
+                                        :aria-expanded="warrantyOpen" aria-controls="warranty-body"
+                                        class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
+                                    <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="warrantyOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                                    <span>🛠️ Warranty Claims</span>
+                                    <span class="rounded-full px-2 py-0.5 text-xs font-bold tabular-nums"
+                                          :class="openClaimCount ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'"
+                                          x-text="openClaimCount ? openClaimCount + ' open' : claims.length"></span>
+                                </button>
+                                <div class="flex gap-2" x-show="warrantyOpen" x-cloak>
+                                    <button @click="claimFilter = 'open'" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                            :aria-pressed="claimFilter === 'open'"
+                                            :class="claimFilter === 'open' ? 'border-amber-300 bg-amber-100 text-amber-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">Open</button>
+                                    <button @click="claimFilter = 'all'" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                            :aria-pressed="claimFilter === 'all'"
+                                            :class="claimFilter === 'all' ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">All</button>
+                                </div>
+                            </div>
+
+                            <div id="warranty-body" x-show="warrantyOpen" x-cloak class="mt-4">
+                                <p x-show="!visibleClaims.length" class="text-sm text-slate-500 py-6 text-center">No open claims — every unit taken in has been settled.</p>
+                                <ul class="divide-y divide-slate-100" x-show="visibleClaims.length">
+                                    <template x-for="c in visibleClaims" :key="'wc-' + c.id">
+                                        <li class="nb-row flex flex-wrap items-center gap-x-4 gap-y-1.5 py-2.5">
+                                            <div class="min-w-0 flex-1 basis-56">
+                                                <p class="flex flex-wrap items-center gap-2">
+                                                    <span class="font-semibold text-slate-800" x-text="'#' + c.id + ' ' + c.item_name"></span>
+                                                    <span class="rounded-full px-2 py-0.5 text-[11px] font-bold"
+                                                          :class="c.status === 'open' ? 'bg-amber-100 text-amber-800' : c.status === 'rejected' ? 'bg-slate-200 text-slate-700' : 'bg-brand-100 text-brand-800'"
+                                                          x-text="claimStatusLabel(c)"></span>
+                                                </p>
+                                                <p class="text-xs text-slate-500 tabular-nums break-all">
+                                                    <span x-text="c.faulty_serial_no || (c.quantity + ' pc(s)')"></span>
+                                                    <span x-show="c.replacement_serial_no" x-cloak x-text="' → ' + c.replacement_serial_no"></span>
+                                                    <span x-show="c.problem" x-cloak x-text="' · ' + c.problem"></span>
+                                                </p>
+                                            </div>
+                                            <div class="min-w-0 flex-1 basis-56 text-xs text-slate-500">
+                                                <p>In: <span x-text="fmtDate(c.date)"></span>
+                                                    <span x-show="c.resolved_date" x-cloak x-text="'· settled ' + fmtDate(c.resolved_date)"></span></p>
+                                                <p>
+                                                    <button type="button" @click="claimInvoice(c) && showReceipt(claimInvoice(c))" class="font-semibold text-brand-800 underline hover:no-underline"
+                                                            x-text="'#' + c.invoice_id"></button>
+                                                    <span x-text="claimInvoice(c)?.customer_name || 'Walk-in'"></span>
+                                                    <span x-show="c.warranty_until" x-cloak
+                                                          :class="c.warranty_until < c.date ? 'text-red-600 font-semibold' : ''"
+                                                          x-text="'· warranty to ' + fmtDate(c.warranty_until)"></span>
+                                                </p>
+                                            </div>
+                                            <div class="flex shrink-0 gap-2" x-show="c.status === 'open'">
+                                                <button type="button" @click="openResolveClaim(c)"
+                                                        class="nb-press bg-amber-50 hover:bg-amber-100 text-amber-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-amber-200">Settle</button>
+                                            </div>
+                                        </li>
+                                    </template>
+                                </ul>
                             </div>
                         </section>
 
@@ -1283,6 +1359,8 @@
                                                     <span class="rounded-full px-2 py-0.5 text-[11px] font-bold"
                                                           :class="row.status === 'sold' ? 'bg-slate-200 text-slate-700' : row.status === 'defective' ? 'bg-red-100 text-red-700' : 'bg-brand-100 text-brand-800'"
                                                           x-text="row.status === 'sold' ? 'Sold' : row.status === 'defective' ? 'Faulty' : 'Available'"></span>
+                                                    <span class="rounded-full px-2 py-0.5 text-[11px] font-bold bg-indigo-100 text-indigo-700"
+                                                          x-show="row.status === 'sold' && row.claim_id" x-cloak>Warranty replacement</span>
                                                 </p>
                                                 <p class="text-xs text-slate-500" x-text="row.item_name || '(deleted product)'"></p>
                                             </div>
@@ -1298,6 +1376,8 @@
                                             <div class="flex shrink-0 gap-2">
                                                 <button type="button" @click="openSerialHistory(row)"
                                                         class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300">History</button>
+                                                <button type="button" @click="openClaimForSerial(row)" x-show="row.status === 'sold'" x-cloak
+                                                        class="nb-press bg-indigo-50 hover:bg-indigo-100 text-indigo-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-indigo-200">Warranty</button>
                                                 <button type="button" @click="openReturnForSerial(row)" x-show="row.status === 'sold'" x-cloak
                                                         class="nb-press bg-amber-50 hover:bg-amber-100 text-amber-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-amber-200">Return</button>
                                                 <button type="button" @click="openSerialAction(row, 'remove')" x-show="row.status === 'available'" x-cloak
@@ -1432,6 +1512,12 @@
                                              the line still says what was sold. -->
                                         <span class="inv-item-serial" x-show="l.returned_qty > 0" x-cloak
                                               x-text="returnedText(l) + ' — ' + fmtNum(l.returned_amount)"></span>
+                                        <!-- Warranty history for the line. A replacement's serial printed
+                                             here is what makes the reprint the customer's warranty slip;
+                                             the warranty date above still applies to it. -->
+                                        <template x-for="c in (l.claims || [])" :key="'rc-' + c.id">
+                                            <span class="inv-item-serial" x-text="claimText(c)"></span>
+                                        </template>
                                     </td>
                                     <td class="col-qty tabular-nums" x-text="l.quantity"></td>
                                     <td class="col-rate tabular-nums" x-text="fmtNum(unitPrice(l))"></td>
@@ -1512,6 +1598,8 @@
             <div class="no-print mt-5 flex flex-col sm:flex-row sm:justify-end gap-2.5 sticky bottom-0 bg-white pt-1 pb-1">
                 <p class="text-xs text-slate-500 sm:mr-auto sm:self-center">To keep a PDF, choose <strong>Save as PDF</strong> as the destination.</p>
                 <button @click="closeReceipt()" class="nb-press min-h-[48px] order-2 sm:order-1 bg-slate-200 hover:bg-slate-300 text-slate-700 px-5 py-2.5 rounded-lg text-sm font-semibold">Close</button>
+                <button @click="openClaim(currentReceipt)" x-show="currentReceipt.id && invoiceClaimable(currentReceipt)" x-cloak
+                        class="nb-press min-h-[48px] order-3 sm:order-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 px-5 py-2.5 rounded-lg text-sm font-semibold">Warranty claim</button>
                 <button @click="openReturn(currentReceipt)" x-show="currentReceipt.id && !invoiceFullyReturned(currentReceipt)" x-cloak
                         class="nb-press min-h-[48px] order-3 sm:order-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 px-5 py-2.5 rounded-lg text-sm font-semibold">Return items</button>
                 <button @click="printReceipt()" class="nb-press min-h-[48px] order-1 sm:order-2 bg-brand-700 hover:bg-brand-800 text-white px-5 py-2.5 rounded-lg text-sm font-semibold shadow">Print / Save as PDF</button>
@@ -1859,6 +1947,134 @@
                         <button type="button" @click="submitReturn()" :disabled="returnDraft.saving || !returnChosen.length"
                                 class="nb-press min-h-[44px] flex-1 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white rounded-lg text-sm font-semibold"
                                 x-text="returnDraft.saving ? 'Saving…' : 'Record return'"></button>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- ================= WARRANTY DIALOG =================
+         A new claim, or settling an open one. Above the receipt (z-50) because
+         it opens from it, and no-print like the other dialogs. -->
+    <div id="claim-modal" x-show="claimDraft" x-cloak x-transition.opacity
+         class="no-print fixed inset-0 bg-brand-950/70 z-[60] flex items-start sm:items-center justify-center p-4 overflow-y-auto"
+         role="dialog" aria-modal="true" aria-label="Warranty claim" @keydown.escape.window="closeClaim()">
+        <div class="nb-pop bg-white w-full max-w-lg rounded-2xl shadow-2xl p-5 sm:p-6" x-show="claimDraft">
+            <div class="flex items-start justify-between gap-3 mb-3">
+                <div class="min-w-0">
+                    <h2 class="text-lg font-bold text-slate-800"
+                        x-text="claimDraft?.kind === 'resolve' ? 'Settle claim #' + claimDraft.claim.id : 'Warranty claim'"></h2>
+                    <p class="text-xs text-slate-500">
+                        Invoice <span class="tabular-nums font-semibold" x-text="'#' + (claimDraft?.invoice?.id ?? claimDraft?.claim?.invoice_id ?? '')"></span>
+                        · <span x-text="claimDraft?.invoice?.customer_name || 'Walk-in'"></span>
+                        · sold <span x-text="fmtDate(claimDraft?.invoice?.date)"></span>
+                    </p>
+                </div>
+                <button @click="closeClaim()" aria-label="Close"
+                        class="nb-press text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">&times;</button>
+            </div>
+
+            <template x-if="claimDraft">
+                <div class="space-y-3">
+                    <!-- Which item. Only a choice when the invoice has several. -->
+                    <div x-show="claimDraft.kind === 'new' && claimLines.length > 1">
+                        <label for="claim-line" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Item</label>
+                        <select id="claim-line" x-model.number="claimDraft.saleId"
+                                class="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-base sm:text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                            <template x-for="l in claimLines" :key="'cl-' + l.id">
+                                <option :value="l.id" :selected="Number(l.id) === Number(claimDraft.saleId)"
+                                        x-text="l.item_name + (lineSerialNow(l) ? ' — ' + lineSerialNow(l) : ' ×' + lineWithCustomer(l))"></option>
+                            </template>
+                        </select>
+                    </div>
+
+                    <!-- What the customer holds, and whether it is still covered. -->
+                    <div class="rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-sm" x-show="claimLine">
+                        <p class="font-semibold text-slate-800" x-text="claimLine?.item_name"></p>
+                        <p class="text-xs text-slate-600 tabular-nums break-all" x-show="claimDraft.kind === 'new' && lineSerialNow(claimLine)"
+                           x-text="'Serial with customer: ' + lineSerialNow(claimLine)"></p>
+                        <p class="text-xs text-slate-600 tabular-nums break-all" x-show="claimDraft.kind === 'resolve'"
+                           x-text="'Taken in ' + fmtDate(claimDraft.claim?.date) + ': ' + (claimDraft.claim?.faulty_serial_no || claimDraft.claim?.quantity + ' pc(s)') + (claimDraft.claim?.problem ? ' — ' + claimDraft.claim.problem : '')"></p>
+                        <p class="text-xs mt-1" x-show="lineWarrantyUntil(claimLine)"
+                           :class="lineInWarranty(claimLine) ? 'text-brand-800' : 'text-red-600 font-semibold'"
+                           x-text="(lineInWarranty(claimLine) ? 'Under warranty until ' : 'Warranty ended ') + fmtDate(lineWarrantyUntil(claimLine))"></p>
+                        <p class="text-xs mt-1 text-red-600 font-semibold" x-show="claimLine && !lineWarrantyUntil(claimLine)">This sale carried no warranty.</p>
+                    </div>
+
+                    <template x-if="claimDraft.kind === 'new'">
+                        <div class="space-y-3">
+                            <div class="flex items-end gap-3">
+                                <div class="flex-1">
+                                    <label for="claim-problem" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Problem</label>
+                                    <input id="claim-problem" type="text" x-model="claimDraft.problem" maxlength="200" placeholder="e.g. no power, not charging"
+                                           class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
+                                </div>
+                                <div x-show="claimLine && lineWithCustomer(claimLine) > 1" x-cloak>
+                                    <label for="claim-qty" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Qty</label>
+                                    <input id="claim-qty" type="number" min="1" :max="claimLine ? lineWithCustomer(claimLine) : 1" step="1" x-model.number="claimDraft.qty"
+                                           class="w-20 p-3 sm:p-2.5 border border-slate-300 rounded-lg text-base sm:text-sm tabular-nums focus:ring-2 focus:ring-brand-500 outline-none">
+                                </div>
+                            </div>
+                            <div class="space-y-1.5 text-sm">
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" class="accent-brand-700" :value="true" :checked="claimDraft.replaceNow" @change="claimDraft.replaceNow = true">
+                                    Give a replacement now, from stock
+                                </label>
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" class="accent-brand-700" :value="false" :checked="!claimDraft.replaceNow" @change="claimDraft.replaceNow = false">
+                                    Take it in — decide later
+                                </label>
+                            </div>
+                        </div>
+                    </template>
+
+                    <template x-if="claimDraft.kind === 'resolve'">
+                        <div class="space-y-1.5 text-sm">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" class="accent-brand-700" value="replace" x-model="claimDraft.action"> Give a replacement from stock
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" class="accent-brand-700" value="repaired" x-model="claimDraft.action"> Repaired — hand the same unit back
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" class="accent-brand-700" value="rejected" x-model="claimDraft.action"> Not covered — hand it back as it is
+                            </label>
+                        </div>
+                    </template>
+
+                    <!-- The replacement. A tracked product needs the exact unit scanned. -->
+                    <div x-show="claimGivesReplacement" x-cloak>
+                        <template x-if="claimNeedsSerial">
+                            <div>
+                                <label for="claim-code" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Replacement serial</label>
+                                <input id="claim-code" type="text" x-model="claimDraft.code" @keydown.enter.prevent="submitClaim()"
+                                       placeholder="Scan the unit being given…"
+                                       class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
+                            </div>
+                        </template>
+                        <p class="mt-1.5 text-xs text-slate-500" x-show="claimProduct">
+                            In stock: <span class="font-semibold tabular-nums" x-text="claimProduct?.quantity"></span>.
+                            The replacement comes off stock; the faulty unit is kept aside, not for sale.
+                        </p>
+                    </div>
+
+                    <div x-show="claimDraft.kind === 'resolve'">
+                        <label for="claim-note" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Note <span class="normal-case font-normal text-slate-400">(optional)</span></label>
+                        <input id="claim-note" type="text" x-model="claimDraft.note" maxlength="200"
+                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
+                    </div>
+
+                    <p class="text-xs text-slate-500">No money changes hands — the invoice total and the day's sales stay as they are.</p>
+
+                    <p class="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
+                       x-show="claimDraft.error" x-cloak x-text="claimDraft.error"></p>
+
+                    <div class="flex gap-2.5 pt-1">
+                        <button type="button" @click="closeClaim()"
+                                class="nb-press min-h-[44px] flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-sm font-semibold">Cancel</button>
+                        <button type="button" @click="submitClaim()" :disabled="claimDraft.saving"
+                                class="nb-press min-h-[44px] flex-1 bg-brand-700 hover:bg-brand-800 disabled:opacity-60 text-white rounded-lg text-sm font-semibold"
+                                x-text="claimDraft.saving ? 'Saving…' : (claimGivesReplacement ? 'Give replacement' : claimDraft.kind === 'new' ? 'Take it in' : 'Settle claim')"></button>
                     </div>
                 </div>
             </template>

@@ -270,6 +270,11 @@ async function migrate() {
   await run(`CREATE INDEX IF NOT EXISTS idx_returns_invoice ON returns(invoice_id)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_return_lines_sale ON return_lines(sale_id)`);
 
+  // Set while a unit is out with a customer as a warranty replacement — the
+  // claim it was given under. See the warranty_claims table.
+  await addColumnIfMissing('product_serials', 'claim_id', 'INTEGER');
+  await run(`CREATE INDEX IF NOT EXISTS idx_claims_sale ON warranty_claims(sale_id)`);
+
   await linkLegacySales();
 }
 
@@ -353,7 +358,7 @@ async function linkLegacySales() {
    need, since each awaited statement completes before the next is issued. */
 /* Bump whenever setup() or migrate() gains a step. A database already at this
    version skips the whole migration on boot. */
-const SCHEMA_VERSION = '2026-09-26-returns';
+const SCHEMA_VERSION = '2026-09-26-warranty';
 
 // One read instead of ~20 statements, several of which take a write lock even
 // when they end up changing nothing. On Vercel every cold start runs this, each
@@ -483,7 +488,8 @@ async function setup() {
     sale_id INTEGER,
     invoice_id INTEGER,
     received_date TEXT NOT NULL,
-    received_time TEXT
+    received_time TEXT,
+    claim_id INTEGER
   )`);
 
   // What happened to a unit, in order: received, sold, returned, sold again.
@@ -532,6 +538,38 @@ async function setup() {
     serial_id INTEGER,
     serial_no TEXT,
     condition TEXT NOT NULL
+  )`);
+
+  /* A customer back with a faulty unit under warranty. Not a sale and not a
+     return: no money moves, so nothing here can reach revenue or profit.
+
+     The faulty unit comes in (serial → 'defective', or defective_quantity for
+     goods without one). A replacement from stock goes out against the *same*
+     sale line: it takes over the line's sale_id, so a later return or a second
+     claim on that line acts on the unit the customer actually holds, and its
+     warranty is the rest of the original's — warranty_until is copied from the
+     sale when the claim is made.
+
+     status: 'open' (unit taken in, nothing given yet), 'replaced', 'repaired'
+     (the same unit handed back fixed) or 'rejected' (handed back, not covered). */
+  await run(`CREATE TABLE IF NOT EXISTS warranty_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL,
+    sale_id INTEGER NOT NULL,
+    item_name TEXT NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 1,
+    faulty_serial_id INTEGER,
+    faulty_serial_no TEXT,
+    date TEXT NOT NULL,
+    time TEXT,
+    problem TEXT,
+    warranty_until TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    replacement_serial_id INTEGER,
+    replacement_serial_no TEXT,
+    resolved_date TEXT,
+    resolved_time TEXT,
+    resolution_note TEXT
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS admin (
@@ -800,7 +838,7 @@ app.get('/api/data', async (req, res) => {
     // The destructure order must match the Promise.all order exactly; getting it
     // wrong is the one silent way to break this — inventory would arrive as
     // expenses and every figure on the dashboard would be nonsense.
-    const [inventory, invoices, sales, purchases, expenses, returns, returnLines] = await Promise.all([
+    const [inventory, invoices, sales, purchases, expenses, returns, returnLines, claims] = await Promise.all([
       // defective_serials is the faulty count of a serial-tracked product, the
       // counterpart of defective_quantity for goods without serials.
       all(`SELECT i.*,
@@ -815,8 +853,9 @@ app.get('/api/data', async (req, res) => {
       all('SELECT * FROM expenses ORDER BY date DESC, id DESC'),
       all('SELECT * FROM returns ORDER BY id'),
       all('SELECT * FROM return_lines ORDER BY id'),
+      all('SELECT * FROM warranty_claims ORDER BY id'),
     ]);
-    res.json({ inventory, invoices, sales, purchases, expenses, returns, return_lines: returnLines });
+    res.json({ inventory, invoices, sales, purchases, expenses, returns, return_lines: returnLines, warranty_claims: claims });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1597,6 +1636,12 @@ async function recordReturn(q, invoiceId, rawLines, reason) {
     if (!Number.isInteger(quantity) || quantity < 1) {
       throw new Refusal(400, `${line.item_name}: quantity must be a whole number, one or more.`);
     }
+    // Units already in the shop on an open warranty claim are not the
+    // customer's to return; the claim has to be settled first.
+    const held = await openClaimQty(q, saleId);
+    if (held > 0 && quantity > left - held) {
+      throw new Refusal(409, `${line.item_name}: ${held} is in the shop on an open warranty claim. Settle the claim first.`);
+    }
     if (quantity > left) {
       throw new Refusal(
         409,
@@ -1695,6 +1740,234 @@ app.post('/api/serials/:id/return', async (req, res) => {
       return q.get(`SELECT * FROM inventory WHERE id = ?`, [unit.product_id]);
     });
     res.json({ success: true, product: product ?? null });
+  } catch (err) {
+    sendFailure(res, err);
+  }
+});
+
+/* ===========================================================================
+   Warranty claims
+
+   A faulty unit in, and — now or later — a replacement from stock out, the
+   same unit handed back repaired, or handed back as not covered. No money
+   moves and no sale is written, so a replacement can never show up as
+   revenue. See the warranty_claims table in setup().
+   =========================================================================== */
+
+// The same month arithmetic as addMonths() in app.js, which prints the
+// warranty on the receipt; the two must agree on when a warranty ends.
+function addMonthsTo(dateStr, months) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || '');
+  const n = Number(months);
+  if (!m || months == null || !Number.isFinite(n) || n <= 0) return null;
+  const total = Number(m[1]) * 12 + (Number(m[2]) - 1) + n;
+  const year = Math.floor(total / 12);
+  const month = (total % 12) + 1;
+  const lastDay = new Date(year, month, 0).getDate();
+  const pad = (x) => String(x).padStart(2, '0');
+  return `${year}-${pad(month)}-${pad(Math.min(Number(m[3]), lastDay))}`;
+}
+
+// Units of a sale line sitting in the shop on claims not yet settled.
+async function openClaimQty(q, saleId) {
+  const row = await q.get(
+    `SELECT COALESCE(SUM(quantity), 0) AS n FROM warranty_claims WHERE sale_id = ? AND status = 'open'`,
+    [saleId]
+  );
+  return Number(row.n);
+}
+
+/* Hands a replacement out against an open claim and closes it as 'replaced'.
+   A serial product needs `code`: an available unit of the same product, which
+   goes out linked to the original sale line. Goods without serials come off
+   the shelf count. Refuses rather than lets stock go below zero. */
+async function giveReplacement(q, claim, line, product, code) {
+  if (!product) throw new Refusal(409, `${line.item_name} is not a product in stock, so nothing can be given from stock.`);
+  let replacement = { id: null, serial_no: null };
+
+  if (Number(product.track_serial) === 1) {
+    if (!code) throw new Refusal(400, `Scan the serial of the ${product.item_name} being given.`);
+    if (!SERIAL_PATTERN.test(code)) throw new Refusal(400, `Serial must be ${SERIAL_RULE}.`);
+    const found = await findSerial(q, code);
+    if (!found) throw new Refusal(409, `${code} is not in stock. Scan it in first — Dealer Purchase, or the product's Edit screen.`);
+    const clash = serialClash(found, product, { forSale: true });
+    if (clash) throw new Refusal(409, clash);
+
+    const out = await q.run(
+      `UPDATE product_serials SET status = 'sold', sale_id = ?, invoice_id = ?, claim_id = ?
+        WHERE id = ? AND status = 'available'`,
+      [line.id, line.invoice_id, claim.id, found.id]
+    );
+    if (out.changes !== 1) throw new Refusal(409, `${found.serial_no} was sold a moment ago.`);
+    const faulty = claim.faulty_serial_no ? ` for ${claim.faulty_serial_no}` : '';
+    await logSerialEvent(q, {
+      serial_id: found.id,
+      event: 'replacement_out',
+      invoice_id: line.invoice_id,
+      note: `Warranty replacement${faulty} — claim #${claim.id}`,
+    });
+    await syncSerialStock(q, product.id);
+    replacement = found;
+  } else {
+    const taken = await q.run(
+      `UPDATE inventory SET quantity = quantity - ? WHERE id = ? AND quantity >= ?`,
+      [claim.quantity, product.id, claim.quantity]
+    );
+    if (taken.changes !== 1) {
+      throw new Refusal(409, `Not enough ${product.item_name} in stock to replace ${claim.quantity}. Save the claim as open instead.`);
+    }
+  }
+
+  await q.run(
+    `UPDATE warranty_claims
+        SET status = 'replaced', replacement_serial_id = ?, replacement_serial_no = ?, resolved_date = ?, resolved_time = ?
+      WHERE id = ?`,
+    [replacement.id, replacement.serial_no, todayLocal(), nowLocalTime(), claim.id]
+  );
+}
+
+/* API: A customer brings a unit back under warranty.
+
+   Body: { sale_id, quantity?, problem?, replace_now?, replacement_serial_no? }
+
+   Serial lines claim the one unit the customer holds on that line — the
+   original, or an earlier replacement. Other lines claim a quantity, up to
+   what has not been returned or already claimed. An expired warranty is not
+   refused: honouring one anyway is the shop's call, and the dialog warns. */
+app.post('/api/warranty-claims', async (req, res) => {
+  const body = req.body || {};
+  const saleId = Number(body.sale_id);
+  const problem = String(body.problem ?? '').trim().slice(0, 200) || null;
+  const code = String(body.replacement_serial_no ?? '').trim() || null;
+  try {
+    const claim = await inWriteTx(async (q) => {
+      const line = await q.get(`SELECT * FROM sales WHERE id = ?`, [saleId]);
+      if (!line || !line.invoice_id) throw new Refusal(404, 'That invoice line no longer exists.');
+      const product = await q.get(`SELECT * FROM inventory WHERE item_name = ?`, [line.item_name]);
+
+      // The unit with the customer on this line, if serials are tracked.
+      const unit = await q.get(`SELECT * FROM product_serials WHERE sale_id = ? AND status = 'sold'`, [line.id]);
+      /* Without a tracked unit — goods with no serial, or a line sold before
+         its product was serial-tracked — a quantity is claimed, up to what is
+         still with the customer: not returned, and not already in on a claim. */
+      let quantity = 1;
+      if (!unit) {
+        const back = await q.get(`SELECT COALESCE(SUM(quantity), 0) AS n FROM return_lines WHERE sale_id = ?`, [line.id]);
+        const held = await openClaimQty(q, line.id);
+        const free = Number(line.quantity) - Number(back.n) - held;
+        quantity = body.quantity == null || body.quantity === '' ? 1 : Number(body.quantity);
+        if (!Number.isInteger(quantity) || quantity < 1) throw new Refusal(400, 'Quantity must be a whole number, one or more.');
+        if (quantity > free) {
+          throw new Refusal(
+            409,
+            free > 0
+              ? `Only ${free} of ${line.item_name} on this line can be claimed.`
+              : held
+                ? `${line.item_name} on this line is already in the shop on an open claim.`
+                : `Nothing on this line is with the customer any more.`
+          );
+        }
+      }
+
+      const r = await q.run(
+        `INSERT INTO warranty_claims (invoice_id, sale_id, item_name, quantity, faulty_serial_id, faulty_serial_no,
+                                      date, time, problem, warranty_until, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
+        [
+          line.invoice_id, line.id, line.item_name, quantity,
+          unit?.id ?? null, unit?.serial_no ?? line.serial_no ?? null,
+          todayLocal(), nowLocalTime(), problem, addMonthsTo(line.date, line.warranty_months),
+        ]
+      );
+      const claim = await q.get(`SELECT * FROM warranty_claims WHERE id = ?`, [r.lastID]);
+
+      // The faulty unit comes in and is kept aside, not for sale.
+      if (unit) {
+        await q.run(
+          `UPDATE product_serials SET status = 'defective', sale_id = NULL, invoice_id = NULL, claim_id = NULL WHERE id = ?`,
+          [unit.id]
+        );
+        await logSerialEvent(q, {
+          serial_id: unit.id,
+          event: 'claimed',
+          invoice_id: line.invoice_id,
+          note: [`Warranty claim #${claim.id}`, problem].filter(Boolean).join(' — '),
+        });
+        await syncSerialStock(q, unit.product_id);
+      } else if (product) {
+        // For a tracked product this is a unit that never had its serial
+        // registered; it is counted with the faulty serials — see faultyCount().
+        await q.run(`UPDATE inventory SET defective_quantity = defective_quantity + ? WHERE id = ?`, [quantity, product.id]);
+      }
+
+      if (body.replace_now) await giveReplacement(q, claim, line, product, code);
+      return q.get(`SELECT * FROM warranty_claims WHERE id = ?`, [claim.id]);
+    });
+    res.json(claim);
+  } catch (err) {
+    sendFailure(res, err);
+  }
+});
+
+/* API: Settle an open claim.
+
+   Body: { action: 'replace' | 'repaired' | 'rejected', replacement_serial_no?, note? }
+
+   'replace' hands out a unit from stock, as replace_now does above.
+   'repaired' and 'rejected' both give the customer's own unit back — fixed,
+   or as it was — so it leaves the faulty pile and is with them again. */
+app.post('/api/warranty-claims/:id/resolve', async (req, res) => {
+  const id = Number(req.params.id);
+  const action = String(req.body?.action ?? '');
+  const note = String(req.body?.note ?? '').trim().slice(0, 200) || null;
+  const code = String(req.body?.replacement_serial_no ?? '').trim() || null;
+  if (!['replace', 'repaired', 'rejected'].includes(action)) {
+    return res.status(400).json({ error: 'Choose replace, repaired or not covered.' });
+  }
+  try {
+    const claim = await inWriteTx(async (q) => {
+      const claim = await q.get(`SELECT * FROM warranty_claims WHERE id = ?`, [id]);
+      if (!claim) throw new Refusal(404, 'That claim no longer exists.');
+      if (claim.status !== 'open') throw new Refusal(409, `Claim #${id} is already settled.`);
+      const line = await q.get(`SELECT * FROM sales WHERE id = ?`, [claim.sale_id]);
+      if (!line) throw new Refusal(409, 'The invoice line this claim is on no longer exists.');
+      const product = await q.get(`SELECT * FROM inventory WHERE item_name = ?`, [line.item_name]);
+
+      if (action === 'replace') {
+        await giveReplacement(q, claim, line, product, code);
+      } else {
+        if (claim.faulty_serial_id) {
+          const unit = await q.get(`SELECT * FROM product_serials WHERE id = ?`, [claim.faulty_serial_id]);
+          if (!unit) throw new Refusal(409, `${claim.faulty_serial_no} is no longer registered.`);
+          if (unit.status !== 'defective') {
+            throw new Refusal(409, `${unit.serial_no} is not in the faulty pile any more, so it cannot be handed back.`);
+          }
+          await q.run(
+            `UPDATE product_serials SET status = 'sold', sale_id = ?, invoice_id = ? WHERE id = ?`,
+            [line.id, line.invoice_id, unit.id]
+          );
+          await logSerialEvent(q, {
+            serial_id: unit.id,
+            event: action === 'repaired' ? 'repaired' : 'claim_rejected',
+            invoice_id: line.invoice_id,
+            note: [`Claim #${id}`, note].filter(Boolean).join(' — '),
+          });
+          await syncSerialStock(q, unit.product_id);
+        } else if (product) {
+          await q.run(
+            `UPDATE inventory SET defective_quantity = MAX(0, defective_quantity - ?) WHERE id = ?`,
+            [claim.quantity, product.id]
+          );
+        }
+        await q.run(
+          `UPDATE warranty_claims SET status = ?, resolved_date = ?, resolved_time = ? WHERE id = ?`,
+          [action, todayLocal(), nowLocalTime(), id]
+        );
+      }
+      if (note) await q.run(`UPDATE warranty_claims SET resolution_note = ? WHERE id = ?`, [note, id]);
+      return q.get(`SELECT * FROM warranty_claims WHERE id = ?`, [id]);
+    });
+    res.json(claim);
   } catch (err) {
     sendFailure(res, err);
   }
@@ -1896,8 +2169,12 @@ app.put('/api/inventory/:id', async (req, res) => {
         sql: `UPDATE return_lines SET item_name = ? WHERE item_name = ?`,
         args: [item.item_name, oldName],
       });
+      const w = await tx.execute({
+        sql: `UPDATE warranty_claims SET item_name = ? WHERE item_name = ?`,
+        args: [item.item_name, oldName],
+      });
       await tx.commit();
-      res.json({ success: true, renamed: s.rowsAffected + p.rowsAffected + r.rowsAffected });
+      res.json({ success: true, renamed: s.rowsAffected + p.rowsAffected + r.rowsAffected + w.rowsAffected });
     } catch (txErr) {
       await tx.rollback().catch(() => {});
       throw txErr;

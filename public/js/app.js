@@ -123,7 +123,7 @@ function writeSession(active) {
    shopkeeper settles on survives a refresh. Purely cosmetic: losing it costs
    nothing, which is why every access is wrapped rather than guarded. */
 const SECTIONS_KEY = 'shop-sections';
-const DEFAULT_SECTIONS = { products: true, serials: true, sales: true, expenses: true, purchases: true };
+const DEFAULT_SECTIONS = { products: true, serials: true, sales: true, warranty: true, expenses: true, purchases: true };
 
 function readSections() {
   try {
@@ -227,10 +227,18 @@ function sameCode(a, b) {
    Returns are hung on the same walk: each invoice gets its `returns` (each
    with its own `lines`), and each sale line the `returned_qty` and
    `returned_amount` that came back against it, so no total below has to
-   search the returns again. */
-function buildInvoices(invoices, lines, returns = [], returnLines = []) {
+   search the returns again. Warranty claims likewise: `claims` on both the
+   invoice and the line, oldest first. */
+function buildInvoices(invoices, lines, returns = [], returnLines = [], claims = []) {
   const byId = new Map();
-  for (const inv of invoices) byId.set(Number(inv.id), { ...inv, key: `i${inv.id}`, lines: [], returns: [] });
+  for (const inv of invoices) byId.set(Number(inv.id), { ...inv, key: `i${inv.id}`, lines: [], returns: [], claims: [] });
+  for (const c of claims) byId.get(Number(c.invoice_id))?.claims.push(c);
+  const claimsBySale = new Map();
+  for (const c of claims) {
+    const list = claimsBySale.get(Number(c.sale_id)) || [];
+    list.push(c);
+    claimsBySale.set(Number(c.sale_id), list);
+  }
 
   const returnsById = new Map();
   for (const r of returns) {
@@ -252,13 +260,14 @@ function buildInvoices(invoices, lines, returns = [], returnLines = []) {
     const back = backBySale.get(Number(line.id));
     line.returned_qty = back ? back.qty : 0;
     line.returned_amount = back ? back.amount : 0;
+    line.claims = claimsBySale.get(Number(line.id)) || [];
   }
 
   const orphans = [];
   for (const line of lines) {
     const inv = byId.get(Number(line.invoice_id));
     if (inv) inv.lines.push(line);
-    else orphans.push({ ...line, key: `o${line.id}`, lines: [line], returns: [] });
+    else orphans.push({ ...line, key: `o${line.id}`, lines: [line], returns: [], claims: [] });
   }
 
   const byLine = (a, b) => (Number(a.line_no) || 0) - (Number(b.line_no) || 0) || Number(a.id) - Number(b.id);
@@ -375,6 +384,7 @@ function shopApp() {
        value changed and the panel stayed open. Flat is also less to read. */
     productsOpen: readSections().products,
     salesOpen: readSections().sales,
+    warrantyOpen: readSections().warranty,
     expensesOpen: readSections().expenses,
     purchasesOpen: readSections().purchases,
 
@@ -392,6 +402,16 @@ function shopApp() {
     /* The Return dialog: { invoice, rows, reason, scan, error, saving } or null.
        Each row is one invoice line: { line, left, qty, condition }. */
     returnDraft: null,
+    // Warranty claims, flat as the server sends them; buildInvoices() also
+    // hangs each on its invoice and its line.
+    claims: [],
+    /* The warranty dialog. New claim:
+         { kind: 'new', invoice, saleId, qty, problem, replaceNow, code, error, saving }
+       Settling an open one:
+         { kind: 'resolve', claim, invoice, action, code, note, error, saving } */
+    claimDraft: null,
+    // Warranty section: every claim, or only the open ones.
+    claimFilter: 'open',
     dealer: blankDealer(),
     savingSale: false,
     savingDealer: false,
@@ -978,6 +998,7 @@ function shopApp() {
         products: this.productsOpen,
         serials: this.serialsOpen,
         sales: this.salesOpen,
+        warranty: this.warrantyOpen,
         expenses: this.expensesOpen,
         purchases: this.purchasesOpen,
       });
@@ -1045,7 +1066,10 @@ function shopApp() {
           (l) =>
             (l.item_name || '').toLowerCase().includes(q) ||
             String(l.serial_no || '').toLowerCase().includes(q)
-        )
+        ) ||
+        // A customer holding a warranty replacement has that unit's serial,
+        // not the one printed at the sale.
+        (inv.claims || []).some((c) => String(c.replacement_serial_no || '').toLowerCase().includes(q))
       );
     },
 
@@ -1256,6 +1280,8 @@ function shopApp() {
       this.returns = [];
       this.returnLines = [];
       this.returnDraft = null;
+      this.claims = [];
+      this.claimDraft = null;
       this.inventory = [];
       this.purchases = [];
       this.expenses = [];
@@ -1314,7 +1340,8 @@ function shopApp() {
         this.sales = data.sales || [];
         this.returns = data.returns || [];
         this.returnLines = data.return_lines || [];
-        this.invoices = buildInvoices(data.invoices || [], this.sales, this.returns, this.returnLines);
+        this.claims = data.warranty_claims || [];
+        this.invoices = buildInvoices(data.invoices || [], this.sales, this.returns, this.returnLines, this.claims);
         this.purchases = data.purchases || [];
         this.expenses = data.expenses || [];
         // A sale or a return changes serial statuses too.
@@ -1705,10 +1732,11 @@ function shopApp() {
       return Number(item?.track_serial) === 1;
     },
 
-    // Units back from customers faulty — kept, but not in stock. Counted from
-    // the serials for a tracked product, from defective_quantity otherwise.
+    // Units back from customers faulty — kept, but not in stock. Faulty serials
+    // plus defective_quantity: goods without serials, and units of a tracked
+    // product sold before it was tracked, which have no serial to mark.
     faultyCount(item) {
-      return this.serialTracked(item) ? Number(item?.defective_serials || 0) : Number(item?.defective_quantity || 0);
+      return Number(item?.defective_serials || 0) + Number(item?.defective_quantity || 0);
     },
 
     /* Sale form: the scanned serial names one unit on the invoice.
@@ -2186,13 +2214,15 @@ function shopApp() {
       const rows = (inv?.lines || [])
         .map((line) => ({
           line,
-          left: this.lineLeft(line),
+          // Not what is in the shop on an open warranty claim — the server
+          // refuses that until the claim is settled.
+          left: this.lineWithCustomer(line),
           qty: saleId != null && Number(line.id) === Number(saleId) ? 1 : 0,
           condition: 'good',
         }))
         .filter((r) => r.left > 0);
       if (!rows.length) {
-        this.notify('Everything on this invoice has already come back.', 'error');
+        this.notify('Nothing on this invoice is left to return — it has all come back, or is in on a warranty claim.', 'error');
         return;
       }
       this.returnDraft = { invoice: inv, rows, reason: '', scan: '', error: '', saving: false };
@@ -2218,7 +2248,7 @@ function shopApp() {
       const qty = Number(row.qty) || 0;
       if (qty <= 0) return 0;
       const price = Number(row.line.total_price || 0);
-      const amount = qty >= row.left
+      const amount = qty >= this.lineLeft(row.line)
         ? price - Number(row.line.returned_amount || 0)
         : (price * qty) / Number(row.line.quantity || 1);
       return Math.round(amount * 100) / 100;
@@ -2307,6 +2337,197 @@ function shopApp() {
         dlg.error = err.message || 'Could not record the return.';
       } finally {
         dlg.saving = false;
+      }
+    },
+
+    /* ------------------------------------------------------ warranty claims
+
+       A claim never touches money: the replacement goes out against the
+       original sale line, so the invoice, its total and its profit all stay
+       as they were. What the customer holds, and when its warranty ends, is
+       read from the line and the claims on it. */
+
+    // Units of a line in the shop on claims not yet settled.
+    lineOpenClaimQty(l) {
+      return (l?.claims || []).filter((c) => c.status === 'open').reduce((sum, c) => sum + Number(c.quantity || 0), 0);
+    },
+
+    // Units of a line the customer still holds: not returned, not in on a claim.
+    lineWithCustomer(l) {
+      return this.lineLeft(l) - this.lineOpenClaimQty(l);
+    },
+
+    // The serial the customer holds on this line now: the one sold, or the
+    // last replacement given for it.
+    lineSerialNow(l) {
+      let code = l?.serial_no || '';
+      for (const c of l?.claims || []) {
+        if (c.status === 'replaced' && c.replacement_serial_no) code = c.replacement_serial_no;
+      }
+      return code;
+    },
+
+    // YYYY-MM-DD the warranty on this line ends, or '' when it has none. A
+    // replacement carries the original's — see warranty_claims in server.js.
+    lineWarrantyUntil(l) {
+      return addMonths(l?.date, l?.warranty_months);
+    },
+
+    lineInWarranty(l) {
+      const until = this.lineWarrantyUntil(l);
+      return Boolean(until) && until >= todayLocal();
+    },
+
+    invoiceClaimable(inv) {
+      return (inv?.lines || []).some((l) => this.lineWithCustomer(l) > 0);
+    },
+
+    claimStatusLabel(c) {
+      return { open: 'Open', replaced: 'Replaced', repaired: 'Repaired', rejected: 'Not covered' }[c?.status] || c?.status;
+    },
+
+    // One line under the item on the receipt and in the history:
+    // "Warranty 26-09-2026: A001 replaced with A002 (no charge)".
+    claimText(c) {
+      const when = `Warranty ${this.fmtDateDMY(c.date)}`;
+      const what = c.faulty_serial_no || (Number(c.quantity) > 1 ? `${c.quantity} pcs` : '1 pc');
+      if (c.status === 'replaced') {
+        return c.replacement_serial_no
+          ? `${when}: ${what} replaced with ${c.replacement_serial_no} (no charge)`
+          : `${when}: ${what} replaced (no charge)`;
+      }
+      if (c.status === 'repaired') return `${when}: ${what} repaired and handed back`;
+      if (c.status === 'rejected') return `${when}: ${what} not covered, handed back`;
+      return `${when}: ${what} taken in`;
+    },
+
+    // For the Warranty section: the claims to list, open ones first.
+    get visibleClaims() {
+      const list = this.claimFilter === 'open' ? this.claims.filter((c) => c.status === 'open') : this.claims;
+      return [...list].sort((a, b) => (b.status === 'open') - (a.status === 'open') || Number(b.id) - Number(a.id));
+    },
+
+    get openClaimCount() {
+      return this.claims.filter((c) => c.status === 'open').length;
+    },
+
+    claimInvoice(c) {
+      return this.invoices.find((i) => Number(i.id) === Number(c.invoice_id)) || null;
+    },
+
+    openClaim(inv, { saleId = null } = {}) {
+      const lines = (inv?.lines || []).filter((l) => this.lineWithCustomer(l) > 0);
+      if (!lines.length) {
+        this.notify('Nothing on this invoice is with the customer any more.', 'error');
+        return;
+      }
+      const chosen = lines.find((l) => Number(l.id) === Number(saleId)) || lines[0];
+      this.claimDraft = {
+        kind: 'new', invoice: inv, saleId: chosen.id, qty: 1, problem: '',
+        replaceNow: true, code: '', note: '', error: '', saving: false,
+      };
+    },
+
+    // The serial list's Warranty button: the unit's invoice, its line chosen.
+    openClaimForSerial(row) {
+      const inv = this.invoices.find((i) => Number(i.id) === Number(row.invoice_id));
+      if (!inv) {
+        this.notify(`Invoice #${row.invoice_id} is not loaded.`, 'error');
+        return;
+      }
+      this.openClaim(inv, { saleId: row.sale_id });
+    },
+
+    openResolveClaim(claim) {
+      this.claimDraft = {
+        kind: 'resolve', claim, invoice: this.claimInvoice(claim), action: 'replace',
+        code: '', note: '', error: '', saving: false,
+      };
+    },
+
+    closeClaim() {
+      this.claimDraft = null;
+    },
+
+    // The lines a new claim can be made on.
+    get claimLines() {
+      return (this.claimDraft?.invoice?.lines || []).filter((l) => this.lineWithCustomer(l) > 0);
+    },
+
+    // The invoice line the dialog is about.
+    get claimLine() {
+      const d = this.claimDraft;
+      if (!d) return null;
+      const id = d.kind === 'resolve' ? d.claim.sale_id : d.saleId;
+      return (d.invoice?.lines || []).find((l) => Number(l.id) === Number(id)) || null;
+    },
+
+    get claimProduct() {
+      const name = this.claimLine?.item_name;
+      return name ? this.inventory.find((i) => i.item_name === name) || null : null;
+    },
+
+    // True when giving a replacement needs a serial scanned.
+    get claimNeedsSerial() {
+      return this.serialTracked(this.claimProduct);
+    },
+
+    // Whether the dialog, as filled in, hands something out from stock.
+    get claimGivesReplacement() {
+      const d = this.claimDraft;
+      return Boolean(d) && (d.kind === 'new' ? d.replaceNow : d.action === 'replace');
+    },
+
+    async submitClaim() {
+      const d = this.claimDraft;
+      if (!d || d.saving) return;
+      if (this.claimGivesReplacement && this.claimNeedsSerial && !String(d.code).trim()) {
+        d.error = `Scan the serial of the ${this.claimLine?.item_name || 'unit'} being given.`;
+        return;
+      }
+      d.saving = true;
+      d.error = '';
+      try {
+        const res = d.kind === 'new'
+          ? await fetch('/api/warranty-claims', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sale_id: d.saleId,
+              quantity: Number(d.qty) || 1,
+              problem: d.problem,
+              replace_now: d.replaceNow,
+              replacement_serial_no: d.replaceNow ? String(d.code).trim() : '',
+            }),
+          })
+          : await fetch(`/api/warranty-claims/${d.claim.id}/resolve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: d.action,
+              note: d.note,
+              replacement_serial_no: d.action === 'replace' ? String(d.code).trim() : '',
+            }),
+          });
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not save the claim.'));
+        const claim = await res.json();
+        this.claimDraft = null;
+        await this.loadData({ quiet: true });
+
+        // A replacement leaves with the reprinted invoice, which now names it
+        // under the original line — that is the customer's warranty slip.
+        const fresh = this.invoices.find((inv) => Number(inv.id) === Number(claim.invoice_id));
+        if (claim.status === 'replaced' && fresh) {
+          this.notify(`Claim #${claim.id}: replacement given. Print the invoice for the customer.`);
+          this.showReceipt(fresh);
+        } else {
+          this.notify(claim.status === 'open' ? `Claim #${claim.id} saved — the unit is in the shop.` : `Claim #${claim.id} settled.`);
+          if (fresh && Number(this.currentReceipt?.id) === Number(fresh.id)) this.currentReceipt = fresh;
+        }
+      } catch (err) {
+        d.error = err.message || 'Could not save the claim.';
+      } finally {
+        d.saving = false;
       }
     },
 
@@ -2635,6 +2856,12 @@ function shopApp() {
       if (e.event === 'returned') {
         return `Returned from invoice #${e.invoice_id}${e.customer_name ? `, ${e.customer_name}` : ''}${e.note ? ` — ${e.note}` : ''}`;
       }
+      const who = `invoice #${e.invoice_id}${e.customer_name ? `, ${e.customer_name}` : ''}`;
+      const note = e.note ? ` — ${e.note}` : '';
+      if (e.event === 'claimed') return `In under warranty from ${who}${note}`;
+      if (e.event === 'replacement_out') return `Given as warranty replacement on ${who} (no charge)${note}`;
+      if (e.event === 'repaired') return `Repaired, handed back on ${who}${note}`;
+      if (e.event === 'claim_rejected') return `Not covered, handed back on ${who}${note}`;
       return e.event;
     },
 
