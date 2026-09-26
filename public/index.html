@@ -116,7 +116,7 @@
                     <div class="nb-lift bg-white rounded-2xl border border-slate-200 p-4 shadow-sm hover:shadow-md hover:border-brand-300">
                         <p class="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500">Today's Sales</p>
                         <p class="mt-1.5 text-lg sm:text-2xl font-bold text-slate-900 tabular-nums" x-text="fmt(todaysRevenue)"></p>
-                        <p class="text-xs text-slate-500 mt-0.5"><span x-text="todaysSales.length"></span> invoice(s)</p>
+                        <p class="text-xs text-slate-500 mt-0.5"><span x-text="todaysSales.length"></span> invoice(s)<span x-show="todaysReturns > 0" x-cloak class="text-rose-700"> · returns −<span x-text="fmt(todaysReturns)"></span></span></p>
                     </div>
                     <div class="nb-lift bg-white rounded-2xl border border-slate-200 p-4 shadow-sm hover:shadow-md hover:border-brand-300">
                         <p class="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500">Total Revenue</p>
@@ -130,7 +130,7 @@
                         <p class="mt-1.5 text-lg sm:text-2xl font-bold tabular-nums"
                            :class="netProfit < 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(netProfit)"></p>
                         <p class="text-xs text-slate-500 mt-0.5">
-                            Sales <span x-text="fmt(profitOf(sales))"></span> − Expenses <span x-text="fmt(totalExpenses)"></span>
+                            Sales <span x-text="fmt(totalSalesProfit)"></span> − Expenses <span x-text="fmt(totalExpenses)"></span>
                         </p>
                     </div>
                     <div class="nb-lift bg-white rounded-2xl border p-4 shadow-sm hover:shadow-md"
@@ -655,6 +655,9 @@
                                                     <span class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold tabular-nums"
                                                           :class="isLowStock(item) ? 'bg-red-100 text-red-700' : 'bg-brand-100 text-brand-800'"
                                                           x-text="item.quantity"></span>
+                                                    <!-- Back from customers faulty: in the shop, not in stock. -->
+                                                    <span class="block mt-1 text-[11px] font-semibold text-red-700 whitespace-nowrap" x-show="faultyCount(item) > 0" x-cloak
+                                                          x-text="faultyCount(item) + ' faulty'"></span>
                                                 </td>
                                                 <td class="p-3 text-slate-600 text-right tabular-nums" x-text="fmt(item.cost_price)"></td>
                                                 <td class="p-3 text-slate-800 font-medium text-right tabular-nums" x-text="fmt(item.selling_price)"></td>
@@ -691,6 +694,8 @@
                                                   :class="isLowStock(item) ? 'bg-red-100 text-red-700' : 'bg-brand-100 text-brand-800'">
                                                 <span x-text="item.quantity"></span>&nbsp;in stock
                                             </span>
+                                            <span class="shrink-0 text-[11px] font-semibold text-red-700 whitespace-nowrap" x-show="faultyCount(item) > 0" x-cloak
+                                                  x-text="faultyCount(item) + ' faulty'"></span>
                                         </div>
                                         <dl class="mt-2.5 grid grid-cols-2 gap-2 text-sm">
                                             <div><dt class="text-xs text-slate-500">Buying</dt><dd class="text-slate-700 tabular-nums" x-text="fmt(item.cost_price)"></dd></div>
@@ -796,6 +801,17 @@
                                         <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Total Sold</p>
                                         <p class="text-sm sm:text-base font-bold text-brand-800 tabular-nums" x-text="fmt(rangeRevenue)"></p>
                                     </div>
+                                    <!-- Dated by the day the goods came back, not the day they were
+                                         sold, so a past day's Total Sold never changes afterwards. -->
+                                    <div>
+                                        <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Returns</p>
+                                        <p class="text-sm sm:text-base font-bold tabular-nums"
+                                           :class="rangeReturns > 0 ? 'text-rose-700' : 'text-slate-500'"
+                                           x-text="rangeReturns > 0 ? '−' + fmt(rangeReturns) : fmt(0)"></p>
+                                        <p class="text-xs text-slate-500 tabular-nums" x-show="rangeRefunds > 0" x-cloak>
+                                            Refunded <span x-text="fmt(rangeRefunds)"></span>
+                                        </p>
+                                    </div>
                                     <div>
                                         <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Profit</p>
                                         <p class="text-sm sm:text-base font-bold tabular-nums"
@@ -825,7 +841,8 @@
                                 </div>
                                 <!-- Said plainly rather than quietly understating the figure. -->
                                 <p class="mt-2 text-xs text-slate-500">
-                                    Net profit = profit on sales − expenses, over this range.
+                                    Net profit = profit on sales − profit on returns − expenses, over this range.
+                                    Returns count on the day the goods came back.
                                 </p>
                                 <p class="mt-1 text-xs text-slate-500" x-show="rangeHasUnknownCost" x-cloak>
                                     Some sales have no buying price recorded, so profit — and net profit — exclude them.
@@ -880,9 +897,20 @@
                                                           x-text="invoiceSerials(inv)"></span>
                                                     <span class="block text-xs text-slate-400" x-show="inv.lines.length > 1" x-cloak
                                                           x-text="inv.lines.length + ' items'"></span>
+                                                    <!-- What came back, line by line. -->
+                                                    <template x-for="l in inv.lines.filter((x) => x.returned_qty > 0)" :key="'rt-' + l.id">
+                                                        <span class="block text-xs font-medium text-rose-700" x-text="l.item_name + ' — ' + returnedText(l)"></span>
+                                                    </template>
                                                 </td>
                                                 <td class="p-3 text-right whitespace-nowrap">
-                                                    <span class="font-semibold text-brand-800 tabular-nums" x-text="fmt(invoiceTotal(inv))"></span>
+                                                    <!-- The net figure. The sold total stays visible, struck, once
+                                                         something has come back. -->
+                                                    <span class="block text-xs text-slate-400 line-through tabular-nums" x-show="invoiceHasReturns(inv)" x-cloak
+                                                          x-text="fmt(invoiceTotal(inv))"></span>
+                                                    <span class="font-semibold text-brand-800 tabular-nums" x-text="fmt(invoiceNet(inv))"></span>
+                                                    <span class="block text-xs text-rose-700 tabular-nums" x-show="invoiceRefunded(inv) > 0" x-cloak>
+                                                        Refunded <span x-text="fmt(invoiceRefunded(inv))"></span>
+                                                    </span>
                                                     <span class="block text-xs text-amber-700 tabular-nums" x-show="invoiceDiscount(inv) > 0" x-cloak>
                                                         −<span x-text="fmt(invoiceDiscount(inv))"></span> off
                                                     </span>
@@ -901,6 +929,8 @@
                                                                 :class="isInvoiceDue(inv) ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'">Paid</button>
                                                         <button @click="showReceipt(inv)" class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 whitespace-nowrap">Show</button>
                                                         <button @click="printReceipt(inv)" class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-brand-200 whitespace-nowrap">Print</button>
+                                                        <button @click="openReturn(inv)" x-show="!invoiceFullyReturned(inv)" x-cloak
+                                                                class="nb-press bg-amber-50 hover:bg-amber-100 text-amber-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-amber-200 whitespace-nowrap">Return</button>
                                                     </div>
                                                 </td>
                                             </tr>
@@ -926,7 +956,8 @@
                                                 <li class="flex justify-between gap-3">
                                                     <span>
                                                         <span x-text="l.item_name"></span> <span class="text-slate-400">×</span> <span class="tabular-nums" x-text="l.quantity"></span>
-                                                        <span class="block text-xs text-slate-400 tabular-nums" x-show="l.serial_no" x-cloak x-text="l.serial_no + (l.returned_date ? ' (returned)' : '')"></span>
+                                                        <span class="block text-xs text-slate-400 tabular-nums" x-show="l.serial_no" x-cloak x-text="l.serial_no"></span>
+                                                        <span class="block text-xs font-medium text-rose-700" x-show="l.returned_qty > 0" x-cloak x-text="returnedText(l)"></span>
                                                     </span>
                                                     <span class="tabular-nums text-slate-500" x-text="fmt(l.total_price)"></span>
                                                 </li>
@@ -941,7 +972,11 @@
                                                 </span>
                                             </p>
                                             <div class="text-right">
-                                                <p class="font-bold text-brand-800 tabular-nums" x-text="fmt(invoiceTotal(inv))"></p>
+                                                <p class="text-xs text-slate-400 line-through tabular-nums" x-show="invoiceHasReturns(inv)" x-cloak x-text="fmt(invoiceTotal(inv))"></p>
+                                                <p class="font-bold text-brand-800 tabular-nums" x-text="fmt(invoiceNet(inv))"></p>
+                                                <p class="text-xs text-rose-700 tabular-nums" x-show="invoiceRefunded(inv) > 0" x-cloak>
+                                                    Refunded <span x-text="fmt(invoiceRefunded(inv))"></span>
+                                                </p>
                                                 <p class="text-xs font-semibold text-red-600 tabular-nums" x-show="isInvoiceDue(inv)" x-cloak>
                                                     Due <span x-text="fmt(invoiceDue(inv))"></span>
                                                 </p>
@@ -955,6 +990,10 @@
                                                     class="nb-press col-span-2 min-h-[44px] rounded-lg text-sm font-semibold border"
                                                     :class="isInvoiceDue(inv) ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'">
                                                 Paid
+                                            </button>
+                                            <button @click="openReturn(inv)" x-show="!invoiceFullyReturned(inv)" x-cloak
+                                                    class="nb-press col-span-2 min-h-[44px] bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-lg text-sm font-semibold border border-amber-200">
+                                                Return items
                                             </button>
                                         </div>
                                     </div>
@@ -1220,6 +1259,7 @@
                                         <option value="all">All</option>
                                         <option value="available">Available</option>
                                         <option value="sold">Sold</option>
+                                        <option value="defective">Faulty</option>
                                     </select>
                                 </div>
                             </div>
@@ -1241,8 +1281,8 @@
                                                 <p class="flex flex-wrap items-center gap-2">
                                                     <span class="font-semibold text-slate-800 tabular-nums break-all" x-text="row.serial_no"></span>
                                                     <span class="rounded-full px-2 py-0.5 text-[11px] font-bold"
-                                                          :class="row.status === 'sold' ? 'bg-slate-200 text-slate-700' : 'bg-brand-100 text-brand-800'"
-                                                          x-text="row.status === 'sold' ? 'Sold' : 'Available'"></span>
+                                                          :class="row.status === 'sold' ? 'bg-slate-200 text-slate-700' : row.status === 'defective' ? 'bg-red-100 text-red-700' : 'bg-brand-100 text-brand-800'"
+                                                          x-text="row.status === 'sold' ? 'Sold' : row.status === 'defective' ? 'Faulty' : 'Available'"></span>
                                                 </p>
                                                 <p class="text-xs text-slate-500" x-text="row.item_name || '(deleted product)'"></p>
                                             </div>
@@ -1258,9 +1298,9 @@
                                             <div class="flex shrink-0 gap-2">
                                                 <button type="button" @click="openSerialHistory(row)"
                                                         class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300">History</button>
-                                                <button type="button" @click="openSerialAction(row, 'return')" x-show="row.status === 'sold'" x-cloak
+                                                <button type="button" @click="openReturnForSerial(row)" x-show="row.status === 'sold'" x-cloak
                                                         class="nb-press bg-amber-50 hover:bg-amber-100 text-amber-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-amber-200">Return</button>
-                                                <button type="button" @click="openSerialAction(row, 'remove')" x-show="row.status !== 'sold'" x-cloak
+                                                <button type="button" @click="openSerialAction(row, 'remove')" x-show="row.status === 'available'" x-cloak
                                                         class="nb-press bg-red-50 hover:bg-red-100 text-red-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-red-200">Remove</button>
                                             </div>
                                         </li>
@@ -1388,6 +1428,10 @@
                                              they hold. -->
                                         <span class="inv-item-serial" x-show="serialText(l)" x-cloak
                                               x-text="serialText(l)"></span>
+                                        <!-- A return is added below the sale, never written over it:
+                                             the line still says what was sold. -->
+                                        <span class="inv-item-serial" x-show="l.returned_qty > 0" x-cloak
+                                              x-text="returnedText(l) + ' — ' + fmtNum(l.returned_amount)"></span>
                                     </td>
                                     <td class="col-qty tabular-nums" x-text="l.quantity"></td>
                                     <td class="col-rate tabular-nums" x-text="fmtNum(unitPrice(l))"></td>
@@ -1412,16 +1456,24 @@
                     <div class="inv-split inv-footer">
                         <div>
                             <p class="inv-words-label">Invoice Amount In Words</p>
-                            <p class="inv-words-value" x-text="amountInWords(invoiceTotal(currentReceipt))"></p>
+                            <p class="inv-words-value" x-text="amountInWords(invoiceNet(currentReceipt))"></p>
                         </div>
                         <div>
                             <p class="inv-total-line">
                                 <span>Sub Total</span>
                                 <span class="tabular-nums" x-text="fmtNum(invoiceTotal(currentReceipt))"></span>
                             </p>
+                            <p class="inv-total-line" x-show="invoiceHasReturns(currentReceipt)" x-cloak>
+                                <span>Less Returns</span>
+                                <span class="tabular-nums" x-text="'−' + fmtNum(invoiceReturned(currentReceipt))"></span>
+                            </p>
                             <p class="inv-total-line is-grand">
                                 <span>Total</span>
-                                <span class="tabular-nums" x-text="fmt(invoiceTotal(currentReceipt))"></span>
+                                <span class="tabular-nums" x-text="fmt(invoiceNet(currentReceipt))"></span>
+                            </p>
+                            <p class="inv-total-line" x-show="invoiceRefunded(currentReceipt) > 0" x-cloak>
+                                <span>Refunded</span>
+                                <span class="tabular-nums" x-text="fmt(invoiceRefunded(currentReceipt))"></span>
                             </p>
                             <!-- Only on receipts that track payment; see the stamp above. -->
                             <p class="inv-total-line" x-show="invoiceTracksPayment(currentReceipt)" x-cloak>
@@ -1460,6 +1512,8 @@
             <div class="no-print mt-5 flex flex-col sm:flex-row sm:justify-end gap-2.5 sticky bottom-0 bg-white pt-1 pb-1">
                 <p class="text-xs text-slate-500 sm:mr-auto sm:self-center">To keep a PDF, choose <strong>Save as PDF</strong> as the destination.</p>
                 <button @click="closeReceipt()" class="nb-press min-h-[48px] order-2 sm:order-1 bg-slate-200 hover:bg-slate-300 text-slate-700 px-5 py-2.5 rounded-lg text-sm font-semibold">Close</button>
+                <button @click="openReturn(currentReceipt)" x-show="currentReceipt.id && !invoiceFullyReturned(currentReceipt)" x-cloak
+                        class="nb-press min-h-[48px] order-3 sm:order-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 px-5 py-2.5 rounded-lg text-sm font-semibold">Return items</button>
                 <button @click="printReceipt()" class="nb-press min-h-[48px] order-1 sm:order-2 bg-brand-700 hover:bg-brand-800 text-white px-5 py-2.5 rounded-lg text-sm font-semibold shadow">Print / Save as PDF</button>
             </div>
 
@@ -1647,7 +1701,7 @@
     </div>
 
     <!-- ================= SERIAL DIALOG =================
-         History, Return and Remove for one serial. A direct child of <body> and
+         History and Remove for one serial (Return has its own dialog). A direct child of <body> and
          no-print, for the same reasons as the product modal above. -->
     <div id="serial-modal" x-show="serialDialog" x-cloak x-transition.opacity
          class="no-print fixed inset-0 bg-brand-950/70 z-[55] flex items-center justify-center p-4 overflow-y-auto"
@@ -1678,26 +1732,6 @@
                 </div>
             </template>
 
-            <!-- Return: back on the shelf. Money is not touched — say so. -->
-            <template x-if="serialDialog?.mode === 'return'">
-                <div class="space-y-3">
-                    <p class="text-sm text-slate-700">
-                        Sold on invoice <span class="font-semibold" x-text="'#' + serialDialog.row.invoice_id"></span>
-                        to <span class="font-semibold" x-text="serialDialog.row.customer_name || 'a walk-in customer'"></span>.
-                        Returning puts this unit back in stock so it can be sold again.
-                    </p>
-                    <p class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                        This does not refund money or change the invoice total. Record any cash refund yourself.
-                    </p>
-                    <div>
-                        <label for="return-note" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Reason <span class="normal-case font-normal text-slate-400">(optional)</span></label>
-                        <input id="return-note" type="text" x-model="serialDialog.note" maxlength="200" placeholder="e.g. faulty, replaced"
-                               @keydown.enter.prevent="confirmSerialAction()"
-                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
-                    </div>
-                </div>
-            </template>
-
             <template x-if="serialDialog?.mode === 'remove'">
                 <p class="text-sm text-slate-700">
                     Remove this serial from stock? Use this for a mis-scan — a unit that never really arrived.
@@ -1712,10 +1746,122 @@
                 <button type="button" @click="closeSerialDialog()"
                         class="nb-press min-h-[44px] flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-sm font-semibold">Cancel</button>
                 <button type="button" @click="confirmSerialAction()" :disabled="serialDialog?.saving"
-                        :class="serialDialog?.mode === 'remove' ? 'bg-red-600 hover:bg-red-700' : 'bg-amber-600 hover:bg-amber-700'"
-                        class="nb-press min-h-[44px] flex-1 disabled:opacity-60 text-white rounded-lg text-sm font-semibold"
-                        x-text="serialDialog?.saving ? 'Saving…' : (serialDialog?.mode === 'remove' ? 'Remove' : 'Return to stock')"></button>
+                        class="nb-press min-h-[44px] flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white rounded-lg text-sm font-semibold"
+                        x-text="serialDialog?.saving ? 'Saving…' : 'Remove'"></button>
             </div>
+        </div>
+    </div>
+
+    <!-- ================= RETURN DIALOG =================
+         Goods coming back against one invoice. A direct child of <body> and
+         no-print, for the same reasons as the dialogs above; above the receipt
+         (z-50) because it can be opened from it. -->
+    <div id="return-modal" x-show="returnDraft" x-cloak x-transition.opacity
+         class="no-print fixed inset-0 bg-brand-950/70 z-[60] flex items-start sm:items-center justify-center p-4 overflow-y-auto"
+         role="dialog" aria-modal="true" aria-label="Return items" @keydown.escape.window="closeReturn()">
+        <div class="nb-pop bg-white w-full max-w-xl rounded-2xl shadow-2xl p-5 sm:p-6" x-show="returnDraft">
+            <div class="flex items-start justify-between gap-3 mb-3">
+                <div class="min-w-0">
+                    <h2 class="text-lg font-bold text-slate-800">Return items</h2>
+                    <p class="text-xs text-slate-500">
+                        Invoice <span class="tabular-nums font-semibold" x-text="'#' + (returnDraft?.invoice.id ?? '')"></span>
+                        · <span x-text="returnDraft?.invoice.customer_name || 'Walk-in'"></span>
+                        · <span x-text="fmtDate(returnDraft?.invoice.date)"></span>
+                    </p>
+                </div>
+                <button @click="closeReturn()" aria-label="Close"
+                        class="nb-press text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">&times;</button>
+            </div>
+
+            <template x-if="returnDraft">
+                <div class="space-y-3">
+                    <!-- Scanning a serial ticks its line, for a customer back with a
+                         box of units and no patience for a list. -->
+                    <div x-show="returnDraft.rows.some((r) => r.line.serial_no)" x-cloak>
+                        <input type="text" x-model="returnDraft.scan" @keydown.enter.prevent="scanReturnSerial()"
+                               placeholder="Scan or type a serial to tick it…" aria-label="Scan a serial to return"
+                               class="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
+                    </div>
+
+                    <ul class="divide-y divide-slate-100 rounded-xl border border-slate-200">
+                        <template x-for="row in returnDraft.rows" :key="'ret-' + row.line.id">
+                            <li class="p-3 flex flex-wrap items-center gap-x-3 gap-y-2" :class="Number(row.qty) > 0 ? 'bg-amber-50/60' : ''">
+                                <label class="flex min-w-0 flex-1 basis-52 items-start gap-2.5 cursor-pointer">
+                                    <!-- One unit left: a tick box. More: the quantity below. -->
+                                    <input type="checkbox" class="mt-1 h-4 w-4 accent-amber-600" x-show="row.left === 1"
+                                           :checked="Number(row.qty) > 0" @change="row.qty = $event.target.checked ? 1 : 0">
+                                    <span class="min-w-0">
+                                        <span class="block text-sm font-semibold text-slate-800" x-text="row.line.item_name"></span>
+                                        <span class="block text-xs text-slate-500 tabular-nums break-all" x-show="row.line.serial_no" x-text="row.line.serial_no"></span>
+                                        <span class="block text-xs text-slate-500 tabular-nums">
+                                            Sold <span x-text="row.line.quantity"></span> × <span x-text="fmt(unitPrice(row.line))"></span>
+                                            <span x-show="row.line.returned_qty > 0" x-cloak x-text="'· ' + row.line.returned_qty + ' already back'"></span>
+                                        </span>
+                                    </span>
+                                </label>
+                                <div class="flex items-center gap-2" x-show="row.left > 1">
+                                    <label class="text-xs text-slate-500" :for="'ret-qty-' + row.line.id">Qty</label>
+                                    <input type="number" min="0" :max="row.left" step="1" inputmode="numeric" :id="'ret-qty-' + row.line.id"
+                                           x-model.number="row.qty"
+                                           class="w-20 p-2 border border-slate-300 rounded-lg text-base sm:text-sm tabular-nums focus:ring-2 focus:ring-brand-500 outline-none">
+                                    <span class="text-xs text-slate-500 tabular-nums" x-text="'of ' + row.left"></span>
+                                </div>
+                                <div class="flex items-center gap-2" x-show="Number(row.qty) > 0" x-cloak>
+                                    <select x-model="row.condition" aria-label="Condition"
+                                            class="p-2 border border-slate-300 rounded-lg bg-white text-base sm:text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                                        <option value="good">Good — back to stock</option>
+                                        <option value="faulty">Faulty — not for sale</option>
+                                    </select>
+                                    <span class="text-sm font-semibold text-rose-700 tabular-nums" x-text="'−' + fmt(returnRowAmount(row))"></span>
+                                </div>
+                            </li>
+                        </template>
+                    </ul>
+
+                    <div>
+                        <label for="return-reason" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Reason <span class="normal-case font-normal text-slate-400">(optional)</span></label>
+                        <input id="return-reason" type="text" x-model="returnDraft.reason" maxlength="200" placeholder="e.g. changed mind, wrong model, not working"
+                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
+                    </div>
+
+                    <!-- Worked out, not typed: the customer gets back what they paid
+                         beyond the new total. With money still due, the due goes down first. -->
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+                        <div>
+                            <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Returned</p>
+                            <p class="text-sm font-bold text-rose-700 tabular-nums" x-text="fmt(returnAmount)"></p>
+                        </div>
+                        <div>
+                            <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">New total</p>
+                            <p class="text-sm font-bold text-slate-800 tabular-nums" x-text="fmt(returnNewNet)"></p>
+                        </div>
+                        <div>
+                            <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Refund</p>
+                            <p class="text-sm font-bold tabular-nums" :class="returnRefund > 0 ? 'text-amber-700' : 'text-slate-500'" x-text="fmt(returnRefund)"></p>
+                        </div>
+                        <div>
+                            <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Still due</p>
+                            <p class="text-sm font-bold tabular-nums" :class="returnNewDue > 0 ? 'text-red-600' : 'text-slate-500'" x-text="fmt(returnNewDue)"></p>
+                        </div>
+                    </div>
+                    <p class="text-xs text-slate-500" x-show="returnChosen.length" x-cloak>
+                        <span x-show="returnRefund > 0">Give <strong x-text="fmt(returnRefund)"></strong> back to the customer.</span>
+                        <span x-show="returnRefund <= 0">No cash goes back — the amount comes off what is still due.</span>
+                        Good items go back into stock; faulty ones are kept aside, not for sale.
+                    </p>
+
+                    <p class="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
+                       x-show="returnDraft.error" x-cloak x-text="returnDraft.error"></p>
+
+                    <div class="flex gap-2.5 pt-1">
+                        <button type="button" @click="closeReturn()"
+                                class="nb-press min-h-[44px] flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-sm font-semibold">Cancel</button>
+                        <button type="button" @click="submitReturn()" :disabled="returnDraft.saving || !returnChosen.length"
+                                class="nb-press min-h-[44px] flex-1 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white rounded-lg text-sm font-semibold"
+                                x-text="returnDraft.saving ? 'Saving…' : 'Record return'"></button>
+                    </div>
+                </div>
+            </template>
         </div>
     </div>
 

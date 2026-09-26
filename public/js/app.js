@@ -222,16 +222,43 @@ function sameCode(a, b) {
 
    A line that references no known invoice cannot occur after migration, but if
    one ever did it would silently vanish from the history — so it is shown as an
-   invoice of its own instead. */
-function buildInvoices(invoices, lines) {
+   invoice of its own instead.
+
+   Returns are hung on the same walk: each invoice gets its `returns` (each
+   with its own `lines`), and each sale line the `returned_qty` and
+   `returned_amount` that came back against it, so no total below has to
+   search the returns again. */
+function buildInvoices(invoices, lines, returns = [], returnLines = []) {
   const byId = new Map();
-  for (const inv of invoices) byId.set(Number(inv.id), { ...inv, key: `i${inv.id}`, lines: [] });
+  for (const inv of invoices) byId.set(Number(inv.id), { ...inv, key: `i${inv.id}`, lines: [], returns: [] });
+
+  const returnsById = new Map();
+  for (const r of returns) {
+    const ret = { ...r, lines: [] };
+    returnsById.set(Number(r.id), ret);
+    byId.get(Number(r.invoice_id))?.returns.push(ret);
+  }
+  const backBySale = new Map();
+  for (const rl of returnLines) {
+    const ret = returnsById.get(Number(rl.return_id));
+    if (!ret) continue;
+    ret.lines.push(rl);
+    const back = backBySale.get(Number(rl.sale_id)) || { qty: 0, amount: 0 };
+    back.qty += Number(rl.quantity || 0);
+    back.amount += Number(rl.amount || 0);
+    backBySale.set(Number(rl.sale_id), back);
+  }
+  for (const line of lines) {
+    const back = backBySale.get(Number(line.id));
+    line.returned_qty = back ? back.qty : 0;
+    line.returned_amount = back ? back.amount : 0;
+  }
 
   const orphans = [];
   for (const line of lines) {
     const inv = byId.get(Number(line.invoice_id));
     if (inv) inv.lines.push(line);
-    else orphans.push({ ...line, key: `o${line.id}`, lines: [line] });
+    else orphans.push({ ...line, key: `o${line.id}`, lines: [line], returns: [] });
   }
 
   const byLine = (a, b) => (Number(a.line_no) || 0) - (Number(b.line_no) || 0) || Number(a.id) - Number(b.id);
@@ -358,6 +385,13 @@ function shopApp() {
     cartSeq: 0,
     // Invoices with their lines attached — see buildInvoices().
     invoices: [],
+    // Returns as the server sends them, flat. buildInvoices() also hangs each
+    // on its invoice; these copies are for the date-range totals.
+    returns: [],
+    returnLines: [],
+    /* The Return dialog: { invoice, rows, reason, scan, error, saving } or null.
+       Each row is one invoice line: { line, left, qty, condition }. */
+    returnDraft: null,
     dealer: blankDealer(),
     savingSale: false,
     savingDealer: false,
@@ -399,7 +433,8 @@ function shopApp() {
     serialTotal: 0,
     serialLoading: false,
     serialLoaded: false,
-    // History / return / remove dialog: { mode, row, events, note, error, saving, loading }.
+    // History / remove dialog: { mode, row, events, note, error, saving, loading }.
+    // Return opens the invoice's Return dialog instead — see openReturnForSerial().
     serialDialog: null,
 
     // Expenses — the form panel, the list, and the edit dialog.
@@ -435,7 +470,7 @@ function shopApp() {
     /* Recording a payment against an invoice already issued. `paymentDraft`
        holds a copy, never the live invoice — see openPayment(). */
     isPaymentOpen: false,
-    paymentDraft: { id: null, total: 0, paid_amount: '' },
+    paymentDraft: { id: null, total: 0, refunded: 0, paid_amount: '' },
     paymentError: '',
     savingPayment: false,
 
@@ -765,20 +800,88 @@ function shopApp() {
       return this.invoices.filter((inv) => inv.date === t);
     },
 
+    // Today's sales less today's returns, whichever day those were sold.
     get todaysRevenue() {
-      return this.todaysSales.reduce((sum, inv) => sum + this.invoiceTotal(inv), 0);
+      return this.todaysSales.reduce((sum, inv) => sum + this.invoiceTotal(inv), 0) - this.todaysReturns;
+    },
+
+    get todaysReturns() {
+      const t = todayLocal();
+      const today = new Set(this.returns.filter((r) => r.date === t).map((r) => Number(r.id)));
+      return this.returnLines
+        .filter((rl) => today.has(Number(rl.return_id)))
+        .reduce((sum, rl) => sum + Number(rl.amount || 0), 0);
     },
 
     /* ----------------------------------------------------------- invoices */
 
+    // What the lines came to when sold — the receipt's Sub Total. Returns never
+    // change it; they are taken off below it, as invoiceNet().
     invoiceTotal(inv) {
       return (inv?.lines || []).reduce((sum, l) => sum + Number(l.total_price || 0), 0);
     },
 
-    // Profit on the lines whose cost is known; null when none of them are.
+    /* ------------------------------------------------------------ returns
+
+       One definition of an invoice's money after returns, mirrored by
+       invoiceMoney() on the server:
+         net  = sold − returned
+         paid = handed over − refunded
+         due  = net − paid */
+
+    invoiceReturned(inv) {
+      return (inv?.lines || []).reduce((sum, l) => sum + Number(l.returned_amount || 0), 0);
+    },
+
+    invoiceRefunded(inv) {
+      return (inv?.returns || []).reduce((sum, r) => sum + Number(r.refund_amount || 0), 0);
+    },
+
+    invoiceHasReturns(inv) {
+      return (inv?.returns || []).length > 0;
+    },
+
+    invoiceNet(inv) {
+      return this.invoiceTotal(inv) - this.invoiceReturned(inv);
+    },
+
+    // Units on a line not yet returned.
+    lineLeft(l) {
+      return Number(l.quantity || 0) - Number(l.returned_qty || 0);
+    },
+
+    // Nothing left to return: every unit on every line came back.
+    invoiceFullyReturned(inv) {
+      return (inv?.lines || []).every((l) => this.lineLeft(l) <= 0);
+    },
+
+    // The profit a return takes back: what that share of the line earned. Null
+    // when the line's cost is unknown, since its profit was never counted.
+    returnLineProfit(rl) {
+      if (rl?.cost_price == null || rl.cost_price === '') return null;
+      const cost = Number(rl.cost_price);
+      if (!Number.isFinite(cost)) return null;
+      return Number(rl.amount || 0) - cost * Number(rl.quantity || 0);
+    },
+
+    returnProfitOf(rows) {
+      return rows.reduce((sum, rl) => sum + (this.returnLineProfit(rl) ?? 0), 0);
+    },
+
+    // "Returned 8" under a line on the receipt and in the history.
+    returnedText(l) {
+      const n = Number(l?.returned_qty || 0);
+      if (!n) return '';
+      return n >= Number(l.quantity || 0) ? 'Returned' : `Returned ${n} of ${l.quantity}`;
+    },
+
+    // Profit on the lines whose cost is known, less what returns took back;
+    // null when none of the lines are costed.
     invoiceProfit(inv) {
       const known = (inv?.lines || []).map((l) => this.saleProfit(l)).filter((p) => p !== null);
-      return known.length ? known.reduce((a, b) => a + b, 0) : null;
+      if (!known.length) return null;
+      const back = (inv.returns || []).reduce((sum, r) => sum + this.returnProfitOf(r.lines), 0);
+      return known.reduce((a, b) => a + b, 0) - back;
     },
 
     invoiceDiscount(inv) {
@@ -795,12 +898,19 @@ function shopApp() {
       return inv?.paid_amount !== null && inv?.paid_amount !== undefined;
     },
 
-    invoicePaid(inv) {
+    // Everything the customer has handed over, refunds not taken off. This is
+    // what paid_amount stores, and what the payment endpoint takes.
+    invoicePaidIn(inv) {
       return this.invoiceTracksPayment(inv) ? Number(inv.paid_amount) : this.invoiceTotal(inv);
     },
 
+    // What the shop has kept: paid in, less refunds.
+    invoicePaid(inv) {
+      return this.invoicePaidIn(inv) - this.invoiceRefunded(inv);
+    },
+
     invoiceDue(inv) {
-      return Math.max(0, this.invoiceTotal(inv) - this.invoicePaid(inv));
+      return Math.max(0, this.invoiceNet(inv) - this.invoicePaid(inv));
     },
 
     // Same epsilon as the server's validatePaidAmount: a total summed from
@@ -829,7 +939,8 @@ function shopApp() {
     },
 
     get totalRevenue() {
-      return this.sales.reduce((sum, s) => sum + Number(s.total_price || 0), 0);
+      return this.sales.reduce((sum, s) => sum + Number(s.total_price || 0), 0)
+        - this.returnLines.reduce((sum, rl) => sum + Number(rl.amount || 0), 0);
     },
 
     get dealerSpend() {
@@ -914,25 +1025,51 @@ function shopApp() {
     // or serial on the invoice — "who bought the ONU modem last week?" has to
     // work, and so does a customer turning up with a dead fan and its serial.
     get filteredInvoices() {
+      return this.invoices.filter((inv) => this.inDateRange(inv) && this.matchesSaleFilters(inv));
+    },
+
+    // The search box and the Due / Paid chips — everything but the dates, so
+    // returns can be matched by their own date and still follow the rest.
+    matchesSaleFilters(inv) {
+      // The Due / Paid chips. Left out of the search box on purpose: typing
+      // "due" should still find a customer's note that says so.
+      if (this.saleStatus === 'due' && !this.isInvoiceDue(inv)) return false;
+      if (this.saleStatus === 'paid' && this.isInvoiceDue(inv)) return false;
       const q = this.saleSearch.trim().toLowerCase();
-      return this.invoices.filter((inv) => {
-        if (!this.inDateRange(inv)) return false;
-        // The Due / Paid chips. Left out of the search box on purpose: typing
-        // "due" should still find a customer's note that says so.
-        if (this.saleStatus === 'due' && !this.isInvoiceDue(inv)) return false;
-        if (this.saleStatus === 'paid' && this.isInvoiceDue(inv)) return false;
-        if (!q) return true;
-        const hay = [inv.id, inv.customer_name || 'Walk-in', inv.customer_contact, inv.comment]
-          .map((v) => String(v ?? '').toLowerCase());
-        return (
-          hay.some((v) => v.includes(q)) ||
-          inv.lines.some(
-            (l) =>
-              (l.item_name || '').toLowerCase().includes(q) ||
-              String(l.serial_no || '').toLowerCase().includes(q)
-          )
-        );
-      });
+      if (!q) return true;
+      const hay = [inv.id, inv.customer_name || 'Walk-in', inv.customer_contact, inv.comment]
+        .map((v) => String(v ?? '').toLowerCase());
+      return (
+        hay.some((v) => v.includes(q)) ||
+        inv.lines.some(
+          (l) =>
+            (l.item_name || '').toLowerCase().includes(q) ||
+            String(l.serial_no || '').toLowerCase().includes(q)
+        )
+      );
+    },
+
+    /* Returns made inside the date range, dated by the day the goods came back
+       rather than the day they were sold. That is what keeps a past day's
+       figures from changing: yesterday's sale stays yesterday's, and today
+       shows the return — even when that takes today below zero, which is
+       then what really happened at the counter. */
+    get filteredReturns() {
+      return this.invoices
+        .filter((inv) => inv.returns.length && this.matchesSaleFilters(inv))
+        .flatMap((inv) => inv.returns.filter((r) => this.inDateRange(r)));
+    },
+
+    get rangeReturns() {
+      return this.filteredReturns.reduce((sum, r) => sum + r.lines.reduce((s, rl) => s + Number(rl.amount || 0), 0), 0);
+    },
+
+    get rangeRefunds() {
+      return this.filteredReturns.reduce((sum, r) => sum + Number(r.refund_amount || 0), 0);
+    },
+
+    get rangeNetSales() {
+      return this.rangeRevenue - this.rangeReturns;
     },
 
     get visibleInvoices() {
@@ -949,8 +1086,9 @@ function shopApp() {
       return this.filteredLines.reduce((sum, l) => sum + Number(l.total_price || 0), 0);
     },
 
+    // Less the profit on anything returned in the range — see filteredReturns.
     get rangeProfit() {
-      return this.profitOf(this.filteredLines);
+      return this.profitOf(this.filteredLines) - this.filteredReturns.reduce((sum, r) => sum + this.returnProfitOf(r.lines), 0);
     },
 
     get rangeDiscount() {
@@ -1039,7 +1177,12 @@ function shopApp() {
     },
 
     get netProfit() {
-      return this.profitOf(this.sales) - this.totalExpenses;
+      return this.totalSalesProfit - this.totalExpenses;
+    },
+
+    // Profit on every sale ever, less what returns took back.
+    get totalSalesProfit() {
+      return this.profitOf(this.sales) - this.returnProfitOf(this.returnLines);
     },
 
     // Softly flags a head that sounds like stock buying, which belongs in Dealer
@@ -1110,6 +1253,9 @@ function shopApp() {
       this.loginPassword = '';
       this.sales = [];
       this.invoices = [];
+      this.returns = [];
+      this.returnLines = [];
+      this.returnDraft = null;
       this.inventory = [];
       this.purchases = [];
       this.expenses = [];
@@ -1166,7 +1312,9 @@ function shopApp() {
         if (!res.ok) throw new Error(data.error || 'Could not load shop data.');
         this.inventory = data.inventory || [];
         this.sales = data.sales || [];
-        this.invoices = buildInvoices(data.invoices || [], this.sales);
+        this.returns = data.returns || [];
+        this.returnLines = data.return_lines || [];
+        this.invoices = buildInvoices(data.invoices || [], this.sales, this.returns, this.returnLines);
         this.purchases = data.purchases || [];
         this.expenses = data.expenses || [];
         // A sale or a return changes serial statuses too.
@@ -1557,6 +1705,12 @@ function shopApp() {
       return Number(item?.track_serial) === 1;
     },
 
+    // Units back from customers faulty — kept, but not in stock. Counted from
+    // the serials for a tracked product, from defective_quantity otherwise.
+    faultyCount(item) {
+      return this.serialTracked(item) ? Number(item?.defective_serials || 0) : Number(item?.defective_quantity || 0);
+    },
+
     /* Sale form: the scanned serial names one unit on the invoice.
 
        Asked of the server, not guessed from the page: whether a unit is in
@@ -1619,6 +1773,10 @@ function shopApp() {
         if (found.status === 'sold') {
           const who = [found.customer_name, found.sold_date && this.fmtDate(found.sold_date)].filter(Boolean).join(', ');
           this.scanFailed(`${found.serial_no} was already sold — invoice #${found.invoice_id}${who ? `, ${who}` : ''}.`);
+          return;
+        }
+        if (found.status === 'defective') {
+          this.scanFailed(`${found.serial_no} came back faulty and is not for sale.`);
           return;
         }
         const product = this.inventory.find((i) => Number(i.id) === Number(found.product_id));
@@ -1941,13 +2099,20 @@ function shopApp() {
        history table as the shopkeeper types, and cancelling would leave the
        typed figure sitting in a list it was never saved to. The total is
        snapshotted alongside so the dialog can show the due without re-walking the
-       lines on every keystroke. */
+       lines on every keystroke.
+
+       After a return the dialog speaks in what the customer now owes and has
+       kept paid — the net total, refunds already taken off — because that is
+       what the shopkeeper is looking at on the receipt. `refunded` is added back
+       on save, since paid_amount stores everything handed over. */
     openPayment(inv) {
+      const cents = (n) => Math.round(n * 100) / 100;
       this.paymentDraft = {
         id: inv.id,
         customer_name: inv.customer_name,
-        total: this.invoiceTotal(inv),
-        paid_amount: this.invoiceTracksPayment(inv) ? Number(inv.paid_amount) : this.invoiceTotal(inv),
+        total: cents(this.invoiceNet(inv)),
+        refunded: this.invoiceRefunded(inv),
+        paid_amount: cents(this.invoicePaid(inv)),
       };
       this.paymentError = '';
       this.isPaymentOpen = true;
@@ -1977,7 +2142,11 @@ function shopApp() {
         const res = await fetch(`/api/invoices/${this.paymentDraft.id}/payment`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ paid_amount: this.paymentDraft.paid_amount }),
+          body: JSON.stringify({
+            paid_amount: String(this.paymentDraft.paid_amount).trim() === ''
+              ? ''
+              : Number(this.paymentDraft.paid_amount) + Number(this.paymentDraft.refunded || 0),
+          }),
         });
         // Left open on failure so the reason is readable where it was typed.
         if (!res.ok) {
@@ -2002,6 +2171,142 @@ function shopApp() {
         this.paymentError = 'Connection error. Try again.';
       } finally {
         this.savingPayment = false;
+      }
+    },
+
+    /* -------------------------------------------- return against an invoice
+
+       Goods coming back, full or part. The dialog lists each line with
+       something left to return; a line of one unit (every serial line is one)
+       is a tick box, any other a quantity. The refund is not typed: it is
+       whatever the customer has paid beyond the invoice's new total, worked
+       out here to show and again on the server, which is the one that counts. */
+
+    openReturn(inv, { saleId = null } = {}) {
+      const rows = (inv?.lines || [])
+        .map((line) => ({
+          line,
+          left: this.lineLeft(line),
+          qty: saleId != null && Number(line.id) === Number(saleId) ? 1 : 0,
+          condition: 'good',
+        }))
+        .filter((r) => r.left > 0);
+      if (!rows.length) {
+        this.notify('Everything on this invoice has already come back.', 'error');
+        return;
+      }
+      this.returnDraft = { invoice: inv, rows, reason: '', scan: '', error: '', saving: false };
+    },
+
+    // The serial list's Return button: the unit's invoice, that line ticked.
+    openReturnForSerial(row) {
+      const inv = this.invoices.find((i) => Number(i.id) === Number(row.invoice_id));
+      if (!inv) {
+        this.notify(`Invoice #${row.invoice_id} is not loaded.`, 'error');
+        return;
+      }
+      this.openReturn(inv, { saleId: row.sale_id });
+    },
+
+    closeReturn() {
+      this.returnDraft = null;
+    },
+
+    // What this row gives back. The last units take whatever of the line's
+    // price is left, exactly as recordReturn() does on the server.
+    returnRowAmount(row) {
+      const qty = Number(row.qty) || 0;
+      if (qty <= 0) return 0;
+      const price = Number(row.line.total_price || 0);
+      const amount = qty >= row.left
+        ? price - Number(row.line.returned_amount || 0)
+        : (price * qty) / Number(row.line.quantity || 1);
+      return Math.round(amount * 100) / 100;
+    },
+
+    get returnAmount() {
+      return (this.returnDraft?.rows || []).reduce((sum, r) => sum + this.returnRowAmount(r), 0);
+    },
+
+    get returnNewNet() {
+      return this.returnDraft ? this.invoiceNet(this.returnDraft.invoice) - this.returnAmount : 0;
+    },
+
+    get returnRefund() {
+      if (!this.returnDraft) return 0;
+      const over = Math.round((this.invoicePaid(this.returnDraft.invoice) - this.returnNewNet) * 100) / 100;
+      return over > PAID_EPSILON ? over : 0;
+    },
+
+    get returnNewDue() {
+      if (!this.returnDraft) return 0;
+      const kept = this.invoicePaid(this.returnDraft.invoice) - this.returnRefund;
+      return Math.max(0, this.returnNewNet - kept);
+    },
+
+    get returnChosen() {
+      return (this.returnDraft?.rows || []).filter((r) => Number(r.qty) > 0);
+    },
+
+    // A serial scanned into the dialog ticks its line.
+    scanReturnSerial() {
+      const dlg = this.returnDraft;
+      const code = String(dlg?.scan || '').trim();
+      if (!dlg || !code) return;
+      dlg.scan = '';
+      const row = dlg.rows.find((r) => sameCode(r.line.serial_no, code));
+      if (!row) {
+        dlg.error = `${code} is not on invoice #${dlg.invoice.id}, or it already came back.`;
+        return;
+      }
+      dlg.error = '';
+      row.qty = 1;
+    },
+
+    async submitReturn() {
+      const dlg = this.returnDraft;
+      if (!dlg || dlg.saving) return;
+      const chosen = this.returnChosen;
+      if (!chosen.length) {
+        dlg.error = 'Tick or enter what came back.';
+        return;
+      }
+      const bad = chosen.find((r) => !Number.isInteger(Number(r.qty)) || Number(r.qty) > r.left);
+      if (bad) {
+        dlg.error = `${bad.line.item_name}: return a whole number, at most ${bad.left}.`;
+        return;
+      }
+      dlg.saving = true;
+      dlg.error = '';
+      try {
+        const res = await fetch(`/api/invoices/${dlg.invoice.id}/returns`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reason: dlg.reason,
+            lines: chosen.map((r) => ({ sale_id: r.line.id, quantity: Number(r.qty), condition: r.condition })),
+          }),
+        });
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not record the return.'));
+        const out = await res.json();
+        const id = dlg.invoice.id;
+        this.returnDraft = null;
+        this.notify(
+          Number(out.refund_amount) > 0
+            ? `Return recorded. Give ${this.fmt(out.refund_amount)} back to the customer.`
+            : 'Return recorded.'
+        );
+        await this.loadData({ quiet: true });
+        // The receipt behind this dialog holds the invoice from before the
+        // reload; swap in the fresh one so it shows the return straight away.
+        if (Number(this.currentReceipt?.id) === Number(id)) {
+          const fresh = this.invoices.find((inv) => Number(inv.id) === Number(id));
+          if (fresh) this.currentReceipt = fresh;
+        }
+      } catch (err) {
+        dlg.error = err.message || 'Could not record the return.';
+      } finally {
+        dlg.saving = false;
       }
     },
 
@@ -2117,7 +2422,9 @@ function shopApp() {
           this.scanFailed(
             found.status === 'sold'
               ? `${found.serial_no} was already sold — invoice #${found.invoice_id}.`
-              : `${found.serial_no} is already in stock for ${found.item_name || 'another product'}.`
+              : found.status === 'defective'
+                ? `${found.serial_no} is registered to ${found.item_name || 'another product'} as faulty.`
+                : `${found.serial_no} is already in stock for ${found.item_name || 'another product'}.`
           );
           return;
         }
@@ -2331,26 +2638,16 @@ function shopApp() {
       return e.event;
     },
 
-    // Return (a sold unit back into stock) or Remove (a mis-scan taken out).
+    // Remove: a mis-scan taken out. (Return has its own dialog — openReturn().)
     async confirmSerialAction() {
       const dlg = this.serialDialog;
       if (!dlg || dlg.saving) return;
       dlg.saving = true;
       dlg.error = '';
       try {
-        if (dlg.mode === 'return') {
-          const res = await fetch(`/api/serials/${dlg.row.id}/return`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ note: dlg.note }),
-          });
-          if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not record the return.'));
-          this.notify(`${dlg.row.serial_no} is back in stock. Record any cash refund yourself.`);
-        } else {
-          const res = await fetch(`/api/serials/${dlg.row.id}`, { method: 'DELETE' });
-          if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not remove the serial.'));
-          this.notify(`${dlg.row.serial_no} removed from stock.`);
-        }
+        const res = await fetch(`/api/serials/${dlg.row.id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not remove the serial.'));
+        this.notify(`${dlg.row.serial_no} removed from stock.`);
         this.serialDialog = null;
         await this.loadData({ quiet: true });
       } catch (err) {

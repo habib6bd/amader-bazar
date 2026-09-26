@@ -263,6 +263,13 @@ async function migrate() {
   await run(`CREATE INDEX IF NOT EXISTS idx_serial_product ON product_serials(product_id, status)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_serial_events ON serial_events(serial_id)`);
 
+  /* Faulty units of goods that carry no serial: back from a customer, not
+     sellable, and not counted in `quantity`. A serial-tracked product keeps
+     the same fact on each unit instead (status 'defective'). */
+  await addColumnIfMissing('inventory', 'defective_quantity', 'INTEGER NOT NULL DEFAULT 0');
+  await run(`CREATE INDEX IF NOT EXISTS idx_returns_invoice ON returns(invoice_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_return_lines_sale ON return_lines(sale_id)`);
+
   await linkLegacySales();
 }
 
@@ -346,7 +353,7 @@ async function linkLegacySales() {
    need, since each awaited statement completes before the next is issued. */
 /* Bump whenever setup() or migrate() gains a step. A database already at this
    version skips the whole migration on boot. */
-const SCHEMA_VERSION = '2026-09-23-serial-stock';
+const SCHEMA_VERSION = '2026-09-26-returns';
 
 // One read instead of ~20 statements, several of which take a write lock even
 // when they end up changing nothing. On Vercel every cold start runs this, each
@@ -385,7 +392,8 @@ async function setup() {
     barcode TEXT,
     warranty_months INTEGER NOT NULL DEFAULT 0,
     track_serial INTEGER NOT NULL DEFAULT 0,
-    pre_serial_quantity INTEGER
+    pre_serial_quantity INTEGER,
+    defective_quantity INTEGER NOT NULL DEFAULT 0
   )`);
 
   // `sale_time` rather than `time`, because TIME is an SQL function name.
@@ -457,9 +465,10 @@ async function setup() {
 
   /* One row per physical unit of a serial-tracked product.
 
-     status is 'available' or 'sold'. A return puts a unit back to 'available'
-     rather than inventing a third state, because a returned unit is on the
-     shelf and sellable — anything else about it lives in serial_events.
+     status is 'available' (on the shelf, counted in stock), 'sold' (with a
+     customer) or 'defective' (back from a customer faulty — in the shop but
+     not sellable). A return in good condition goes back to 'available'.
+     Everything else about a unit lives in serial_events.
 
      purchase_id is the dealer batch it arrived on, NULL when it was scanned in
      from the product screen (stock the shop already had). sale_id/invoice_id
@@ -487,6 +496,42 @@ async function setup() {
     invoice_id INTEGER,
     purchase_id INTEGER,
     note TEXT
+  )`);
+
+  /* Goods coming back from a customer. A return never edits the invoice it
+     came from — the receipt was handed over and must keep meaning what it
+     said. It is a dated record of its own that points back at it, which is
+     what lets a return reduce the sales of the day it happened on while the
+     invoice itself shows what was sold and what came back.
+
+     refund_amount is the cash handed back. It is worked out, not typed: the
+     customer is refunded exactly what they have paid beyond the invoice's
+     new total, so a return on an invoice with money still due reduces the
+     due first. See recordReturn(). */
+  await run(`CREATE TABLE IF NOT EXISTS returns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    time TEXT,
+    reason TEXT,
+    refund_amount REAL NOT NULL DEFAULT 0
+  )`);
+
+  // One row per invoice line coming back. amount is this share of the line's
+  // price and cost_price is copied from the line, so the profit reversed is
+  // exactly the profit the sale recorded. condition is 'good' (back to stock)
+  // or 'faulty' (defective, not sellable).
+  await run(`CREATE TABLE IF NOT EXISTS return_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    return_id INTEGER NOT NULL,
+    sale_id INTEGER NOT NULL,
+    item_name TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    cost_price REAL,
+    serial_id INTEGER,
+    serial_no TEXT,
+    condition TEXT NOT NULL
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS admin (
@@ -755,16 +800,23 @@ app.get('/api/data', async (req, res) => {
     // The destructure order must match the Promise.all order exactly; getting it
     // wrong is the one silent way to break this — inventory would arrive as
     // expenses and every figure on the dashboard would be nonsense.
-    const [inventory, invoices, sales, purchases, expenses] = await Promise.all([
-      all('SELECT * FROM inventory ORDER BY item_name COLLATE NOCASE'),
+    const [inventory, invoices, sales, purchases, expenses, returns, returnLines] = await Promise.all([
+      // defective_serials is the faulty count of a serial-tracked product, the
+      // counterpart of defective_quantity for goods without serials.
+      all(`SELECT i.*,
+                  (SELECT COUNT(*) FROM product_serials ps
+                    WHERE ps.product_id = i.id AND ps.status = 'defective') AS defective_serials
+             FROM inventory i ORDER BY i.item_name COLLATE NOCASE`),
       all('SELECT * FROM invoices ORDER BY id DESC'),
       // `sales` are invoice lines; ordered so each invoice's lines arrive in
       // the serial order they were entered.
       all('SELECT * FROM sales ORDER BY invoice_id DESC, line_no, id'),
       all('SELECT * FROM dealer_purchases ORDER BY id DESC'),
       all('SELECT * FROM expenses ORDER BY date DESC, id DESC'),
+      all('SELECT * FROM returns ORDER BY id'),
+      all('SELECT * FROM return_lines ORDER BY id'),
     ]);
-    res.json({ inventory, invoices, sales, purchases, expenses });
+    res.json({ inventory, invoices, sales, purchases, expenses, returns, return_lines: returnLines });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -882,6 +934,9 @@ function serialClash(found, product, { forSale }) {
   if (found.status === 'sold') {
     const who = found.customer_name ? `, ${found.customer_name}` : '';
     return `${code} was already sold — invoice #${found.invoice_id}${who}. Return it first to sell it again.`;
+  }
+  if (found.status === 'defective') {
+    return `${code} came back faulty and is not for sale.`;
   }
   return forSale ? null : `${code} is already in stock for ${product.item_name}.`;
 }
@@ -1343,8 +1398,13 @@ app.delete('/api/serials/:id', async (req, res) => {
     const product = await inWriteTx(async (q) => {
       const unit = await q.get(`SELECT * FROM product_serials WHERE id = ?`, [id]);
       if (!unit) throw new Refusal(404, 'That serial is not registered.');
-      if (unit.status !== 'available') {
+      if (unit.status === 'sold') {
         throw new Refusal(409, `${unit.serial_no} has been sold. Use Return to bring it back into stock.`);
+      }
+      // Remove is for a mis-scan. A faulty unit really exists, and has a sale
+      // and a return behind it that its history must keep.
+      if (unit.status !== 'available') {
+        throw new Refusal(409, `${unit.serial_no} came back faulty, so it has history. It cannot be removed.`);
       }
 
       if (unit.purchase_id) {
@@ -1410,7 +1470,7 @@ app.get('/api/serials', async (req, res) => {
     where.push(`ps.product_id = ?`);
     args.push(Number(req.query.product_id));
   }
-  if (['available', 'sold'].includes(req.query.status)) {
+  if (['available', 'sold', 'defective'].includes(req.query.status)) {
     where.push(`ps.status = ?`);
     args.push(req.query.status);
   }
@@ -1461,13 +1521,166 @@ app.get('/api/serials/:id/history', async (req, res) => {
   }
 });
 
-/* API: A customer brings a unit back.
+/* ===========================================================================
+   Returns
 
-   The unit goes back on the shelf and can be sold again. Its sale line is
-   marked returned rather than removed: the receipt was handed over, and the
-   Invoice No. on it has to keep meaning what it meant. Money is deliberately
-   not touched here — whether the customer got cash back, a replacement or
-   nothing is the shop's decision, and any refund is recorded by the shop. */
+   Goods coming back from a customer, full or partial, with or without a
+   serial. One return is one dated record against one invoice, carrying every
+   line that came back and the cash handed over the counter for it. The
+   invoice itself is never edited — see the returns table in setup().
+   =========================================================================== */
+
+const round2 = (n) => Math.round(n * 100) / 100;
+
+/* An invoice's money after any returns, in the one shape the client mirrors
+   (invoiceNet / invoicePaid / invoiceDue in app.js):
+
+     net  = what the lines came to, less what came back
+     paid = what the customer has handed over, less what was refunded
+
+   A NULL paid_amount is an invoice from before dues were tracked, read as
+   settled in full — the same reading the client gives it. */
+async function invoiceMoney(q, invoiceId) {
+  const inv = await q.get(`SELECT paid_amount FROM invoices WHERE id = ?`, [invoiceId]);
+  if (!inv) return null;
+  const sold = await q.get(`SELECT COALESCE(SUM(total_price), 0) AS n FROM sales WHERE invoice_id = ?`, [invoiceId]);
+  const back = await q.get(
+    `SELECT COALESCE(SUM(rl.amount), 0) AS n FROM return_lines rl JOIN returns r ON r.id = rl.return_id WHERE r.invoice_id = ?`,
+    [invoiceId]
+  );
+  const refunds = await q.get(`SELECT COALESCE(SUM(refund_amount), 0) AS n FROM returns WHERE invoice_id = ?`, [invoiceId]);
+
+  const gross = Number(sold.n);
+  const refunded = Number(refunds.n);
+  const paidIn = inv.paid_amount == null ? gross : Number(inv.paid_amount);
+  return { gross, refunded, net: gross - Number(back.n), paid: paidIn - refunded };
+}
+
+/* Records one return against `invoiceId`, inside the caller's transaction.
+   `lines` is [{ sale_id, quantity, condition }]. Returns { id, refund_amount }.
+
+   Per line, in the same breath as the return row:
+     - a unit with a serial goes back to 'available' (good) or 'defective'
+       (faulty), is unlinked from the sale, and gets a history event;
+     - goods without one go back into quantity (good) or defective_quantity
+       (faulty) on the product of the same name — the same exact-name match
+       the sale used to take them out.
+
+   Nothing here can return more than was sold: each line's earlier returns are
+   read inside the same write transaction, so two returns racing each other
+   cannot both take the last unit. */
+async function recordReturn(q, invoiceId, rawLines, reason) {
+  if (!Array.isArray(rawLines) || rawLines.length === 0) throw new Refusal(400, 'Choose at least one item to return.');
+  if (rawLines.length > 100) throw new Refusal(400, 'A return can have at most 100 lines.');
+
+  const money = await invoiceMoney(q, invoiceId);
+  if (!money) throw new Refusal(404, 'That invoice no longer exists.');
+
+  const lines = [];
+  const seen = new Set();
+  for (const raw of rawLines) {
+    const saleId = Number(raw?.sale_id);
+    const quantity = Number(raw?.quantity);
+    const condition = raw?.condition === 'faulty' ? 'faulty' : raw?.condition === 'good' ? 'good' : null;
+    if (!Number.isInteger(saleId) || seen.has(saleId)) throw new Refusal(400, 'Each item can be listed once per return.');
+    seen.add(saleId);
+
+    const line = await q.get(`SELECT * FROM sales WHERE id = ? AND invoice_id = ?`, [saleId, invoiceId]);
+    if (!line) throw new Refusal(400, `That item is not on invoice #${invoiceId}.`);
+    if (!condition) throw new Refusal(400, `${line.item_name}: say whether it came back good or faulty.`);
+
+    const prev = await q.get(
+      `SELECT COALESCE(SUM(quantity), 0) AS qty, COALESCE(SUM(amount), 0) AS amount FROM return_lines WHERE sale_id = ?`,
+      [saleId]
+    );
+    const left = Number(line.quantity) - Number(prev.qty);
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      throw new Refusal(400, `${line.item_name}: quantity must be a whole number, one or more.`);
+    }
+    if (quantity > left) {
+      throw new Refusal(
+        409,
+        left > 0
+          ? `${line.item_name}: only ${left} of ${line.quantity} is left to return.`
+          : `${line.item_name}: all ${line.quantity} already came back.`
+      );
+    }
+
+    // The last units take whatever of the line's price is left, so rounding
+    // on earlier partial returns can never leave a paisa stranded on it.
+    const amount = quantity === left
+      ? round2(Number(line.total_price) - Number(prev.amount))
+      : round2((Number(line.total_price) * quantity) / Number(line.quantity));
+
+    lines.push({ line, quantity, condition, amount, fullyBack: quantity === left });
+  }
+
+  // The customer gets back exactly what they have paid beyond the new total:
+  // a fully paid invoice refunds the returned amount, one with money still
+  // due has the due reduced first.
+  const newNet = money.net - lines.reduce((sum, l) => sum + l.amount, 0);
+  const over = round2(money.paid - newNet);
+  const refund = over > PAID_EPSILON ? over : 0;
+
+  const date = todayLocal();
+  const r = await q.run(
+    `INSERT INTO returns (invoice_id, date, time, reason, refund_amount) VALUES (?, ?, ?, ?, ?)`,
+    [invoiceId, date, nowLocalTime(), reason, refund]
+  );
+  const returnId = r.lastID;
+
+  for (const { line, quantity, condition, amount, fullyBack } of lines) {
+    // The unit sold on this line, if it carries a serial the shop tracks.
+    const unit = await q.get(`SELECT * FROM product_serials WHERE sale_id = ? AND status = 'sold'`, [line.id]);
+
+    await q.run(
+      `INSERT INTO return_lines (return_id, sale_id, item_name, quantity, amount, cost_price, serial_id, serial_no, condition)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [returnId, line.id, line.item_name, quantity, amount, line.cost_price, unit?.id ?? null, unit?.serial_no ?? line.serial_no ?? null, condition]
+    );
+
+    if (unit) {
+      await q.run(
+        `UPDATE product_serials SET status = ?, sale_id = NULL, invoice_id = NULL WHERE id = ?`,
+        [condition === 'good' ? 'available' : 'defective', unit.id]
+      );
+      const note = [condition === 'faulty' ? 'Faulty' : null, reason].filter(Boolean).join(' — ') || null;
+      await logSerialEvent(q, { serial_id: unit.id, event: 'returned', invoice_id: invoiceId, note });
+      await syncSerialStock(q, unit.product_id);
+    } else {
+      // track_serial = 0 only: a tracked product's stock is counted from its
+      // serials, so adding to it by hand would be undone at the next count.
+      await q.run(
+        condition === 'good'
+          ? `UPDATE inventory SET quantity = quantity + ? WHERE item_name = ? AND track_serial = 0`
+          : `UPDATE inventory SET defective_quantity = defective_quantity + ? WHERE item_name = ? AND track_serial = 0`,
+        [quantity, line.item_name]
+      );
+    }
+
+    // Kept for the "(returned)" labels, which predate partial returns.
+    if (fullyBack) await q.run(`UPDATE sales SET returned_date = ? WHERE id = ?`, [date, line.id]);
+  }
+
+  return { id: returnId, refund_amount: refund };
+}
+
+// API: Record a return against an invoice — any lines, any quantities.
+app.post('/api/invoices/:id/returns', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid invoice.' });
+  const reason = String(req.body?.reason ?? '').trim().slice(0, 200) || null;
+  try {
+    const out = await inWriteTx((q) => recordReturn(q, id, req.body?.lines, reason));
+    res.json(out);
+  } catch (err) {
+    sendFailure(res, err);
+  }
+});
+
+/* API: One sold unit back, in good condition — what the serial list's Return
+   button posted before returns had a dialog of their own. Kept so a page
+   cached from then still records a proper return, refund and all. */
 app.post('/api/serials/:id/return', async (req, res) => {
   const id = Number(req.params.id);
   const note = String(req.body?.note ?? '').trim().slice(0, 200) || null;
@@ -1475,14 +1688,10 @@ app.post('/api/serials/:id/return', async (req, res) => {
     const product = await inWriteTx(async (q) => {
       const unit = await q.get(`SELECT * FROM product_serials WHERE id = ?`, [id]);
       if (!unit) throw new Refusal(404, 'That serial is not registered.');
-      if (unit.status !== 'sold') throw new Refusal(409, `${unit.serial_no} is already in stock — there is nothing to return.`);
+      if (unit.status !== 'sold') throw new Refusal(409, `${unit.serial_no} is not sold — there is nothing to return.`);
+      if (!unit.sale_id || !unit.invoice_id) throw new Refusal(409, `${unit.serial_no} is not linked to an invoice line.`);
 
-      if (unit.sale_id) {
-        await q.run(`UPDATE sales SET returned_date = ? WHERE id = ?`, [todayLocal(), unit.sale_id]);
-      }
-      await q.run(`UPDATE product_serials SET status = 'available', sale_id = NULL, invoice_id = NULL WHERE id = ?`, [id]);
-      await logSerialEvent(q, { serial_id: id, event: 'returned', invoice_id: unit.invoice_id, note });
-      await syncSerialStock(q, unit.product_id);
+      await recordReturn(q, unit.invoice_id, [{ sale_id: unit.sale_id, quantity: 1, condition: 'good' }], note);
       return q.get(`SELECT * FROM inventory WHERE id = ?`, [unit.product_id]);
     });
     res.json({ success: true, product: product ?? null });
@@ -1683,8 +1892,12 @@ app.put('/api/inventory/:id', async (req, res) => {
         sql: `UPDATE dealer_purchases SET item_name = ? WHERE item_name = ?`,
         args: [item.item_name, oldName],
       });
+      const r = await tx.execute({
+        sql: `UPDATE return_lines SET item_name = ? WHERE item_name = ?`,
+        args: [item.item_name, oldName],
+      });
       await tx.commit();
-      res.json({ success: true, renamed: s.rowsAffected + p.rowsAffected });
+      res.json({ success: true, renamed: s.rowsAffected + p.rowsAffected + r.rowsAffected });
     } catch (txErr) {
       await tx.rollback().catch(() => {});
       throw txErr;
@@ -1832,15 +2045,17 @@ app.put('/api/invoices/:id/payment', async (req, res) => {
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid invoice.' });
 
   try {
-    const invoice = await get(`SELECT id FROM invoices WHERE id = ?`, [id]);
-    if (!invoice) return res.status(404).json({ error: 'That invoice no longer exists.' });
+    // Summed from the lines and returns, never taken from the request: the
+    // client's idea of the total is exactly what the ceiling below has to be
+    // checked against.
+    const money = await invoiceMoney({ get }, id);
+    if (!money) return res.status(404).json({ error: 'That invoice no longer exists.' });
 
-    // Summed from the lines, never taken from the request: the client's idea of
-    // the total is exactly what the ceiling below has to be checked against.
-    const row = await get(`SELECT SUM(total_price) AS total FROM sales WHERE invoice_id = ?`, [id]);
-    const total = Number(row?.total || 0);
-
-    const { error, paid_amount } = validatePaidAmount(req.body?.paid_amount, total);
+    /* paid_amount is everything the customer has handed over, refunds not
+       taken off — so after a return its ceiling is the new total plus what
+       was already given back. The client sends it on that footing. */
+    const ceiling = money.net + money.refunded;
+    const { error, paid_amount } = validatePaidAmount(req.body?.paid_amount, ceiling);
     if (error) return res.status(400).json({ error });
 
     await run(`UPDATE invoices SET paid_amount = ? WHERE id = ?`, [paid_amount, id]);
