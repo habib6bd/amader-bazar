@@ -33,16 +33,16 @@ function rangeFor(preset) {
 
   if (preset === 'today') return { from: iso(d), to: iso(d) };
 
-  if (preset === 'week') {
-    // Week starts Saturday, as the Bangladeshi working week does.
+  // Rolling windows, today included, whatever the day of the week or month:
+  // This Week is the last 7 days and This Month the last 30.
+  const lastDays = (n) => {
     const start = new Date(d);
-    start.setDate(d.getDate() - ((d.getDay() + 1) % 7));
+    start.setDate(d.getDate() - (n - 1));
     return { from: iso(start), to: iso(d) };
-  }
+  };
 
-  if (preset === 'month') {
-    return { from: iso(new Date(d.getFullYear(), d.getMonth(), 1)), to: iso(d) };
-  }
+  if (preset === 'week') return lastDays(7);
+  if (preset === 'month') return lastDays(30);
 
   return { from: '', to: '' }; // 'all'
 }
@@ -726,7 +726,8 @@ function shopApp() {
        highlight claiming a range that is not on screen. Deriving it also gets
        the nice case right: type today's date into both boxes by hand and Today
        lights up, because it is today's range. '' means a custom range, where
-       no button is highlighted and rangeLabel spells the dates out. */
+       no button is highlighted and rangeLabel spells the dates out. The
+       presets are 1, 7 and 30 days long, so no two ever share a range. */
     get activePreset() {
       if (!this.dateFrom && !this.dateTo) return 'all';
       for (const preset of ['today', 'week', 'month']) {
