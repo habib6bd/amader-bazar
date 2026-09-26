@@ -123,7 +123,7 @@ function writeSession(active) {
    shopkeeper settles on survives a refresh. Purely cosmetic: losing it costs
    nothing, which is why every access is wrapped rather than guarded. */
 const SECTIONS_KEY = 'shop-sections';
-const DEFAULT_SECTIONS = { products: true, serials: true, sales: true, warranty: true, expenses: true, purchases: true };
+const DEFAULT_SECTIONS = { products: true, serials: true, sales: true, warranty: true, faulty: true, expenses: true, purchases: true };
 
 function readSections() {
   try {
@@ -385,6 +385,7 @@ function shopApp() {
     productsOpen: readSections().products,
     salesOpen: readSections().sales,
     warrantyOpen: readSections().warranty,
+    faultyOpen: readSections().faulty,
     expensesOpen: readSections().expenses,
     purchasesOpen: readSections().purchases,
 
@@ -412,6 +413,16 @@ function shopApp() {
     claimDraft: null,
     // Warranty section: every claim, or only the open ones.
     claimFilter: 'open',
+    // Faulty stock moved on by hand, and the serials now faulty or at the
+    // supplier — see the stock_movements table in server.js.
+    movements: [],
+    faultyUnits: [],
+    /* The faulty-stock dialog: { row, to, qty, party, note, newSerial,
+       productId, error, saving } or null. `row` is a faultyQueue entry, or
+       null when marking shelf stock faulty, where productId picks the product. */
+    moveDraft: null,
+    // Faulty section: show every move made, not just the queue.
+    showMoves: false,
     dealer: blankDealer(),
     savingSale: false,
     savingDealer: false,
@@ -999,6 +1010,7 @@ function shopApp() {
         serials: this.serialsOpen,
         sales: this.salesOpen,
         warranty: this.warrantyOpen,
+        faulty: this.faultyOpen,
         expenses: this.expensesOpen,
         purchases: this.purchasesOpen,
       });
@@ -1180,7 +1192,23 @@ function shopApp() {
     // understatement rangeProfit carries when a sale has no cost snapshot,
     // which is why the same warning is shown beside it.
     get rangeNetProfit() {
-      return this.rangeProfit - this.rangeExpenses;
+      return this.rangeProfit - this.rangeExpenses - this.rangeWriteOffs;
+    },
+
+    // What a move cost the shop: only a write-off does, at the buying price
+    // snapshotted on the move. Anything else is stock changing place.
+    movementLoss(m) {
+      if (m?.to_state !== 'written_off' || m.cost_price == null || m.cost_price === '') return 0;
+      return Number(m.cost_price) * Number(m.quantity || 0);
+    },
+
+    // Stock written off in the range, on the day it was written off.
+    get rangeWriteOffs() {
+      return this.movements.filter((m) => this.inDateRange(m)).reduce((sum, m) => sum + this.movementLoss(m), 0);
+    },
+
+    get totalWriteOffs() {
+      return this.movements.reduce((sum, m) => sum + this.movementLoss(m), 0);
     },
 
     // Where the money went, over the range — biggest head first.
@@ -1201,7 +1229,7 @@ function shopApp() {
     },
 
     get netProfit() {
-      return this.totalSalesProfit - this.totalExpenses;
+      return this.totalSalesProfit - this.totalExpenses - this.totalWriteOffs;
     },
 
     // Profit on every sale ever, less what returns took back.
@@ -1282,6 +1310,9 @@ function shopApp() {
       this.returnDraft = null;
       this.claims = [];
       this.claimDraft = null;
+      this.movements = [];
+      this.faultyUnits = [];
+      this.moveDraft = null;
       this.inventory = [];
       this.purchases = [];
       this.expenses = [];
@@ -1341,6 +1372,8 @@ function shopApp() {
         this.returns = data.returns || [];
         this.returnLines = data.return_lines || [];
         this.claims = data.warranty_claims || [];
+        this.movements = data.stock_movements || [];
+        this.faultyUnits = data.faulty_units || [];
         this.invoices = buildInvoices(data.invoices || [], this.sales, this.returns, this.returnLines, this.claims);
         this.purchases = data.purchases || [];
         this.expenses = data.expenses || [];
@@ -1803,8 +1836,14 @@ function shopApp() {
           this.scanFailed(`${found.serial_no} was already sold — invoice #${found.invoice_id}${who ? `, ${who}` : ''}.`);
           return;
         }
-        if (found.status === 'defective') {
-          this.scanFailed(`${found.serial_no} came back faulty and is not for sale.`);
+        if (found.status !== 'available') {
+          const where = {
+            defective: 'is faulty and kept aside',
+            at_supplier: 'is at the supplier',
+            written_off: 'was written off',
+            exchanged: 'was exchanged by the supplier',
+          }[found.status] || 'is not in stock';
+          this.scanFailed(`${found.serial_no} ${where} — not for sale.`);
           return;
         }
         const product = this.inventory.find((i) => Number(i.id) === Number(found.product_id));
@@ -2531,6 +2570,171 @@ function shopApp() {
       }
     },
 
+    /* -------------------------------------------------------- faulty stock
+
+       Everything kept aside or away at the supplier, one row per serial and
+       one per product-and-state for goods without serials. The moves out of
+       it are POST /api/stock-movements; only a write-off costs money. */
+
+    serialStatusLabel(status) {
+      return {
+        available: 'Available', sold: 'Sold', defective: 'Faulty', at_supplier: 'At supplier',
+        written_off: 'Written off', exchanged: 'Exchanged',
+      }[status] || status;
+    },
+
+    serialBadgeClass(status) {
+      return {
+        available: 'bg-brand-100 text-brand-800',
+        sold: 'bg-slate-200 text-slate-700',
+        defective: 'bg-red-100 text-red-700',
+        at_supplier: 'bg-indigo-100 text-indigo-700',
+      }[status] || 'bg-slate-100 text-slate-500';
+    },
+
+    // Units at the supplier: serials plus the count of goods without them.
+    supplierCount(item) {
+      return Number(item?.supplier_serials || 0) + Number(item?.supplier_quantity || 0);
+    },
+
+    get faultyQueue() {
+      const state = { defective: 'defective', at_supplier: 'supplier' };
+      const rows = this.faultyUnits.map((u) => ({
+        key: `s${u.id}`, serialId: u.id, serial_no: u.serial_no, item_name: u.item_name || '(deleted product)',
+        productId: u.product_id, state: state[u.status], qty: 1, since: u.since,
+      }));
+      for (const item of this.inventory) {
+        if (Number(item.defective_quantity) > 0) {
+          rows.push({ key: `d${item.id}`, productId: item.id, item_name: item.item_name, state: 'defective', qty: Number(item.defective_quantity) });
+        }
+        if (Number(item.supplier_quantity) > 0) {
+          rows.push({ key: `p${item.id}`, productId: item.id, item_name: item.item_name, state: 'supplier', qty: Number(item.supplier_quantity) });
+        }
+      }
+      // Faulty in the shop first — that is where a decision is waiting.
+      return rows.sort((a, b) => (a.state === 'supplier') - (b.state === 'supplier') || a.item_name.localeCompare(b.item_name));
+    },
+
+    // The queue row's buying price, for the write-off confirmation.
+    queueCost(row) {
+      return Number(this.inventory.find((i) => Number(i.id) === Number(row?.productId))?.cost_price || 0);
+    },
+
+    // Newest first, for the list of moves.
+    get recentMoves() {
+      return [...this.movements].reverse();
+    },
+
+    moveStateLabel(state) {
+      return { stock: 'Stock', defective: 'Faulty', supplier: 'At supplier', written_off: 'Written off' }[state] || state;
+    },
+
+    // What a move is called on its button and in the dialog title.
+    moveActionLabel(from, to) {
+      return {
+        'stock>defective': 'Mark faulty',
+        'defective>supplier': 'Send to supplier',
+        'defective>stock': 'Fixed — back to stock',
+        'supplier>stock': 'Back from supplier',
+        'supplier>defective': 'Back, still faulty',
+        'defective>written_off': 'Write off',
+        'supplier>written_off': 'Write off',
+      }[`${from}>${to}`] || 'Move';
+    },
+
+    // Suppliers the shop has bought from, for the Send to supplier box.
+    get supplierNames() {
+      return [...new Set(this.purchases.map((p) => String(p.dealer_name || '').trim()).filter(Boolean))].sort();
+    },
+
+    openMove(row, to) {
+      this.moveDraft = {
+        row, to, qty: row ? row.qty : 1, party: '', note: '', newSerial: '', exchange: false,
+        productId: '', error: '', saving: false,
+      };
+    },
+
+    // Marking shelf stock faulty: a serial from the serial list, or a count of
+    // goods without serials picked in the dialog.
+    openMarkFaulty(serialRow = null) {
+      const row = serialRow
+        ? { key: `s${serialRow.id}`, serialId: serialRow.id, serial_no: serialRow.serial_no, item_name: serialRow.item_name,
+          productId: serialRow.product_id, state: 'stock', qty: 1 }
+        : null;
+      this.openMove(row, 'defective');
+      if (!row) this.moveDraft.qty = 1;
+    },
+
+    closeMove() {
+      this.moveDraft = null;
+    },
+
+    // Products that can have shelf stock marked faulty by count.
+    get markableProducts() {
+      return this.inventory.filter((i) => !this.serialTracked(i) && Number(i.quantity) > 0);
+    },
+
+    // The state the dialog moves from.
+    get moveFrom() {
+      return this.moveDraft?.row ? this.moveDraft.row.state : 'stock';
+    },
+
+    // Most units this move can take: the row's count, or the product's stock.
+    get moveMax() {
+      const d = this.moveDraft;
+      if (!d) return 0;
+      if (d.row) return d.row.qty;
+      return Number(this.inventory.find((i) => String(i.id) === String(d.productId))?.quantity || 0);
+    },
+
+    get moveLoss() {
+      const d = this.moveDraft;
+      if (!d || d.to !== 'written_off') return 0;
+      return this.queueCost(d.row) * (Number(d.qty) || 0);
+    },
+
+    async submitMove() {
+      const d = this.moveDraft;
+      if (!d || d.saving) return;
+      const serialId = d.row?.serialId;
+      const productId = d.row ? d.row.productId : d.productId;
+      const qty = Number(d.qty);
+      if (!serialId) {
+        if (!productId) {
+          d.error = 'Choose the product.';
+          return;
+        }
+        if (!Number.isInteger(qty) || qty < 1 || qty > this.moveMax) {
+          d.error = `Enter a whole number from 1 to ${this.moveMax}.`;
+          return;
+        }
+      }
+      if (d.exchange && !String(d.newSerial).trim()) {
+        d.error = 'Scan the serial of the unit the supplier gave.';
+        return;
+      }
+      d.saving = true;
+      d.error = '';
+      try {
+        const res = await fetch('/api/stock-movements', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(serialId
+            ? { serial_id: serialId, to_state: d.to, party: d.party, note: d.note, new_serial_no: d.exchange ? String(d.newSerial).trim() : '' }
+            : { product_id: productId, from_state: this.moveFrom, to_state: d.to, quantity: qty, party: d.party, note: d.note }),
+        });
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not save the move.'));
+        const label = this.moveActionLabel(this.moveFrom, d.to);
+        this.moveDraft = null;
+        this.notify(`${label}: done.`);
+        await this.loadData({ quiet: true });
+      } catch (err) {
+        d.error = err.message || 'Could not save the move.';
+      } finally {
+        d.saving = false;
+      }
+    },
+
     /* ------------------------------------------------------- product manager */
 
     openAddProduct(prefill = {}) {
@@ -2643,9 +2847,9 @@ function shopApp() {
           this.scanFailed(
             found.status === 'sold'
               ? `${found.serial_no} was already sold — invoice #${found.invoice_id}.`
-              : found.status === 'defective'
-                ? `${found.serial_no} is registered to ${found.item_name || 'another product'} as faulty.`
-                : `${found.serial_no} is already in stock for ${found.item_name || 'another product'}.`
+              : found.status === 'available'
+                ? `${found.serial_no} is already in stock for ${found.item_name || 'another product'}.`
+                : `${found.serial_no} is already registered to ${found.item_name || 'another product'}.`
           );
           return;
         }
@@ -2862,6 +3066,16 @@ function shopApp() {
       if (e.event === 'replacement_out') return `Given as warranty replacement on ${who} (no charge)${note}`;
       if (e.event === 'repaired') return `Repaired, handed back on ${who}${note}`;
       if (e.event === 'claim_rejected') return `Not covered, handed back on ${who}${note}`;
+      const plain = {
+        marked_faulty: 'Marked faulty in the shop',
+        sent_to_supplier: 'Sent to supplier',
+        fixed_in_shop: 'Fixed in the shop — back in stock',
+        back_from_supplier: 'Back from supplier — in stock',
+        back_from_supplier_faulty: 'Back from supplier, still faulty',
+        written_off: 'Written off',
+        exchanged: 'Exchanged by the supplier',
+      }[e.event];
+      if (plain) return plain + note;
       return e.event;
     },
 

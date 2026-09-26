@@ -275,6 +275,10 @@ async function migrate() {
   await addColumnIfMissing('product_serials', 'claim_id', 'INTEGER');
   await run(`CREATE INDEX IF NOT EXISTS idx_claims_sale ON warranty_claims(sale_id)`);
 
+  // Goods without serials sent to the supplier for repair — the counterpart
+  // of a serial's 'at_supplier' status. Not in stock, not lost.
+  await addColumnIfMissing('inventory', 'supplier_quantity', 'INTEGER NOT NULL DEFAULT 0');
+
   await linkLegacySales();
 }
 
@@ -358,7 +362,7 @@ async function linkLegacySales() {
    need, since each awaited statement completes before the next is issued. */
 /* Bump whenever setup() or migrate() gains a step. A database already at this
    version skips the whole migration on boot. */
-const SCHEMA_VERSION = '2026-09-26-warranty';
+const SCHEMA_VERSION = '2026-09-27-stock-moves';
 
 // One read instead of ~20 statements, several of which take a write lock even
 // when they end up changing nothing. On Vercel every cold start runs this, each
@@ -398,7 +402,8 @@ async function setup() {
     warranty_months INTEGER NOT NULL DEFAULT 0,
     track_serial INTEGER NOT NULL DEFAULT 0,
     pre_serial_quantity INTEGER,
-    defective_quantity INTEGER NOT NULL DEFAULT 0
+    defective_quantity INTEGER NOT NULL DEFAULT 0,
+    supplier_quantity INTEGER NOT NULL DEFAULT 0
   )`);
 
   // `sale_time` rather than `time`, because TIME is an SQL function name.
@@ -471,9 +476,11 @@ async function setup() {
   /* One row per physical unit of a serial-tracked product.
 
      status is 'available' (on the shelf, counted in stock), 'sold' (with a
-     customer) or 'defective' (back from a customer faulty — in the shop but
-     not sellable). A return in good condition goes back to 'available'.
-     Everything else about a unit lives in serial_events.
+     customer), 'defective' (faulty — in the shop but not sellable),
+     'at_supplier' (sent to the dealer for repair), 'written_off' (a loss) or
+     'exchanged' (the supplier gave a different unit in its place). Only
+     'available' counts as stock. Everything else about a unit lives in
+     serial_events; the moves between the last four are in stock_movements.
 
      purchase_id is the dealer batch it arrived on, NULL when it was scanned in
      from the product screen (stock the shop already had). sale_id/invoice_id
@@ -570,6 +577,31 @@ async function setup() {
     resolved_date TEXT,
     resolved_time TEXT,
     resolution_note TEXT
+  )`);
+
+  /* Faulty stock moving on: kept aside, sent to the supplier, back into stock,
+     or written off. One row per move, for serials (serial_id, quantity 1) and
+     for goods without them (quantity n). Returns and warranty claims record
+     their own moves in their own tables; these are the ones made by hand.
+
+     States: 'stock' | 'defective' | 'supplier' | 'written_off'. A move to
+     'written_off' is the one place stock becomes a loss, valued at cost_price —
+     the product's buying price when it was written off — on the day it
+     happened. party is the supplier a unit was sent to. */
+  await run(`CREATE TABLE IF NOT EXISTS stock_movements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER,
+    item_name TEXT NOT NULL,
+    serial_id INTEGER,
+    serial_no TEXT,
+    quantity INTEGER NOT NULL,
+    from_state TEXT NOT NULL,
+    to_state TEXT NOT NULL,
+    cost_price REAL,
+    party TEXT,
+    note TEXT,
+    date TEXT NOT NULL,
+    time TEXT
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS admin (
@@ -838,12 +870,14 @@ app.get('/api/data', async (req, res) => {
     // The destructure order must match the Promise.all order exactly; getting it
     // wrong is the one silent way to break this — inventory would arrive as
     // expenses and every figure on the dashboard would be nonsense.
-    const [inventory, invoices, sales, purchases, expenses, returns, returnLines, claims] = await Promise.all([
+    const [inventory, invoices, sales, purchases, expenses, returns, returnLines, claims, movements, faultyUnits] = await Promise.all([
       // defective_serials is the faulty count of a serial-tracked product, the
       // counterpart of defective_quantity for goods without serials.
       all(`SELECT i.*,
                   (SELECT COUNT(*) FROM product_serials ps
-                    WHERE ps.product_id = i.id AND ps.status = 'defective') AS defective_serials
+                    WHERE ps.product_id = i.id AND ps.status = 'defective') AS defective_serials,
+                  (SELECT COUNT(*) FROM product_serials ps
+                    WHERE ps.product_id = i.id AND ps.status = 'at_supplier') AS supplier_serials
              FROM inventory i ORDER BY i.item_name COLLATE NOCASE`),
       all('SELECT * FROM invoices ORDER BY id DESC'),
       // `sales` are invoice lines; ordered so each invoice's lines arrive in
@@ -854,8 +888,19 @@ app.get('/api/data', async (req, res) => {
       all('SELECT * FROM returns ORDER BY id'),
       all('SELECT * FROM return_lines ORDER BY id'),
       all('SELECT * FROM warranty_claims ORDER BY id'),
+      all('SELECT * FROM stock_movements ORDER BY id'),
+      // The faulty queue's serials. Few by nature — a unit leaves the queue
+      // once it is back in stock or written off — so shipped whole.
+      all(`SELECT ps.id, ps.serial_no, ps.status, ps.product_id, i.item_name,
+                  (SELECT e.date FROM serial_events e WHERE e.serial_id = ps.id ORDER BY e.id DESC LIMIT 1) AS since
+             FROM product_serials ps LEFT JOIN inventory i ON i.id = ps.product_id
+            WHERE ps.status IN ('defective', 'at_supplier')
+            ORDER BY ps.id`),
     ]);
-    res.json({ inventory, invoices, sales, purchases, expenses, returns, return_lines: returnLines, warranty_claims: claims });
+    res.json({
+      inventory, invoices, sales, purchases, expenses, returns,
+      return_lines: returnLines, warranty_claims: claims, stock_movements: movements, faulty_units: faultyUnits,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -962,6 +1007,14 @@ async function findSerial(q, code) {
   );
 }
 
+// How a unit that is neither on the shelf nor sold is described to the shop.
+const SERIAL_STATUS_TEXT = {
+  defective: 'faulty and kept aside',
+  at_supplier: 'at the supplier for repair',
+  written_off: 'written off',
+  exchanged: 'exchanged by the supplier for another unit',
+};
+
 /* Why this serial cannot be taken in / sold as `product`, or null if it can.
    Worded for the person holding the scanner, not for a log. */
 function serialClash(found, product, { forSale }) {
@@ -974,8 +1027,8 @@ function serialClash(found, product, { forSale }) {
     const who = found.customer_name ? `, ${found.customer_name}` : '';
     return `${code} was already sold — invoice #${found.invoice_id}${who}. Return it first to sell it again.`;
   }
-  if (found.status === 'defective') {
-    return `${code} came back faulty and is not for sale.`;
+  if (found.status !== 'available') {
+    return `${code} is ${SERIAL_STATUS_TEXT[found.status] || found.status}, not in stock.`;
   }
   return forSale ? null : `${code} is already in stock for ${product.item_name}.`;
 }
@@ -1443,7 +1496,7 @@ app.delete('/api/serials/:id', async (req, res) => {
       // Remove is for a mis-scan. A faulty unit really exists, and has a sale
       // and a return behind it that its history must keep.
       if (unit.status !== 'available') {
-        throw new Refusal(409, `${unit.serial_no} came back faulty, so it has history. It cannot be removed.`);
+        throw new Refusal(409, `${unit.serial_no} is ${SERIAL_STATUS_TEXT[unit.status] || unit.status}, so it has history. It cannot be removed.`);
       }
 
       if (unit.purchase_id) {
@@ -1509,7 +1562,7 @@ app.get('/api/serials', async (req, res) => {
     where.push(`ps.product_id = ?`);
     args.push(Number(req.query.product_id));
   }
-  if (['available', 'sold', 'defective'].includes(req.query.status)) {
+  if (['available', 'sold', 'defective', 'at_supplier', 'written_off', 'exchanged'].includes(req.query.status)) {
     where.push(`ps.status = ?`);
     args.push(req.query.status);
   }
@@ -1974,6 +2027,127 @@ app.post('/api/warranty-claims/:id/resolve', async (req, res) => {
 });
 
 /* ===========================================================================
+   Faulty stock
+
+   Where a faulty unit goes after it is kept aside: to the supplier, back into
+   stock, or written off. A unit on the shelf can also be marked faulty —
+   dropped, damaged in the shop. Each move is one stock_movements row; see the
+   table in setup().
+   =========================================================================== */
+
+// A serial's status for each state, and back.
+const STATE_STATUS = { stock: 'available', defective: 'defective', supplier: 'at_supplier', written_off: 'written_off' };
+const STATUS_STATE = { available: 'stock', defective: 'defective', at_supplier: 'supplier' };
+
+// The moves the shop can make, and the serial event each one writes.
+const MOVES = {
+  'stock>defective': 'marked_faulty',
+  'defective>supplier': 'sent_to_supplier',
+  'defective>stock': 'fixed_in_shop',
+  'defective>written_off': 'written_off',
+  'supplier>stock': 'back_from_supplier',
+  'supplier>defective': 'back_from_supplier_faulty',
+  'supplier>written_off': 'written_off',
+};
+
+// The inventory column holding each state's count, for goods without serials.
+const STATE_COLUMN = { stock: 'quantity', defective: 'defective_quantity', supplier: 'supplier_quantity' };
+
+/* API: Move faulty stock on.
+
+   Body, for a serial:  { serial_id, to_state, party?, note?, new_serial_no? }
+   Body, for goods without serials:
+                        { product_id, from_state, to_state, quantity, party?, note? }
+
+   new_serial_no is for a supplier that sends back a different unit: the new
+   one is received into stock and the old one is marked 'exchanged', which is
+   not a loss — the shop is whole again. */
+app.post('/api/stock-movements', async (req, res) => {
+  const body = req.body || {};
+  const to = String(body.to_state ?? '');
+  const party = String(body.party ?? '').trim().slice(0, 80) || null;
+  const note = String(body.note ?? '').trim().slice(0, 200) || null;
+  const newCode = String(body.new_serial_no ?? '').trim() || null;
+  try {
+    const movement = await inWriteTx(async (q) => {
+      let product;
+      let from;
+      let quantity = 1;
+      let unit = null;
+
+      if (body.serial_id != null) {
+        unit = await q.get(`SELECT * FROM product_serials WHERE id = ?`, [Number(body.serial_id)]);
+        if (!unit) throw new Refusal(404, 'That serial is not registered.');
+        from = STATUS_STATE[unit.status];
+        if (!from) throw new Refusal(409, `${unit.serial_no} is ${unit.status === 'sold' ? 'with a customer' : SERIAL_STATUS_TEXT[unit.status] || unit.status}.`);
+        product = await q.get(`SELECT * FROM inventory WHERE id = ?`, [unit.product_id]);
+      } else {
+        product = await q.get(`SELECT * FROM inventory WHERE id = ?`, [Number(body.product_id)]);
+        if (!product) throw new Refusal(404, 'That product no longer exists.');
+        from = String(body.from_state ?? '');
+        quantity = Number(body.quantity);
+        if (!Number.isInteger(quantity) || quantity < 1) throw new Refusal(400, 'Quantity must be a whole number, one or more.');
+        // A tracked product's stock is its serials; moving a count in or out of
+        // it by hand would be undone at the next count.
+        if (Number(product.track_serial) === 1 && (from === 'stock' || to === 'stock')) {
+          throw new Refusal(400, `${product.item_name} is serial-tracked — move the unit by its serial.`);
+        }
+      }
+
+      const key = `${from}>${to}`;
+      if (!MOVES[key]) throw new Refusal(400, 'That move is not allowed.');
+      if (newCode && key !== 'supplier>stock') throw new Refusal(400, 'A new serial only comes with a unit back from the supplier.');
+      const itemName = product?.item_name || unit?.item_name || '(deleted product)';
+
+      if (unit) {
+        if (newCode) {
+          if (!product) throw new Refusal(409, 'The product this unit belongs to no longer exists.');
+          if (!SERIAL_PATTERN.test(newCode)) throw new Refusal(400, `Serial must be ${SERIAL_RULE}.`);
+          await refuseProductBarcode(q, newCode);
+          const taken = await findSerial(q, newCode);
+          if (taken) throw new Refusal(409, `${taken.serial_no} is already registered to ${taken.item_name || 'another product'}.`);
+          await registerSerial(q, product, newCode, { note: `From the supplier in place of ${unit.serial_no}` });
+          await q.run(`UPDATE product_serials SET status = 'exchanged' WHERE id = ?`, [unit.id]);
+          await logSerialEvent(q, { serial_id: unit.id, event: 'exchanged', note: [`Supplier gave ${newCode} in its place`, note].filter(Boolean).join(' — ') });
+        } else {
+          await q.run(`UPDATE product_serials SET status = ? WHERE id = ?`, [STATE_STATUS[to], unit.id]);
+          await logSerialEvent(q, { serial_id: unit.id, event: MOVES[key], note: [party, note].filter(Boolean).join(' — ') || null });
+        }
+        await syncSerialStock(q, unit.product_id);
+      } else {
+        const src = STATE_COLUMN[from];
+        const took = await q.run(
+          `UPDATE inventory SET ${src} = ${src} - ? WHERE id = ? AND ${src} >= ?`,
+          [quantity, product.id, quantity]
+        );
+        if (took.changes !== 1) {
+          throw new Refusal(409, `There are not ${quantity} of ${product.item_name} ${from === 'stock' ? 'in stock' : from === 'supplier' ? 'at the supplier' : 'faulty'}.`);
+        }
+        if (STATE_COLUMN[to]) {
+          await q.run(`UPDATE inventory SET ${STATE_COLUMN[to]} = ${STATE_COLUMN[to]} + ? WHERE id = ?`, [quantity, product.id]);
+        }
+      }
+
+      const r = await q.run(
+        `INSERT INTO stock_movements (product_id, item_name, serial_id, serial_no, quantity, from_state, to_state,
+                                      cost_price, party, note, date, time)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          product?.id ?? null, itemName, unit?.id ?? null, unit?.serial_no ?? null, quantity, from, to,
+          product ? product.cost_price : null, party,
+          [newCode ? `Exchanged for ${newCode}` : null, note].filter(Boolean).join(' — ') || null,
+          todayLocal(), nowLocalTime(),
+        ]
+      );
+      return q.get(`SELECT * FROM stock_movements WHERE id = ?`, [r.lastID]);
+    });
+    res.json(movement);
+  } catch (err) {
+    sendFailure(res, err);
+  }
+});
+
+/* ===========================================================================
    Products (inventory)
 
    Until these existed, a product could only be created as a side effect of a
@@ -2173,8 +2347,12 @@ app.put('/api/inventory/:id', async (req, res) => {
         sql: `UPDATE warranty_claims SET item_name = ? WHERE item_name = ?`,
         args: [item.item_name, oldName],
       });
+      const m = await tx.execute({
+        sql: `UPDATE stock_movements SET item_name = ? WHERE item_name = ?`,
+        args: [item.item_name, oldName],
+      });
       await tx.commit();
-      res.json({ success: true, renamed: s.rowsAffected + p.rowsAffected + r.rowsAffected + w.rowsAffected });
+      res.json({ success: true, renamed: s.rowsAffected + p.rowsAffected + r.rowsAffected + w.rowsAffected + m.rowsAffected });
     } catch (txErr) {
       await tx.rollback().catch(() => {});
       throw txErr;

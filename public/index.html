@@ -130,7 +130,7 @@
                         <p class="mt-1.5 text-lg sm:text-2xl font-bold tabular-nums"
                            :class="netProfit < 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(netProfit)"></p>
                         <p class="text-xs text-slate-500 mt-0.5">
-                            Sales <span x-text="fmt(totalSalesProfit)"></span> − Expenses <span x-text="fmt(totalExpenses)"></span>
+                            Sales <span x-text="fmt(totalSalesProfit)"></span> − Expenses <span x-text="fmt(totalExpenses)"></span><span x-show="totalWriteOffs > 0" x-cloak> − Write-offs <span x-text="fmt(totalWriteOffs)"></span></span>
                         </p>
                     </div>
                     <div class="nb-lift bg-white rounded-2xl border p-4 shadow-sm hover:shadow-md"
@@ -658,6 +658,8 @@
                                                     <!-- Back from customers faulty: in the shop, not in stock. -->
                                                     <span class="block mt-1 text-[11px] font-semibold text-red-700 whitespace-nowrap" x-show="faultyCount(item) > 0" x-cloak
                                                           x-text="faultyCount(item) + ' faulty'"></span>
+                                                    <span class="block text-[11px] font-semibold text-indigo-700 whitespace-nowrap" x-show="supplierCount(item) > 0" x-cloak
+                                                          x-text="supplierCount(item) + ' at supplier'"></span>
                                                 </td>
                                                 <td class="p-3 text-slate-600 text-right tabular-nums" x-text="fmt(item.cost_price)"></td>
                                                 <td class="p-3 text-slate-800 font-medium text-right tabular-nums" x-text="fmt(item.selling_price)"></td>
@@ -696,6 +698,8 @@
                                             </span>
                                             <span class="shrink-0 text-[11px] font-semibold text-red-700 whitespace-nowrap" x-show="faultyCount(item) > 0" x-cloak
                                                   x-text="faultyCount(item) + ' faulty'"></span>
+                                            <span class="shrink-0 text-[11px] font-semibold text-indigo-700 whitespace-nowrap" x-show="supplierCount(item) > 0" x-cloak
+                                                  x-text="supplierCount(item) + ' at supplier'"></span>
                                         </div>
                                         <dl class="mt-2.5 grid grid-cols-2 gap-2 text-sm">
                                             <div><dt class="text-xs text-slate-500">Buying</dt><dd class="text-slate-700 tabular-nums" x-text="fmt(item.cost_price)"></dd></div>
@@ -825,6 +829,12 @@
                                         <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Expenses</p>
                                         <p class="text-sm sm:text-base font-bold text-rose-700 tabular-nums" x-text="fmt(rangeExpenses)"></p>
                                     </div>
+                                    <!-- Faulty stock given up on, at its buying price. -->
+                                    <div>
+                                        <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Write-offs</p>
+                                        <p class="text-sm sm:text-base font-bold tabular-nums"
+                                           :class="rangeWriteOffs > 0 ? 'text-rose-700' : 'text-slate-500'" x-text="fmt(rangeWriteOffs)"></p>
+                                    </div>
                                     <!-- Money sold but not yet collected. Not subtracted from profit:
                                          the goods left the shop and the sale is real — this is what
                                          is still out on credit, which is a different question. -->
@@ -841,7 +851,7 @@
                                 </div>
                                 <!-- Said plainly rather than quietly understating the figure. -->
                                 <p class="mt-2 text-xs text-slate-500">
-                                    Net profit = profit on sales − profit on returns − expenses, over this range.
+                                    Net profit = profit on sales − profit on returns − expenses − write-offs, over this range.
                                     Returns count on the day the goods came back.
                                 </p>
                                 <p class="mt-1 text-xs text-slate-500" x-show="rangeHasUnknownCost" x-cloak>
@@ -1087,6 +1097,92 @@
                             </div>
                         </section>
 
+                        <!-- Faulty stock: kept aside, or away at the supplier. Nothing here is
+                             in stock or lost yet; each row waits on a decision. -->
+                        <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <button type="button" @click="toggleSection('faulty')"
+                                        :aria-expanded="faultyOpen" aria-controls="faulty-body"
+                                        class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
+                                    <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="faultyOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                                    <span>🧰 Faulty &amp; Supplier</span>
+                                    <span class="rounded-full px-2 py-0.5 text-xs font-bold tabular-nums"
+                                          :class="faultyQueue.length ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'"
+                                          x-text="faultyQueue.length"></span>
+                                </button>
+                                <div class="flex gap-2" x-show="faultyOpen" x-cloak>
+                                    <button type="button" @click="openMarkFaulty()"
+                                            class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border border-red-200 bg-red-50 hover:bg-red-100 text-red-700">Mark stock faulty</button>
+                                    <button type="button" @click="showMoves = !showMoves" x-show="movements.length" x-cloak
+                                            class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                            :class="showMoves ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">History</button>
+                                </div>
+                            </div>
+
+                            <div id="faulty-body" x-show="faultyOpen" x-cloak class="mt-4">
+                                <p x-show="!faultyQueue.length" class="text-sm text-slate-500 py-6 text-center">
+                                    Nothing faulty — returns and warranty claims that come in faulty wait here.
+                                </p>
+                                <ul class="divide-y divide-slate-100" x-show="faultyQueue.length">
+                                    <template x-for="row in faultyQueue" :key="'fq-' + row.key">
+                                        <li class="nb-row flex flex-wrap items-center gap-x-4 gap-y-2 py-2.5">
+                                            <div class="min-w-0 flex-1 basis-56">
+                                                <p class="flex flex-wrap items-center gap-2">
+                                                    <span class="font-semibold text-slate-800" x-text="row.item_name"></span>
+                                                    <span class="rounded-full px-2 py-0.5 text-[11px] font-bold"
+                                                          :class="row.state === 'supplier' ? 'bg-indigo-100 text-indigo-700' : 'bg-red-100 text-red-700'"
+                                                          x-text="moveStateLabel(row.state)"></span>
+                                                </p>
+                                                <p class="text-xs text-slate-500 tabular-nums break-all">
+                                                    <span x-text="row.serial_no || (row.qty + ' pc(s)')"></span>
+                                                    <span x-show="row.since" x-cloak x-text="'· since ' + fmtDate(row.since)"></span>
+                                                </p>
+                                            </div>
+                                            <div class="flex flex-wrap shrink-0 gap-2">
+                                                <template x-if="row.state === 'defective'">
+                                                    <div class="flex flex-wrap gap-2">
+                                                        <button type="button" @click="openMove(row, 'supplier')"
+                                                                class="nb-press bg-indigo-50 hover:bg-indigo-100 text-indigo-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-indigo-200">Send to supplier</button>
+                                                        <button type="button" @click="openMove(row, 'stock')"
+                                                                class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-brand-200">Fixed — to stock</button>
+                                                    </div>
+                                                </template>
+                                                <template x-if="row.state === 'supplier'">
+                                                    <div class="flex flex-wrap gap-2">
+                                                        <button type="button" @click="openMove(row, 'stock')"
+                                                                class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-brand-200">Back — to stock</button>
+                                                        <button type="button" @click="openMove(row, 'defective')"
+                                                                class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300">Back, still faulty</button>
+                                                    </div>
+                                                </template>
+                                                <button type="button" @click="openMove(row, 'written_off')"
+                                                        class="nb-press bg-red-50 hover:bg-red-100 text-red-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-red-200">Write off</button>
+                                            </div>
+                                        </li>
+                                    </template>
+                                </ul>
+
+                                <!-- Every move made by hand, newest first — the audit trail for the
+                                     queue above. Returns and claims keep their own. -->
+                                <div x-show="showMoves" x-cloak class="mt-4 border-t border-slate-200 pt-3">
+                                    <p class="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">History</p>
+                                    <ul class="space-y-1.5 text-sm">
+                                        <template x-for="m in recentMoves" :key="'mv-' + m.id">
+                                            <li class="flex flex-wrap gap-x-3">
+                                                <span class="shrink-0 w-24 text-xs text-slate-500 tabular-nums pt-0.5" x-text="fmtDate(m.date)"></span>
+                                                <span class="text-slate-800 min-w-0 flex-1">
+                                                    <span x-text="m.item_name + (m.serial_no ? ' ' + m.serial_no : ' ×' + m.quantity)"></span>:
+                                                    <span x-text="moveStateLabel(m.from_state) + ' → ' + moveStateLabel(m.to_state)"></span>
+                                                    <span class="text-slate-500" x-show="m.party || m.note" x-cloak x-text="' — ' + [m.party, m.note].filter(Boolean).join(' · ')"></span>
+                                                    <span class="font-semibold text-rose-700" x-show="movementLoss(m) > 0" x-cloak x-text="' −' + fmt(movementLoss(m))"></span>
+                                                </span>
+                                            </li>
+                                        </template>
+                                    </ul>
+                                </div>
+                            </div>
+                        </section>
+
                         <!-- Expenses -->
                         <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
                             <div class="flex flex-wrap items-center justify-between gap-3">
@@ -1143,7 +1239,7 @@
                                         </div>
                                     </div>
                                     <p class="mt-2 text-xs text-slate-500">
-                                        Net profit = profit on sales − খরচ. মালের কেনা এখানে ধরা হয়নি; সেটা আগেই প্রতিটি পণ্যের কেনা দামে আছে।
+                                        Net profit = profit on sales − খরচ − write-offs. মালের কেনা এখানে ধরা হয়নি; সেটা আগেই প্রতিটি পণ্যের কেনা দামে আছে।
                                     </p>
                                     <p class="mt-1 text-xs text-slate-500" x-show="rangeHasUnknownCost" x-cloak>
                                         Some sales have no buying price recorded, so profit — and net profit — exclude them.
@@ -1336,6 +1432,9 @@
                                         <option value="available">Available</option>
                                         <option value="sold">Sold</option>
                                         <option value="defective">Faulty</option>
+                                        <option value="at_supplier">At supplier</option>
+                                        <option value="written_off">Written off</option>
+                                        <option value="exchanged">Exchanged</option>
                                     </select>
                                 </div>
                             </div>
@@ -1357,8 +1456,7 @@
                                                 <p class="flex flex-wrap items-center gap-2">
                                                     <span class="font-semibold text-slate-800 tabular-nums break-all" x-text="row.serial_no"></span>
                                                     <span class="rounded-full px-2 py-0.5 text-[11px] font-bold"
-                                                          :class="row.status === 'sold' ? 'bg-slate-200 text-slate-700' : row.status === 'defective' ? 'bg-red-100 text-red-700' : 'bg-brand-100 text-brand-800'"
-                                                          x-text="row.status === 'sold' ? 'Sold' : row.status === 'defective' ? 'Faulty' : 'Available'"></span>
+                                                          :class="serialBadgeClass(row.status)" x-text="serialStatusLabel(row.status)"></span>
                                                     <span class="rounded-full px-2 py-0.5 text-[11px] font-bold bg-indigo-100 text-indigo-700"
                                                           x-show="row.status === 'sold' && row.claim_id" x-cloak>Warranty replacement</span>
                                                 </p>
@@ -1380,6 +1478,8 @@
                                                         class="nb-press bg-indigo-50 hover:bg-indigo-100 text-indigo-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-indigo-200">Warranty</button>
                                                 <button type="button" @click="openReturnForSerial(row)" x-show="row.status === 'sold'" x-cloak
                                                         class="nb-press bg-amber-50 hover:bg-amber-100 text-amber-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-amber-200">Return</button>
+                                                <button type="button" @click="openMarkFaulty(row)" x-show="row.status === 'available'" x-cloak
+                                                        class="nb-press bg-red-50 hover:bg-red-100 text-red-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-red-200">Faulty</button>
                                                 <button type="button" @click="openSerialAction(row, 'remove')" x-show="row.status === 'available'" x-cloak
                                                         class="nb-press bg-red-50 hover:bg-red-100 text-red-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-red-200">Remove</button>
                                             </div>
@@ -2075,6 +2175,95 @@
                         <button type="button" @click="submitClaim()" :disabled="claimDraft.saving"
                                 class="nb-press min-h-[44px] flex-1 bg-brand-700 hover:bg-brand-800 disabled:opacity-60 text-white rounded-lg text-sm font-semibold"
                                 x-text="claimDraft.saving ? 'Saving…' : (claimGivesReplacement ? 'Give replacement' : claimDraft.kind === 'new' ? 'Take it in' : 'Settle claim')"></button>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- ================= FAULTY STOCK DIALOG =================
+         One move of faulty stock. no-print, and a direct child of <body>, like
+         the other dialogs. -->
+    <div id="move-modal" x-show="moveDraft" x-cloak x-transition.opacity
+         class="no-print fixed inset-0 bg-brand-950/70 z-[60] flex items-start sm:items-center justify-center p-4 overflow-y-auto"
+         role="dialog" aria-modal="true" aria-label="Faulty stock" @keydown.escape.window="closeMove()">
+        <div class="nb-pop bg-white w-full max-w-md rounded-2xl shadow-2xl p-5 sm:p-6" x-show="moveDraft">
+            <div class="flex items-start justify-between gap-3 mb-3">
+                <div class="min-w-0">
+                    <h2 class="text-lg font-bold text-slate-800" x-text="moveActionLabel(moveFrom, moveDraft?.to)"></h2>
+                    <p class="text-sm text-slate-500 break-all" x-show="moveDraft?.row"
+                       x-text="moveDraft?.row ? moveDraft.row.item_name + (moveDraft.row.serial_no ? ' — ' + moveDraft.row.serial_no : '') : ''"></p>
+                </div>
+                <button @click="closeMove()" aria-label="Close"
+                        class="nb-press text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">&times;</button>
+            </div>
+
+            <template x-if="moveDraft">
+                <div class="space-y-3">
+                    <!-- Marking shelf stock faulty by count: which product. Serial-tracked
+                         units are marked from the Serial list instead. -->
+                    <div x-show="!moveDraft.row">
+                        <label for="move-product" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Product</label>
+                        <select id="move-product" x-model="moveDraft.productId"
+                                class="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-base sm:text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                            <option value="">Choose…</option>
+                            <template x-for="i in markableProducts" :key="'mp-' + i.id">
+                                <option :value="String(i.id)" x-text="i.item_name + ' (' + i.quantity + ' in stock)'"></option>
+                            </template>
+                        </select>
+                        <p class="mt-1 text-xs text-slate-500">For a serial-tracked product, use <strong>Faulty</strong> on the unit in the Serial list.</p>
+                    </div>
+
+                    <div x-show="!moveDraft.row?.serialId">
+                        <label for="move-qty" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+                            Quantity <span class="normal-case font-normal text-slate-400" x-text="'(at most ' + moveMax + ')'"></span>
+                        </label>
+                        <input id="move-qty" type="number" min="1" :max="moveMax" step="1" x-model.number="moveDraft.qty"
+                               class="w-28 p-3 sm:p-2.5 border border-slate-300 rounded-lg text-base sm:text-sm tabular-nums focus:ring-2 focus:ring-brand-500 outline-none">
+                    </div>
+
+                    <div x-show="moveDraft.to === 'supplier'">
+                        <label for="move-party" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Supplier</label>
+                        <input id="move-party" type="text" list="move-suppliers" x-model="moveDraft.party" maxlength="80"
+                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
+                        <datalist id="move-suppliers">
+                            <template x-for="n in supplierNames" :key="'sn-' + n"><option :value="n"></option></template>
+                        </datalist>
+                    </div>
+
+                    <!-- The supplier sometimes sends a different unit back. That is not a
+                         loss: the new one goes into stock and the old one is closed off. -->
+                    <div x-show="moveDraft.row?.serialId && moveFrom === 'supplier' && moveDraft.to === 'stock'" x-cloak class="space-y-2">
+                        <label class="flex items-center gap-2 text-sm cursor-pointer">
+                            <input type="checkbox" class="h-4 w-4 accent-brand-700" x-model="moveDraft.exchange">
+                            The supplier gave a different unit
+                        </label>
+                        <input type="text" x-show="moveDraft.exchange" x-cloak x-model="moveDraft.newSerial" @keydown.enter.prevent="submitMove()"
+                               placeholder="Scan the new unit's serial…" aria-label="New serial"
+                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
+                    </div>
+
+                    <div>
+                        <label for="move-note" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Note <span class="normal-case font-normal text-slate-400">(optional)</span></label>
+                        <input id="move-note" type="text" x-model="moveDraft.note" maxlength="200"
+                               class="w-full p-3 sm:p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none text-base sm:text-sm transition">
+                    </div>
+
+                    <p class="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2" x-show="moveDraft.to === 'written_off'" x-cloak>
+                        This is a loss of <strong x-text="fmt(moveLoss)"></strong> at the buying price, taken off today's profit. It cannot be undone.
+                    </p>
+                    <p class="text-xs text-slate-500" x-show="moveDraft.to === 'stock'" x-cloak>It goes back into stock and can be sold again.</p>
+
+                    <p class="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
+                       x-show="moveDraft.error" x-cloak x-text="moveDraft.error"></p>
+
+                    <div class="flex gap-2.5 pt-1">
+                        <button type="button" @click="closeMove()"
+                                class="nb-press min-h-[44px] flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-sm font-semibold">Cancel</button>
+                        <button type="button" @click="submitMove()" :disabled="moveDraft.saving"
+                                :class="moveDraft.to === 'written_off' || moveDraft.to === 'defective' ? 'bg-red-600 hover:bg-red-700' : 'bg-brand-700 hover:bg-brand-800'"
+                                class="nb-press min-h-[44px] flex-1 disabled:opacity-60 text-white rounded-lg text-sm font-semibold"
+                                x-text="moveDraft.saving ? 'Saving…' : moveActionLabel(moveFrom, moveDraft.to)"></button>
                     </div>
                 </div>
             </template>
