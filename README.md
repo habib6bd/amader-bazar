@@ -21,6 +21,7 @@ every stylesheet, script and font is served from the app itself.
 - [Database](#database)
 - [API reference](#api-reference)
 - [**Going live — required changes**](#going-live--required-changes)
+- [Returns, warranty claims & faulty stock](RETURNS_WARRANTY.md)
 - [Deploying online](DEPLOY.md)
 - [Backups](#backups)
 - [Known limitations](#known-limitations)

@@ -633,9 +633,26 @@
                                         <tr class="bg-slate-100 text-slate-600 text-xs uppercase tracking-wider">
                                             <th class="p-3 rounded-l-lg font-semibold">Item</th>
                                             <th class="p-3 font-semibold">In Stock</th>
-                                            <th class="p-3 font-semibold text-right">Buying</th>
+                                            <th class="p-3 font-semibold text-right">
+                                                <!-- Blurred with Margin, on the same switch: either one gives the other away. -->
+                                                <button type="button" @click="marginVisible = !marginVisible"
+                                                        class="nb-press inline-flex items-center gap-1 hover:text-brand-700" :aria-pressed="marginVisible" aria-label="Show or hide buying price and margin">
+                                                    Buying
+                                                    <svg x-show="!marginVisible" class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"/><path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd"/></svg>
+                                                    <svg x-show="marginVisible" x-cloak class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M3.28 2.22a.75.75 0 00-1.06 1.06l14.5 14.5a.75.75 0 101.06-1.06l-1.745-1.745a10.029 10.029 0 003.3-4.38 1.651 1.651 0 000-1.185A10.004 10.004 0 009.999 3a9.956 9.956 0 00-4.744 1.194L3.28 2.22zM7.752 6.69l1.092 1.092a2.5 2.5 0 013.374 3.373l1.091 1.092a4 4 0 00-5.557-5.557z" clip-rule="evenodd"/><path d="M10.748 13.93l2.523 2.523a9.987 9.987 0 01-3.27.547c-4.258 0-7.894-2.66-9.337-6.41a1.651 1.651 0 010-1.186A10.007 10.007 0 012.839 6.02L6.07 9.252a4 4 0 004.678 4.678z"/></svg>
+                                                </button>
+                                            </th>
                                             <th class="p-3 font-semibold text-right">Selling</th>
-                                            <th class="p-3 font-semibold text-right">Margin</th>
+                                            <th class="p-3 font-semibold text-right">
+                                                <!-- Hidden by default: a customer glancing at the screen should
+                                                     not read the shop's margins off it. -->
+                                                <button type="button" @click="marginVisible = !marginVisible"
+                                                        class="nb-press inline-flex items-center gap-1 hover:text-brand-700" :aria-pressed="marginVisible" aria-label="Show or hide buying price and margin">
+                                                    Margin
+                                                    <svg x-show="!marginVisible" class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"/><path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd"/></svg>
+                                                    <svg x-show="marginVisible" x-cloak class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M3.28 2.22a.75.75 0 00-1.06 1.06l14.5 14.5a.75.75 0 101.06-1.06l-1.745-1.745a10.029 10.029 0 003.3-4.38 1.651 1.651 0 000-1.185A10.004 10.004 0 009.999 3a9.956 9.956 0 00-4.744 1.194L3.28 2.22zM7.752 6.69l1.092 1.092a2.5 2.5 0 013.374 3.373l1.091 1.092a4 4 0 00-5.557-5.557z" clip-rule="evenodd"/><path d="M10.748 13.93l2.523 2.523a9.987 9.987 0 01-3.27.547c-4.258 0-7.894-2.66-9.337-6.41a1.651 1.651 0 010-1.186A10.007 10.007 0 012.839 6.02L6.07 9.252a4 4 0 004.678 4.678z"/></svg>
+                                                </button>
+                                            </th>
                                             <th class="p-3 font-semibold text-center">Warranty</th>
                                             <th class="p-3 rounded-r-lg font-semibold text-right">Actions</th>
                                         </tr>
@@ -661,10 +678,10 @@
                                                     <span class="block text-[11px] font-semibold text-indigo-700 whitespace-nowrap" x-show="supplierCount(item) > 0" x-cloak
                                                           x-text="supplierCount(item) + ' at supplier'"></span>
                                                 </td>
-                                                <td class="p-3 text-slate-600 text-right tabular-nums" x-text="fmt(item.cost_price)"></td>
+                                                <td class="p-3 text-slate-600 text-right tabular-nums" :class="marginVisible ? '' : 'blur-sm select-none'" x-text="fmt(item.cost_price)"></td>
                                                 <td class="p-3 text-slate-800 font-medium text-right tabular-nums" x-text="fmt(item.selling_price)"></td>
                                                 <td class="p-3 text-right tabular-nums font-medium"
-                                                    :class="itemMargin(item) < 0 ? 'text-red-600' : 'text-brand-800'"
+                                                    :class="(itemMargin(item) < 0 ? 'text-red-600' : 'text-brand-800') + (marginVisible ? '' : ' blur-sm select-none')"
                                                     x-text="fmt(itemMargin(item))"></td>
                                                 <td class="p-3 text-center text-slate-600 tabular-nums"
                                                     x-text="item.warranty_months ? item.warranty_months + ' mo' : '—'"></td>
@@ -702,10 +719,23 @@
                                                   x-text="supplierCount(item) + ' at supplier'"></span>
                                         </div>
                                         <dl class="mt-2.5 grid grid-cols-2 gap-2 text-sm">
-                                            <div><dt class="text-xs text-slate-500">Buying</dt><dd class="text-slate-700 tabular-nums" x-text="fmt(item.cost_price)"></dd></div>
+                                            <div><dt class="text-xs text-slate-500">
+                                                    Buying
+                                                    <button type="button" @click="marginVisible = !marginVisible" class="align-middle" :aria-pressed="marginVisible" aria-label="Show or hide buying price and margin">
+                                                        <svg x-show="!marginVisible" class="inline h-3.5 w-3.5 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"/><path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd"/></svg>
+                                                        <svg x-show="marginVisible" x-cloak class="inline h-3.5 w-3.5 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M3.28 2.22a.75.75 0 00-1.06 1.06l14.5 14.5a.75.75 0 101.06-1.06l-1.745-1.745a10.029 10.029 0 003.3-4.38 1.651 1.651 0 000-1.185A10.004 10.004 0 009.999 3a9.956 9.956 0 00-4.744 1.194L3.28 2.22zM7.752 6.69l1.092 1.092a2.5 2.5 0 013.374 3.373l1.091 1.092a4 4 0 00-5.557-5.557z" clip-rule="evenodd"/><path d="M10.748 13.93l2.523 2.523a9.987 9.987 0 01-3.27.547c-4.258 0-7.894-2.66-9.337-6.41a1.651 1.651 0 010-1.186A10.007 10.007 0 012.839 6.02L6.07 9.252a4 4 0 004.678 4.678z"/></svg>
+                                                    </button>
+                                                </dt>
+                                                <dd class="text-slate-700 tabular-nums" :class="marginVisible ? '' : 'blur-sm select-none'" x-text="fmt(item.cost_price)"></dd></div>
                                             <div><dt class="text-xs text-slate-500">Selling</dt><dd class="font-medium text-slate-800 tabular-nums" x-text="fmt(item.selling_price)"></dd></div>
-                                            <div><dt class="text-xs text-slate-500">Margin / unit</dt>
-                                                <dd class="font-medium tabular-nums" :class="itemMargin(item) < 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(itemMargin(item))"></dd></div>
+                                            <div><dt class="text-xs text-slate-500">
+                                                    Margin / unit
+                                                    <button type="button" @click="marginVisible = !marginVisible" class="align-middle" :aria-pressed="marginVisible" aria-label="Show or hide buying price and margin">
+                                                        <svg x-show="!marginVisible" class="inline h-3.5 w-3.5 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"/><path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd"/></svg>
+                                                        <svg x-show="marginVisible" x-cloak class="inline h-3.5 w-3.5 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M3.28 2.22a.75.75 0 00-1.06 1.06l14.5 14.5a.75.75 0 101.06-1.06l-1.745-1.745a10.029 10.029 0 003.3-4.38 1.651 1.651 0 000-1.185A10.004 10.004 0 009.999 3a9.956 9.956 0 00-4.744 1.194L3.28 2.22zM7.752 6.69l1.092 1.092a2.5 2.5 0 013.374 3.373l1.091 1.092a4 4 0 00-5.557-5.557z" clip-rule="evenodd"/><path d="M10.748 13.93l2.523 2.523a9.987 9.987 0 01-3.27.547c-4.258 0-7.894-2.66-9.337-6.41a1.651 1.651 0 010-1.186A10.007 10.007 0 012.839 6.02L6.07 9.252a4 4 0 004.678 4.678z"/></svg>
+                                                    </button>
+                                                </dt>
+                                                <dd class="font-medium tabular-nums" :class="(itemMargin(item) < 0 ? 'text-red-600' : 'text-brand-800') + (marginVisible ? '' : ' blur-sm select-none')" x-text="fmt(itemMargin(item))"></dd></div>
                                             <div><dt class="text-xs text-slate-500">Warranty</dt>
                                                 <dd class="text-slate-700 tabular-nums" x-text="item.warranty_months ? item.warranty_months + ' months' : '—'"></dd></div>
                                         </dl>
@@ -882,7 +912,15 @@
                                             <th class="p-3 font-semibold">Customer</th>
                                             <th class="p-3 font-semibold">Items</th>
                                             <th class="p-3 font-semibold text-right">Total</th>
-                                            <th class="p-3 font-semibold text-right">Profit</th>
+                                            <th class="p-3 font-semibold text-right">
+                                                <!-- Hidden by default, same reasoning as Margin on Products & Stock. -->
+                                                <button type="button" @click="profitVisible = !profitVisible"
+                                                        class="nb-press inline-flex items-center gap-1 hover:text-brand-700" :aria-pressed="profitVisible" aria-label="Show or hide profit">
+                                                    Profit
+                                                    <svg x-show="!profitVisible" class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"/><path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd"/></svg>
+                                                    <svg x-show="profitVisible" x-cloak class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M3.28 2.22a.75.75 0 00-1.06 1.06l14.5 14.5a.75.75 0 101.06-1.06l-1.745-1.745a10.029 10.029 0 003.3-4.38 1.651 1.651 0 000-1.185A10.004 10.004 0 009.999 3a9.956 9.956 0 00-4.744 1.194L3.28 2.22zM7.752 6.69l1.092 1.092a2.5 2.5 0 013.374 3.373l1.091 1.092a4 4 0 00-5.557-5.557z" clip-rule="evenodd"/><path d="M10.748 13.93l2.523 2.523a9.987 9.987 0 01-3.27.547c-4.258 0-7.894-2.66-9.337-6.41a1.651 1.651 0 010-1.186A10.007 10.007 0 012.839 6.02L6.07 9.252a4 4 0 004.678 4.678z"/></svg>
+                                                </button>
+                                            </th>
                                             <th class="p-3 rounded-r-lg font-semibold text-right">Actions</th>
                                         </tr>
                                     </thead>
@@ -934,19 +972,26 @@
                                                     </span>
                                                 </td>
                                                 <td class="p-3 text-right tabular-nums font-medium whitespace-nowrap"
-                                                    :class="invoiceProfit(inv) === null ? 'text-slate-400' : invoiceProfit(inv) < 0 ? 'text-red-600' : 'text-brand-800'"
+                                                    :class="(invoiceProfit(inv) === null ? 'text-slate-400' : invoiceProfit(inv) < 0 ? 'text-red-600' : 'text-brand-800') + (profitVisible ? '' : ' blur-sm select-none')"
                                                     x-text="invoiceProfit(inv) === null ? '—' : fmt(invoiceProfit(inv))"></td>
                                                 <td class="p-3">
-                                                    <div class="flex flex-wrap justify-end gap-2">
-                                                        <button @click="openPayment(inv)"
-                                                                class="nb-press px-2.5 py-1.5 rounded-lg text-xs font-semibold border whitespace-nowrap"
-                                                                :class="isInvoiceDue(inv) ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'">Paid</button>
+                                                    <!-- Show and Print cover the common case — look at the receipt,
+                                                         or hand over a printed one. Paid / Return / Warranty are
+                                                         occasional, so they sit in a menu behind the arrow joined
+                                                         to Print. The due amount is already in red in the Total
+                                                         column, so tucking Paid away hides no information. The
+                                                         menu itself is one element at the end of <body>; see
+                                                         openActionsMenu(). -->
+                                                    <div class="flex justify-end items-center gap-2">
                                                         <button @click="showReceipt(inv)" class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 whitespace-nowrap">Show</button>
-                                                        <button @click="printReceipt(inv)" class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-brand-200 whitespace-nowrap">Print</button>
-                                                        <button @click="openReturn(inv)" x-show="!invoiceFullyReturned(inv)" x-cloak
-                                                                class="nb-press bg-amber-50 hover:bg-amber-100 text-amber-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-amber-200 whitespace-nowrap">Return</button>
-                                                        <button @click="openClaim(inv)" x-show="invoiceClaimable(inv)" x-cloak
-                                                                class="nb-press bg-indigo-50 hover:bg-indigo-100 text-indigo-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-indigo-200 whitespace-nowrap">Warranty</button>
+                                                        <div class="inline-flex">
+                                                            <button @click="printReceipt(inv)" class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-l-lg text-xs font-semibold border border-brand-200 whitespace-nowrap">Print</button>
+                                                            <button type="button" @click.stop="openActionsMenu(inv, $event)"
+                                                                    :aria-expanded="Number(actionsMenu?.inv.id) === Number(inv.id)" aria-haspopup="menu" aria-label="More actions"
+                                                                    class="nb-press -ml-px px-1.5 rounded-r-lg border border-brand-200 bg-brand-50 hover:bg-brand-100 text-brand-800">
+                                                                <svg class="h-3.5 w-3.5 transition-transform duration-200" :class="Number(actionsMenu?.inv.id) === Number(inv.id) ? 'rotate-180' : ''" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                                                            </button>
+                                                        </div>
                                                     </div>
                                                 </td>
                                             </tr>
@@ -985,7 +1030,12 @@
                                         <div class="mt-2 flex items-baseline justify-between gap-3 border-t border-slate-100 pt-2">
                                             <p class="text-xs tabular-nums font-medium"
                                                :class="invoiceProfit(inv) === null ? 'text-slate-400' : invoiceProfit(inv) < 0 ? 'text-red-600' : 'text-brand-800'">
-                                                Profit <span x-text="invoiceProfit(inv) === null ? '—' : fmt(invoiceProfit(inv))"></span>
+                                                Profit
+                                                <button type="button" @click="profitVisible = !profitVisible" class="align-middle" :aria-pressed="profitVisible" aria-label="Show or hide profit">
+                                                    <svg x-show="!profitVisible" class="inline h-3 w-3 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"/><path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd"/></svg>
+                                                    <svg x-show="profitVisible" x-cloak class="inline h-3 w-3 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M3.28 2.22a.75.75 0 00-1.06 1.06l14.5 14.5a.75.75 0 101.06-1.06l-1.745-1.745a10.029 10.029 0 003.3-4.38 1.651 1.651 0 000-1.185A10.004 10.004 0 009.999 3a9.956 9.956 0 00-4.744 1.194L3.28 2.22zM7.752 6.69l1.092 1.092a2.5 2.5 0 013.374 3.373l1.091 1.092a4 4 0 00-5.557-5.557z" clip-rule="evenodd"/><path d="M10.748 13.93l2.523 2.523a9.987 9.987 0 01-3.27.547c-4.258 0-7.894-2.66-9.337-6.41a1.651 1.651 0 010-1.186A10.007 10.007 0 012.839 6.02L6.07 9.252a4 4 0 004.678 4.678z"/></svg>
+                                                </button>
+                                                <span :class="profitVisible ? '' : 'blur-sm select-none'" x-text="invoiceProfit(inv) === null ? '—' : fmt(invoiceProfit(inv))"></span>
                                                 <span class="text-amber-700" x-show="invoiceDiscount(inv) > 0" x-cloak>
                                                     · −<span x-text="fmt(invoiceDiscount(inv))"></span> off
                                                 </span>
@@ -1031,155 +1081,6 @@
                                     <span x-show="salesExpanded" x-cloak>Show less</span>
                                 </button>
                             </div>
-                            </div>
-                        </section>
-
-                        <!-- Warranty claims. Open ones first: a unit in the shop that the
-                             customer is waiting on is the thing not to forget. -->
-                        <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200" x-show="claims.length" x-cloak>
-                            <div class="flex flex-wrap items-center justify-between gap-3">
-                                <button type="button" @click="toggleSection('warranty')"
-                                        :aria-expanded="warrantyOpen" aria-controls="warranty-body"
-                                        class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
-                                    <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="warrantyOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
-                                    <span>🛠️ Warranty Claims</span>
-                                    <span class="rounded-full px-2 py-0.5 text-xs font-bold tabular-nums"
-                                          :class="openClaimCount ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'"
-                                          x-text="openClaimCount ? openClaimCount + ' open' : claims.length"></span>
-                                </button>
-                                <div class="flex gap-2" x-show="warrantyOpen" x-cloak>
-                                    <button @click="claimFilter = 'open'" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
-                                            :aria-pressed="claimFilter === 'open'"
-                                            :class="claimFilter === 'open' ? 'border-amber-300 bg-amber-100 text-amber-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">Open</button>
-                                    <button @click="claimFilter = 'all'" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
-                                            :aria-pressed="claimFilter === 'all'"
-                                            :class="claimFilter === 'all' ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">All</button>
-                                </div>
-                            </div>
-
-                            <div id="warranty-body" x-show="warrantyOpen" x-cloak class="mt-4">
-                                <p x-show="!visibleClaims.length" class="text-sm text-slate-500 py-6 text-center">No open claims — every unit taken in has been settled.</p>
-                                <ul class="divide-y divide-slate-100" x-show="visibleClaims.length">
-                                    <template x-for="c in visibleClaims" :key="'wc-' + c.id">
-                                        <li class="nb-row flex flex-wrap items-center gap-x-4 gap-y-1.5 py-2.5">
-                                            <div class="min-w-0 flex-1 basis-56">
-                                                <p class="flex flex-wrap items-center gap-2">
-                                                    <span class="font-semibold text-slate-800" x-text="'#' + c.id + ' ' + c.item_name"></span>
-                                                    <span class="rounded-full px-2 py-0.5 text-[11px] font-bold"
-                                                          :class="c.status === 'open' ? 'bg-amber-100 text-amber-800' : c.status === 'rejected' ? 'bg-slate-200 text-slate-700' : 'bg-brand-100 text-brand-800'"
-                                                          x-text="claimStatusLabel(c)"></span>
-                                                </p>
-                                                <p class="text-xs text-slate-500 tabular-nums break-all">
-                                                    <span x-text="c.faulty_serial_no || (c.quantity + ' pc(s)')"></span>
-                                                    <span x-show="c.replacement_serial_no" x-cloak x-text="' → ' + c.replacement_serial_no"></span>
-                                                    <span x-show="c.problem" x-cloak x-text="' · ' + c.problem"></span>
-                                                </p>
-                                            </div>
-                                            <div class="min-w-0 flex-1 basis-56 text-xs text-slate-500">
-                                                <p>In: <span x-text="fmtDate(c.date)"></span>
-                                                    <span x-show="c.resolved_date" x-cloak x-text="'· settled ' + fmtDate(c.resolved_date)"></span></p>
-                                                <p>
-                                                    <button type="button" @click="claimInvoice(c) && showReceipt(claimInvoice(c))" class="font-semibold text-brand-800 underline hover:no-underline"
-                                                            x-text="'#' + c.invoice_id"></button>
-                                                    <span x-text="claimInvoice(c)?.customer_name || 'Walk-in'"></span>
-                                                    <span x-show="c.warranty_until" x-cloak
-                                                          :class="c.warranty_until < c.date ? 'text-red-600 font-semibold' : ''"
-                                                          x-text="'· warranty to ' + fmtDate(c.warranty_until)"></span>
-                                                </p>
-                                            </div>
-                                            <div class="flex shrink-0 gap-2" x-show="c.status === 'open'">
-                                                <button type="button" @click="openResolveClaim(c)"
-                                                        class="nb-press bg-amber-50 hover:bg-amber-100 text-amber-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-amber-200">Settle</button>
-                                            </div>
-                                        </li>
-                                    </template>
-                                </ul>
-                            </div>
-                        </section>
-
-                        <!-- Faulty stock: kept aside, or away at the supplier. Nothing here is
-                             in stock or lost yet; each row waits on a decision. -->
-                        <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
-                            <div class="flex flex-wrap items-center justify-between gap-3">
-                                <button type="button" @click="toggleSection('faulty')"
-                                        :aria-expanded="faultyOpen" aria-controls="faulty-body"
-                                        class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
-                                    <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="faultyOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
-                                    <span>🧰 Faulty &amp; Supplier</span>
-                                    <span class="rounded-full px-2 py-0.5 text-xs font-bold tabular-nums"
-                                          :class="faultyQueue.length ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'"
-                                          x-text="faultyQueue.length"></span>
-                                </button>
-                                <div class="flex gap-2" x-show="faultyOpen" x-cloak>
-                                    <button type="button" @click="openMarkFaulty()"
-                                            class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border border-red-200 bg-red-50 hover:bg-red-100 text-red-700">Mark stock faulty</button>
-                                    <button type="button" @click="showMoves = !showMoves" x-show="movements.length" x-cloak
-                                            class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
-                                            :class="showMoves ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">History</button>
-                                </div>
-                            </div>
-
-                            <div id="faulty-body" x-show="faultyOpen" x-cloak class="mt-4">
-                                <p x-show="!faultyQueue.length" class="text-sm text-slate-500 py-6 text-center">
-                                    Nothing faulty — returns and warranty claims that come in faulty wait here.
-                                </p>
-                                <ul class="divide-y divide-slate-100" x-show="faultyQueue.length">
-                                    <template x-for="row in faultyQueue" :key="'fq-' + row.key">
-                                        <li class="nb-row flex flex-wrap items-center gap-x-4 gap-y-2 py-2.5">
-                                            <div class="min-w-0 flex-1 basis-56">
-                                                <p class="flex flex-wrap items-center gap-2">
-                                                    <span class="font-semibold text-slate-800" x-text="row.item_name"></span>
-                                                    <span class="rounded-full px-2 py-0.5 text-[11px] font-bold"
-                                                          :class="row.state === 'supplier' ? 'bg-indigo-100 text-indigo-700' : 'bg-red-100 text-red-700'"
-                                                          x-text="moveStateLabel(row.state)"></span>
-                                                </p>
-                                                <p class="text-xs text-slate-500 tabular-nums break-all">
-                                                    <span x-text="row.serial_no || (row.qty + ' pc(s)')"></span>
-                                                    <span x-show="row.since" x-cloak x-text="'· since ' + fmtDate(row.since)"></span>
-                                                </p>
-                                            </div>
-                                            <div class="flex flex-wrap shrink-0 gap-2">
-                                                <template x-if="row.state === 'defective'">
-                                                    <div class="flex flex-wrap gap-2">
-                                                        <button type="button" @click="openMove(row, 'supplier')"
-                                                                class="nb-press bg-indigo-50 hover:bg-indigo-100 text-indigo-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-indigo-200">Send to supplier</button>
-                                                        <button type="button" @click="openMove(row, 'stock')"
-                                                                class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-brand-200">Fixed — to stock</button>
-                                                    </div>
-                                                </template>
-                                                <template x-if="row.state === 'supplier'">
-                                                    <div class="flex flex-wrap gap-2">
-                                                        <button type="button" @click="openMove(row, 'stock')"
-                                                                class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-brand-200">Back — to stock</button>
-                                                        <button type="button" @click="openMove(row, 'defective')"
-                                                                class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300">Back, still faulty</button>
-                                                    </div>
-                                                </template>
-                                                <button type="button" @click="openMove(row, 'written_off')"
-                                                        class="nb-press bg-red-50 hover:bg-red-100 text-red-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-red-200">Write off</button>
-                                            </div>
-                                        </li>
-                                    </template>
-                                </ul>
-
-                                <!-- Every move made by hand, newest first — the audit trail for the
-                                     queue above. Returns and claims keep their own. -->
-                                <div x-show="showMoves" x-cloak class="mt-4 border-t border-slate-200 pt-3">
-                                    <p class="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">History</p>
-                                    <ul class="space-y-1.5 text-sm">
-                                        <template x-for="m in recentMoves" :key="'mv-' + m.id">
-                                            <li class="flex flex-wrap gap-x-3">
-                                                <span class="shrink-0 w-24 text-xs text-slate-500 tabular-nums pt-0.5" x-text="fmtDate(m.date)"></span>
-                                                <span class="text-slate-800 min-w-0 flex-1">
-                                                    <span x-text="m.item_name + (m.serial_no ? ' ' + m.serial_no : ' ×' + m.quantity)"></span>:
-                                                    <span x-text="moveStateLabel(m.from_state) + ' → ' + moveStateLabel(m.to_state)"></span>
-                                                    <span class="text-slate-500" x-show="m.party || m.note" x-cloak x-text="' — ' + [m.party, m.note].filter(Boolean).join(' · ')"></span>
-                                                    <span class="font-semibold text-rose-700" x-show="movementLoss(m) > 0" x-cloak x-text="' −' + fmt(movementLoss(m))"></span>
-                                                </span>
-                                            </li>
-                                        </template>
-                                    </ul>
-                                </div>
                             </div>
                         </section>
 
@@ -1491,6 +1392,155 @@
                                             class="nb-press min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">
                                         Show more (<span class="tabular-nums" x-text="serialTotal - serialRows.length"></span> left)
                                     </button>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- Warranty claims. Open ones first: a unit in the shop that the
+                             customer is waiting on is the thing not to forget. -->
+                        <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200" x-show="claims.length" x-cloak>
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <button type="button" @click="toggleSection('warranty')"
+                                        :aria-expanded="warrantyOpen" aria-controls="warranty-body"
+                                        class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
+                                    <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="warrantyOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                                    <span>🛠️ Warranty Claims</span>
+                                    <span class="rounded-full px-2 py-0.5 text-xs font-bold tabular-nums"
+                                          :class="openClaimCount ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'"
+                                          x-text="openClaimCount ? openClaimCount + ' open' : claims.length"></span>
+                                </button>
+                                <div class="flex gap-2" x-show="warrantyOpen" x-cloak>
+                                    <button @click="claimFilter = 'open'" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                            :aria-pressed="claimFilter === 'open'"
+                                            :class="claimFilter === 'open' ? 'border-amber-300 bg-amber-100 text-amber-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">Open</button>
+                                    <button @click="claimFilter = 'all'" class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                            :aria-pressed="claimFilter === 'all'"
+                                            :class="claimFilter === 'all' ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">All</button>
+                                </div>
+                            </div>
+
+                            <div id="warranty-body" x-show="warrantyOpen" x-cloak class="mt-4">
+                                <p x-show="!visibleClaims.length" class="text-sm text-slate-500 py-6 text-center">No open claims — every unit taken in has been settled.</p>
+                                <ul class="divide-y divide-slate-100" x-show="visibleClaims.length">
+                                    <template x-for="c in visibleClaims" :key="'wc-' + c.id">
+                                        <li class="nb-row flex flex-wrap items-center gap-x-4 gap-y-1.5 py-2.5">
+                                            <div class="min-w-0 flex-1 basis-56">
+                                                <p class="flex flex-wrap items-center gap-2">
+                                                    <span class="font-semibold text-slate-800" x-text="'#' + c.id + ' ' + c.item_name"></span>
+                                                    <span class="rounded-full px-2 py-0.5 text-[11px] font-bold"
+                                                          :class="c.status === 'open' ? 'bg-amber-100 text-amber-800' : c.status === 'rejected' ? 'bg-slate-200 text-slate-700' : 'bg-brand-100 text-brand-800'"
+                                                          x-text="claimStatusLabel(c)"></span>
+                                                </p>
+                                                <p class="text-xs text-slate-500 tabular-nums break-all">
+                                                    <span x-text="c.faulty_serial_no || (c.quantity + ' pc(s)')"></span>
+                                                    <span x-show="c.replacement_serial_no" x-cloak x-text="' → ' + c.replacement_serial_no"></span>
+                                                    <span x-show="c.problem" x-cloak x-text="' · ' + c.problem"></span>
+                                                </p>
+                                            </div>
+                                            <div class="min-w-0 flex-1 basis-56 text-xs text-slate-500">
+                                                <p>In: <span x-text="fmtDate(c.date)"></span>
+                                                    <span x-show="c.resolved_date" x-cloak x-text="'· settled ' + fmtDate(c.resolved_date)"></span></p>
+                                                <p>
+                                                    <button type="button" @click="claimInvoice(c) && showReceipt(claimInvoice(c))" class="font-semibold text-brand-800 underline hover:no-underline"
+                                                            x-text="'#' + c.invoice_id"></button>
+                                                    <span x-text="claimInvoice(c)?.customer_name || 'Walk-in'"></span>
+                                                    <span x-show="c.warranty_until" x-cloak
+                                                          :class="c.warranty_until < c.date ? 'text-red-600 font-semibold' : ''"
+                                                          x-text="'· warranty to ' + fmtDate(c.warranty_until)"></span>
+                                                </p>
+                                            </div>
+                                            <div class="flex shrink-0 gap-2" x-show="c.status === 'open'">
+                                                <button type="button" @click="openResolveClaim(c)"
+                                                        class="nb-press bg-amber-50 hover:bg-amber-100 text-amber-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-amber-200">Settle</button>
+                                            </div>
+                                        </li>
+                                    </template>
+                                </ul>
+                            </div>
+                        </section>
+
+                        <!-- Faulty stock: kept aside, or away at the supplier. Nothing here is
+                             in stock or lost yet; each row waits on a decision. -->
+                        <section class="nb-rise bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <button type="button" @click="toggleSection('faulty')"
+                                        :aria-expanded="faultyOpen" aria-controls="faulty-body"
+                                        class="nb-press flex items-center gap-2 text-sm sm:text-base font-bold text-slate-800 hover:text-brand-800">
+                                    <svg class="h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200" :class="faultyOpen ? '' : '-rotate-90'" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                                    <span>🧰 Faulty &amp; Supplier</span>
+                                    <span class="rounded-full px-2 py-0.5 text-xs font-bold tabular-nums"
+                                          :class="faultyQueue.length ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'"
+                                          x-text="faultyQueue.length"></span>
+                                </button>
+                                <div class="flex gap-2" x-show="faultyOpen" x-cloak>
+                                    <button type="button" @click="openMarkFaulty()"
+                                            class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border border-red-200 bg-red-50 hover:bg-red-100 text-red-700">Mark stock faulty</button>
+                                    <button type="button" @click="showMoves = !showMoves" x-show="movements.length" x-cloak
+                                            class="nb-press px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                                            :class="showMoves ? 'border-brand-300 bg-brand-100 text-brand-800' : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-700'">History</button>
+                                </div>
+                            </div>
+
+                            <div id="faulty-body" x-show="faultyOpen" x-cloak class="mt-4">
+                                <p x-show="!faultyQueue.length" class="text-sm text-slate-500 py-6 text-center">
+                                    Nothing faulty — returns and warranty claims that come in faulty wait here.
+                                </p>
+                                <ul class="divide-y divide-slate-100" x-show="faultyQueue.length">
+                                    <template x-for="row in faultyQueue" :key="'fq-' + row.key">
+                                        <li class="nb-row flex flex-wrap items-center gap-x-4 gap-y-2 py-2.5">
+                                            <div class="min-w-0 flex-1 basis-56">
+                                                <p class="flex flex-wrap items-center gap-2">
+                                                    <span class="font-semibold text-slate-800" x-text="row.item_name"></span>
+                                                    <span class="rounded-full px-2 py-0.5 text-[11px] font-bold"
+                                                          :class="row.state === 'supplier' ? 'bg-indigo-100 text-indigo-700' : 'bg-red-100 text-red-700'"
+                                                          x-text="moveStateLabel(row.state)"></span>
+                                                </p>
+                                                <p class="text-xs text-slate-500 tabular-nums break-all">
+                                                    <span x-text="row.serial_no || (row.qty + ' pc(s)')"></span>
+                                                    <span x-show="row.since" x-cloak x-text="'· since ' + fmtDate(row.since)"></span>
+                                                </p>
+                                            </div>
+                                            <div class="flex flex-wrap shrink-0 gap-2">
+                                                <template x-if="row.state === 'defective'">
+                                                    <div class="flex flex-wrap gap-2">
+                                                        <button type="button" @click="openMove(row, 'supplier')"
+                                                                class="nb-press bg-indigo-50 hover:bg-indigo-100 text-indigo-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-indigo-200">Send to supplier</button>
+                                                        <button type="button" @click="openMove(row, 'stock')"
+                                                                class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-brand-200">Fixed — to stock</button>
+                                                    </div>
+                                                </template>
+                                                <template x-if="row.state === 'supplier'">
+                                                    <div class="flex flex-wrap gap-2">
+                                                        <button type="button" @click="openMove(row, 'stock')"
+                                                                class="nb-press bg-brand-50 hover:bg-brand-100 text-brand-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-brand-200">Back — to stock</button>
+                                                        <button type="button" @click="openMove(row, 'defective')"
+                                                                class="nb-press bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-300">Back, still faulty</button>
+                                                    </div>
+                                                </template>
+                                                <button type="button" @click="openMove(row, 'written_off')"
+                                                        class="nb-press bg-red-50 hover:bg-red-100 text-red-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-red-200">Write off</button>
+                                            </div>
+                                        </li>
+                                    </template>
+                                </ul>
+
+                                <!-- Every move made by hand, newest first — the audit trail for the
+                                     queue above. Returns and claims keep their own. -->
+                                <div x-show="showMoves" x-cloak class="mt-4 border-t border-slate-200 pt-3">
+                                    <p class="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">History</p>
+                                    <ul class="space-y-1.5 text-sm">
+                                        <template x-for="m in recentMoves" :key="'mv-' + m.id">
+                                            <li class="flex flex-wrap gap-x-3">
+                                                <span class="shrink-0 w-24 text-xs text-slate-500 tabular-nums pt-0.5" x-text="fmtDate(m.date)"></span>
+                                                <span class="text-slate-800 min-w-0 flex-1">
+                                                    <span x-text="m.item_name + (m.serial_no ? ' ' + m.serial_no : ' ×' + m.quantity)"></span>:
+                                                    <span x-text="moveStateLabel(m.from_state) + ' → ' + moveStateLabel(m.to_state)"></span>
+                                                    <span class="text-slate-500" x-show="m.party || m.note" x-cloak x-text="' — ' + [m.party, m.note].filter(Boolean).join(' · ')"></span>
+                                                    <span class="font-semibold text-rose-700" x-show="movementLoss(m) > 0" x-cloak x-text="' −' + fmt(movementLoss(m))"></span>
+                                                </span>
+                                            </li>
+                                        </template>
+                                    </ul>
                                 </div>
                             </div>
                         </section>
@@ -2268,6 +2318,34 @@
                 </div>
             </template>
         </div>
+    </div>
+
+    <!-- ================= SALES ACTIONS MENU =================
+         Paid / Return / Warranty for one invoice, opened from the arrow beside
+         Print in the desktop sales table. A direct child of <body>, placed from
+         the arrow's position (openActionsMenu), because inside the table it
+         would be clipped by the table's scroll box. Closes on a click
+         anywhere else, Escape, scroll or resize — a menu left floating over a
+         page that moved would point at the wrong row. -->
+    <div x-show="actionsMenu" x-cloak role="menu" aria-label="Invoice actions"
+         class="no-print fixed z-40 w-40 rounded-lg border border-slate-200 bg-white py-1 shadow-lg text-sm"
+         :style="actionsMenu ? `top:${actionsMenu.top}px;left:${actionsMenu.left}px` : ''"
+         @click.outside="closeActionsMenu()" @keydown.escape.window="closeActionsMenu()"
+         @scroll.window="closeActionsMenu()" @resize.window="closeActionsMenu()">
+        <template x-if="actionsMenu">
+            <div>
+                <button type="button" role="menuitem" @click="runMenuAction('openPayment')"
+                        class="flex w-full items-center justify-between gap-2 px-3 py-2 text-left font-medium hover:bg-slate-50"
+                        :class="isInvoiceDue(actionsMenu.inv) ? 'text-red-700' : 'text-slate-700'">
+                    <span>Paid</span>
+                    <span class="text-xs font-semibold tabular-nums" x-show="isInvoiceDue(actionsMenu.inv)" x-text="'Due ' + fmt(invoiceDue(actionsMenu.inv))"></span>
+                </button>
+                <button type="button" role="menuitem" @click="runMenuAction('openReturn')" x-show="!invoiceFullyReturned(actionsMenu.inv)"
+                        class="block w-full px-3 py-2 text-left font-medium text-amber-800 hover:bg-amber-50">Return</button>
+                <button type="button" role="menuitem" @click="runMenuAction('openClaim')" x-show="invoiceClaimable(actionsMenu.inv)"
+                        class="block w-full px-3 py-2 text-left font-medium text-indigo-800 hover:bg-indigo-50">Warranty</button>
+            </div>
+        </template>
     </div>
 
     <!-- ================= EXPENSE EDIT =================

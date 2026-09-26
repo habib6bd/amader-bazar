@@ -370,6 +370,18 @@ function shopApp() {
     dealerSearch: '',
     // Which money receipts the sales history lists: 'all' | 'due' | 'paid'.
     saleStatus: 'all',
+    // Buying price and Margin (Products & Stock) and Profit (Sales History)
+    // start blurred — a customer glancing at the screen should not read the
+    // shop's costs or margins off it. marginVisible covers both Buying and
+    // Margin, since either one gives the other away. Never persisted: every
+    // fresh visit starts hidden again.
+    marginVisible: false,
+    profitVisible: false,
+    /* The desktop sales table's actions menu (Paid / Return / Warranty),
+       opened from the arrow beside Print: { inv, top, left } or null.
+       One menu for the whole table, positioned under the arrow that opened
+       it — see openActionsMenu(). */
+    actionsMenu: null,
     // Both start collapsed to five rows; "Show all" opens them fully.
     invLimit: ROWS_COLLAPSED,
     salesLimit: ROWS_COLLAPSED,
@@ -886,6 +898,41 @@ function shopApp() {
       return (inv?.lines || []).every((l) => this.lineLeft(l) <= 0);
     },
 
+    /* Opens the actions menu under the arrow that was clicked, or closes it
+       if that row's menu is already open.
+
+       The menu lives at the top of <body>, not in the row: the table scrolls
+       sideways inside an overflow box that would clip anything hanging out of
+       it, and the sections' rise animation leaves a transform behind that
+       would pin a `fixed` element to the section instead of the viewport. So
+       it is placed from the arrow's on-screen position, and flips above the
+       arrow when there is no room below. */
+    openActionsMenu(inv, event) {
+      if (Number(this.actionsMenu?.inv.id) === Number(inv.id)) {
+        this.actionsMenu = null;
+        return;
+      }
+      const MENU_WIDTH = 160;
+      const MENU_HEIGHT = 130; // three items; used only to decide on flipping
+      const r = event.currentTarget.getBoundingClientRect();
+      const below = r.bottom + 4;
+      const top = below + MENU_HEIGHT > window.innerHeight ? Math.max(8, r.top - 4 - MENU_HEIGHT) : below;
+      const left = Math.max(8, Math.min(r.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8));
+      this.actionsMenu = { inv, top, left };
+    },
+
+    closeActionsMenu() {
+      this.actionsMenu = null;
+    },
+
+    // Runs a menu item on the menu's invoice, closing the menu first. Takes
+    // the method's name, not the method, so it is called with `this` intact.
+    runMenuAction(name) {
+      const inv = this.actionsMenu?.inv;
+      this.actionsMenu = null;
+      if (inv) this[name](inv);
+    },
+
     // The profit a return takes back: what that share of the line earned. Null
     // when the line's cost is unknown, since its profit was never counted.
     returnLineProfit(rl) {
@@ -1313,6 +1360,7 @@ function shopApp() {
       this.movements = [];
       this.faultyUnits = [];
       this.moveDraft = null;
+      this.actionsMenu = null;
       this.inventory = [];
       this.purchases = [];
       this.expenses = [];
