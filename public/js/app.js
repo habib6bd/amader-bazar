@@ -500,6 +500,12 @@ function shopApp() {
     searchQuery: '',
     searchOpen: false,
     searchIndex: 0,
+    // One colour per day on the dashboard's 7-day chart, oldest first; the
+    // last is today's, the shop's own green.
+    chartColors: [
+      ['#4ade80', '#16a34a'], ['#60a5fa', '#2563eb'], ['#c084fc', '#7c3aed'], ['#fbbf24', '#f59e0b'],
+      ['#2dd4bf', '#0d9488'], ['#fb923c', '#ea580c'], ['#22c55e', '#166534'],
+    ],
     // A field to focus on arriving at the next page, set by a jump (Restock).
     pendingFocus: '',
 
@@ -3275,24 +3281,24 @@ function shopApp() {
       const out = [];
       const low = this.lowStockItems.length;
       if (low) {
-        out.push({ key: 'low', tone: 'text-red-600 bg-red-50', icon: 'warning',
+        out.push({ key: 'low', tone: 'text-red-600 bg-red-100', icon: 'warning',
           label: `${low} product${low === 1 ? '' : 's'} low on stock`, sub: `Fewer than ${LOW_STOCK_THRESHOLD} units left`,
           run: () => this.go('lowstock') });
       }
       const due = this.invoices.filter((inv) => this.isInvoiceDue(inv));
       if (due.length) {
         const amount = due.reduce((sum, inv) => sum + this.invoiceDue(inv), 0);
-        out.push({ key: 'due', tone: 'text-red-600 bg-red-50', icon: 'banknotes',
+        out.push({ key: 'due', tone: 'text-amber-700 bg-amber-100', icon: 'banknotes',
           label: `${this.fmt(amount)} still due`, sub: `On ${due.length} invoice${due.length === 1 ? '' : 's'}`,
           run: () => { this.saleSearch = ''; this.saleStatus = 'due'; this.setDateRange('all'); this.go('sales'); } });
       }
       if (this.openClaimCount) {
-        out.push({ key: 'claims', tone: 'text-amber-700 bg-amber-50', icon: 'shield',
+        out.push({ key: 'claims', tone: 'text-blue-700 bg-blue-100', icon: 'shield',
           label: `${this.openClaimCount} open warranty claim${this.openClaimCount === 1 ? '' : 's'}`, sub: 'Taken in, waiting to be settled',
           run: () => { this.claimFilter = 'open'; this.go('warranty'); } });
       }
       if (this.faultyQueue.length) {
-        out.push({ key: 'faulty', tone: 'text-violet-700 bg-violet-50', icon: 'wrench',
+        out.push({ key: 'faulty', tone: 'text-violet-700 bg-violet-100', icon: 'wrench',
           label: `${this.faultyQueue.length} faulty item${this.faultyQueue.length === 1 ? '' : 's'} waiting`,
           sub: `${this.faultyInShop.length} in the shop · ${this.faultyAtSupplier.length} with a supplier`,
           run: () => this.go('faulty') });

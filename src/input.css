@@ -100,9 +100,9 @@
      brand-950, so it reads as the same green as the invoice pad rather than a
      generic dark theme; the workspace is a cool neutral so figures and status
      colours carry the page, not the background. */
-  --color-sidebar: #13210b;
-  --color-sidebar-line: #24381a;
-  --color-canvas: #f5f7f8;
+  --color-sidebar: #0b2a1d;
+  --color-sidebar-line: #ffffff14;
+  --color-canvas: #f3f6f4;
   --color-ink: #172033;
 
   /* Motion. One duration and one easing shared by every animation below, so
@@ -123,11 +123,11 @@
 @layer components {
   /* ---- surfaces ---- */
   .nb-card {
-    @apply rounded-xl border border-slate-200 bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04)];
+    @apply rounded-2xl border border-[#e5ebe7] bg-white shadow-[0_1px_2px_#0b2a1d0a,0_8px_24px_-16px_#0b2a1d33];
   }
 
   .nb-card-head {
-    @apply flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5;
+    @apply flex flex-wrap items-center justify-between gap-3 border-b border-[#e5ebe7] px-4 py-3.5 sm:px-5;
   }
 
   .nb-card-title {
@@ -144,11 +144,11 @@
   }
 
   .nb-page-title {
-    @apply text-xl font-semibold tracking-tight text-ink sm:text-2xl;
+    @apply text-xl font-bold tracking-tight text-ink sm:text-[26px];
   }
 
   .nb-page-desc {
-    @apply mt-1 text-sm text-slate-500;
+    @apply mt-1 text-sm text-[#6b7a72];
   }
 
   /* ---- buttons ---- */
@@ -166,8 +166,11 @@
     @apply h-11 px-5;
   }
 
+  /* Green gradient with a soft green glow: the one thing on a screen that
+     says "press me". */
   .nb-btn-primary {
-    @apply border-brand-700 bg-brand-700 text-white shadow-sm hover:border-brand-800 hover:bg-brand-800;
+    @apply border-transparent bg-linear-135 from-green-700 to-green-600 text-white shadow-[0_6px_14px_#15803d40]
+      hover:from-green-800 hover:to-green-700;
   }
 
   .nb-btn-secondary {
@@ -305,10 +308,60 @@
   .nb-badge.is-violet { @apply bg-violet-50 text-violet-700 ring-violet-600/20; }
   .nb-badge.is-neutral { @apply bg-slate-100 text-slate-600 ring-slate-500/20; }
 
+  /* A rounded status pill without a ring, for the dashboard's compact lists. */
+  .nb-pill {
+    @apply rounded-full px-2.5 py-0.5 text-xs font-semibold whitespace-nowrap;
+  }
+
+  .nb-pill.is-success { @apply bg-green-100 text-green-800; }
+  .nb-pill.is-danger { @apply bg-red-100 text-red-700; }
+  .nb-pill.is-warning { @apply bg-amber-100 text-amber-800; }
+  .nb-pill.is-neutral { @apply bg-slate-100 text-slate-600; }
+
+  /* Dashboard quick-action tiles: an icon on a coloured square, lifting on hover. */
+  .nb-qa {
+    @apply block rounded-[14px] border border-[#e5ebe7] p-4 text-left text-sm font-semibold text-ink transition duration-150 outline-none
+      hover:-translate-y-0.5 hover:shadow-[0_8px_18px_-10px_#0006] focus-visible:ring-2 focus-visible:ring-green-600;
+  }
+
+  .nb-qa-icon {
+    @apply mb-2.5 grid h-[38px] w-[38px] place-items-center rounded-[11px];
+  }
+
+  /* The dashboard's tables breathe a little more than the working lists. */
+  .nb-table-roomy thead th { @apply px-5 py-2.5; }
+  .nb-table-roomy tbody td { @apply px-5 py-[11px] text-[14px]; }
+  .nb-table-roomy tbody tr:hover td { @apply bg-[#f9fcfa]; }
+
   /* ---- summary figures ---- */
   .nb-kpi {
-    @apply flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-[0_1px_2px_rgba(16,24,40,0.04)];
+    @apply flex items-start gap-3 rounded-2xl border border-[#e5ebe7] bg-white p-4 shadow-[0_1px_2px_#0b2a1d0a,0_8px_24px_-16px_#0b2a1d33];
   }
+
+  /* The dashboard's four headline figures: a solid gradient card, white type,
+     a soft circle in the corner and the icon large and faint behind the sub-line.
+     The colour names the figure (green sales, blue revenue, violet profit, red
+     low stock), so it reads at a glance from across the counter. */
+  .nb-kpi-card {
+    @apply relative overflow-hidden rounded-2xl p-[18px] text-white outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-green-600;
+    box-shadow: 0 10px 24px -10px var(--kpi-shadow);
+  }
+
+  .nb-kpi-card::after {
+    content: "";
+    @apply pointer-events-none absolute -top-[30px] -right-[30px] h-[120px] w-[120px] rounded-full bg-white/[0.12];
+  }
+
+  .nb-kpi-card .nb-kpi-card-label { @apply text-[13px] opacity-90; }
+  .nb-kpi-card .nb-kpi-card-value { @apply mt-1.5 mb-0.5 block text-[28px] leading-tight font-bold tracking-[-0.5px] tabular-nums; }
+  .nb-kpi-card .nb-kpi-card-sub { @apply relative z-[1] block pr-10 text-xs opacity-85; }
+  .nb-kpi-card .nb-kpi-card-icon { @apply absolute right-4 bottom-3 opacity-50; }
+
+  .nb-kpi-card.is-green { @apply bg-linear-135 from-green-600 to-green-400; --kpi-shadow: #16a34a; }
+  .nb-kpi-card.is-blue { @apply bg-linear-135 from-blue-600 to-blue-400; --kpi-shadow: #2563eb; }
+  .nb-kpi-card.is-violet { @apply bg-linear-135 from-violet-600 to-purple-400; --kpi-shadow: #7c3aed; }
+  .nb-kpi-card.is-red { @apply bg-linear-135 from-red-600 to-orange-400; --kpi-shadow: #dc2626; }
+  .nb-kpi-card.is-teal { @apply bg-linear-135 from-teal-600 to-teal-400; --kpi-shadow: #0d9488; }
 
   .nb-kpi-icon {
     @apply flex h-9 w-9 shrink-0 items-center justify-center rounded-lg;
@@ -346,7 +399,7 @@
   }
 
   .nb-table thead th {
-    @apply sticky top-0 z-[1] border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] font-semibold tracking-wider whitespace-nowrap text-slate-500 uppercase;
+    @apply sticky top-0 z-[1] border-b border-[#e5ebe7] bg-[#f7faf8] px-3 py-2.5 text-xs font-semibold whitespace-nowrap text-[#6b7a72];
   }
 
   .nb-table thead th:first-child,
@@ -453,21 +506,27 @@
 
   /* ---- sidebar ---- */
   .nb-nav-item {
-    @apply relative flex h-9 w-full items-center gap-3 rounded-lg px-2.5 text-left text-[13px] font-medium text-white/70
-      transition-colors outline-none hover:bg-white/[0.06] hover:text-white focus-visible:ring-2 focus-visible:ring-brand-400;
+    @apply relative flex h-10 w-full items-center gap-[11px] rounded-[10px] px-3 text-left text-[13.5px] font-medium text-[#c6dccf]
+      transition-colors outline-none hover:bg-white/[0.06] hover:text-white focus-visible:ring-2 focus-visible:ring-green-400;
+  }
+
+  /* The icon sits on a small chip of its own. */
+  .nb-nav-icon {
+    @apply grid h-[26px] w-[26px] shrink-0 place-items-center rounded-lg bg-white/[0.06];
   }
 
   .nb-nav-item[aria-current="page"] {
-    @apply bg-white/[0.1] text-white;
+    @apply text-white;
+    background: linear-gradient(90deg, #22c55e33, #22c55e0d);
+    box-shadow: inset 3px 0 #22c55e;
   }
 
-  .nb-nav-item[aria-current="page"]::before {
-    content: "";
-    @apply absolute top-2 bottom-2 -left-3 w-[3px] rounded-r bg-brand-400;
+  .nb-nav-item[aria-current="page"] .nb-nav-icon {
+    @apply bg-green-500/20 text-green-300;
   }
 
   .nb-nav-sub {
-    @apply h-8 pl-10 text-[13px];
+    @apply h-8 pl-12 text-[13px] text-[#8fb1a0];
   }
 
   .nb-nav-count {
