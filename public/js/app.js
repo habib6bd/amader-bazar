@@ -5,10 +5,10 @@
 // Stock at or below this count is flagged as low.
 const LOW_STOCK_THRESHOLD = 5;
 
-// Rows a long table shows before it is expanded. Small on purpose: the till is
-// used on a laptop at a counter, and a shop with a hundred products should not
-// have to scroll past all of them to reach the next section.
-const ROWS_COLLAPSED = 5;
+// Rows a long table shows before it is expanded. Each list has a page of its
+// own, so this is a screenful rather than a teaser — but still a limit, so a
+// shop with a thousand invoices does not render every row to open the page.
+const ROWS_COLLAPSED = 25;
 
 // Below this, a remaining balance is float noise rather than money owed. Must
 // match PAID_EPSILON in server.js, which validates the paid amount the same way.
@@ -119,26 +119,147 @@ function writeSession(active) {
   }
 }
 
-/* Which dashboard sections are open, remembered per browser so the layout a
-   shopkeeper settles on survives a refresh. Purely cosmetic: losing it costs
-   nothing, which is why every access is wrapped rather than guarded. */
-const SECTIONS_KEY = 'shop-sections';
-const DEFAULT_SECTIONS = { products: true, serials: true, sales: true, warranty: true, faulty: true, expenses: true, purchases: true };
+/* Whether the desktop sidebar is folded down to its icons, remembered per
+   browser. Purely cosmetic: losing it costs nothing, which is why every access
+   is wrapped rather than guarded. */
+const SIDEBAR_KEY = 'shop-sidebar';
 
-function readSections() {
+function readSidebarCollapsed() {
   try {
-    return { ...DEFAULT_SECTIONS, ...JSON.parse(localStorage.getItem(SECTIONS_KEY) || '{}') };
+    return localStorage.getItem(SIDEBAR_KEY) === 'collapsed';
   } catch {
-    return { ...DEFAULT_SECTIONS };
+    return false;
   }
 }
 
-function writeSections(sections) {
+function writeSidebarCollapsed(collapsed) {
   try {
-    localStorage.setItem(SECTIONS_KEY, JSON.stringify(sections));
+    if (collapsed) localStorage.setItem(SIDEBAR_KEY, 'collapsed');
+    else localStorage.removeItem(SIDEBAR_KEY);
   } catch {
-    /* nothing to do — the sections simply open again next visit */
+    /* nothing to do — the sidebar simply opens full width next visit */
   }
+}
+
+/* ---------------------------------------------------------------- pages
+
+   Every screen of the app, keyed by the name the markup tests (`page === …`),
+   with the address it lives at. Hash routing rather than paths: the server
+   serves one index.html and needs no route of its own per page, and a hash
+   survives a refresh, so a shopkeeper reloading the till stays on the till.
+
+   Each page is an x-show panel, never x-if — the cart, a half-filled dealer
+   form and the scanner's refs must all survive a trip to another page. */
+const PAGES = {
+  dashboard: { hash: '', title: 'Dashboard' },
+  sale: { hash: 'sales/new', title: 'New Sale', group: 'sales' },
+  sales: { hash: 'sales', title: 'Sales History', group: 'sales' },
+  purchase: { hash: 'purchases/new', title: 'New Purchase', group: 'purchases' },
+  purchases: { hash: 'purchases', title: 'Purchase History', group: 'purchases' },
+  products: { hash: 'products', title: 'Products', group: 'stock' },
+  lowstock: { hash: 'products/low-stock', title: 'Low Stock', group: 'stock' },
+  customers: { hash: 'customers', title: 'Customers' },
+  suppliers: { hash: 'suppliers', title: 'Suppliers' },
+  expenses: { hash: 'expenses', title: 'Expenses' },
+  serials: { hash: 'serials', title: 'Serial / IMEI' },
+  warranty: { hash: 'warranty', title: 'Warranty Claims' },
+  faulty: { hash: 'faulty', title: 'Faulty & Supplier' },
+  rsales: { hash: 'reports/sales', title: 'Sales Report', group: 'reports' },
+  rpnl: { hash: 'reports/profit-loss', title: 'Profit & Loss', group: 'reports' },
+  rstock: { hash: 'reports/stock', title: 'Stock Report', group: 'reports' },
+  rexpenses: { hash: 'reports/expenses', title: 'Expense Report', group: 'reports' },
+};
+
+// hash → page name, for reading the address bar.
+const PAGE_BY_HASH = Object.fromEntries(Object.entries(PAGES).map(([name, p]) => [p.hash, name]));
+
+// The page an address points at; anything unknown is the dashboard.
+function pageFromHash(hash) {
+  const key = String(hash || '').replace(/^#\/?/, '').replace(/\/+$/, '');
+  return PAGE_BY_HASH[key] ?? 'dashboard';
+}
+
+/* The sidebar, built from the pages above. Only what the app really does is
+   listed — no menu item leads to a placeholder. */
+const NAV = [
+  { page: 'dashboard', label: 'Dashboard', icon: 'home' },
+  { group: 'sales', label: 'Sales', icon: 'cart', children: ['sale', 'sales'] },
+  { group: 'purchases', label: 'Purchases', icon: 'truck', children: ['purchase', 'purchases'] },
+  { group: 'stock', label: 'Products & Stock', icon: 'cube', children: ['products', 'lowstock'] },
+  { page: 'customers', label: 'Customers', icon: 'users' },
+  { page: 'suppliers', label: 'Suppliers', icon: 'store' },
+  { page: 'expenses', label: 'Expenses', icon: 'banknotes' },
+  { page: 'serials', label: 'Serial / IMEI', icon: 'hashtag' },
+  { page: 'warranty', label: 'Warranty Claims', icon: 'shield' },
+  { page: 'faulty', label: 'Faulty & Supplier', icon: 'wrench' },
+  { group: 'reports', label: 'Reports', icon: 'chart', children: ['rsales', 'rpnl', 'rstock', 'rexpenses'] },
+];
+
+/* ---------------------------------------------------------------- icons
+
+   One outline set (Heroicons-style, 24px grid, drawn with the text colour),
+   inlined so the app keeps working with no internet. The markup asks for one
+   by name with x-html="icon('cart')"; nothing reactive goes into it, so each
+   is rendered once. */
+const ICONS = {
+  home: 'm2.25 12 8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25',
+  cart: 'M2.25 3h1.386c.51 0 .955.343 1.087.835l.383 1.437M7.5 14.25a3 3 0 0 0-3 3h15.75m-12.75-3h11.218c1.121-2.3 2.1-4.684 2.924-7.138a60.114 60.114 0 0 0-16.536-1.84M7.5 14.25 5.106 5.272M6 20.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm12.75 0a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Z',
+  truck: 'M8.25 18.75a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 0 1-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m3 0h1.125c.621 0 1.129-.504 1.09-1.124a17.902 17.902 0 0 0-3.213-9.193 2.056 2.056 0 0 0-1.58-.86H14.25M16.5 18.75h-2.25m0-11.177v-.958c0-.568-.422-1.048-.987-1.106a48.554 48.554 0 0 0-10.026 0 1.106 1.106 0 0 0-.987 1.106v7.635m12-6.677v6.677m0 4.5v-4.5m0 0h-12',
+  cube: 'm21 7.5-9-5.25L3 7.5m18 0-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9',
+  users: 'M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z',
+  store: 'M13.5 21v-7.5a.75.75 0 0 1 .75-.75h3a.75.75 0 0 1 .75.75V21m-4.5 0H2.36m11.14 0H18m0 0h3.64m-1.39 0V9.349M3.75 21V9.349m0 0a3.001 3.001 0 0 0 3.75-.615A2.993 2.993 0 0 0 9.75 9.75c.896 0 1.7-.393 2.25-1.016a2.993 2.993 0 0 0 2.25 1.016c.896 0 1.7-.393 2.25-1.015a3.001 3.001 0 0 0 3.75.614m-16.5 0a3.004 3.004 0 0 1-.621-4.72l1.189-1.19A1.5 1.5 0 0 1 5.378 3h13.243a1.5 1.5 0 0 1 1.06.44l1.19 1.189a3 3 0 0 1-.621 4.72M6.75 18h3.75a.75.75 0 0 0 .75-.75V13.5a.75.75 0 0 0-.75-.75H6.75a.75.75 0 0 0-.75.75v3.75c0 .414.336.75.75.75Z',
+  banknotes: 'M2.25 18.75a60.07 60.07 0 0 1 15.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 0 1 3 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 0 0-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 0 1-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 0 0 3 15h-.75M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm3 0h.008v.008H18V10.5Zm-12 0h.008v.008H6V10.5Z',
+  hashtag: 'M5.25 8.25h15m-16.5 7.5h15m-1.8-13.5-3.9 19.5m-2.1-19.5-3.9 19.5',
+  shield: 'M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z',
+  wrench: 'M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 0 0 4.486-6.336l-3.276 3.277a3.004 3.004 0 0 1-2.25-2.25l3.276-3.276a4.5 4.5 0 0 0-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437 1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008Z',
+  chart: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z',
+  search: 'm21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z',
+  menu: 'M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5',
+  chevronDown: 'm19.5 8.25-7.5 7.5-7.5-7.5',
+  chevronRight: 'm8.25 4.5 7.5 7.5-7.5 7.5',
+  collapse: 'm18.75 4.5-7.5 7.5 7.5 7.5m-6-15L5.25 12l7.5 7.5',
+  expand: 'm5.25 4.5 7.5 7.5-7.5 7.5m6-15 7.5 7.5-7.5 7.5',
+  close: 'M6 18 18 6M6 6l12 12',
+  plus: 'M12 4.5v15m7.5-7.5h-15',
+  logout: 'M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9',
+  key: 'M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z',
+  warning: 'M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z',
+  check: 'M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z',
+  error: 'm9.75 9.75 4.5 4.5m0-4.5-4.5 4.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z',
+  info: 'm11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z',
+  dots: 'M12 6.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 12.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 18.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5Z',
+  printer: 'M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a42.415 42.415 0 0 1 10.56 0m-10.56 0L6.34 18m10.94-4.171c.24.03.48.062.72.096m-.72-.096L17.66 18m0 0 .229 2.523a1.125 1.125 0 0 1-1.12 1.227H7.231c-.662 0-1.18-.568-1.12-1.227L6.34 18m11.318 0h1.091A2.25 2.25 0 0 0 21 15.75V9.456c0-1.081-.768-2.015-1.837-2.175a48.055 48.055 0 0 0-1.913-.247M6.34 18H5.25A2.25 2.25 0 0 1 3 15.75V9.456c0-1.081.768-2.015 1.837-2.175a48.041 48.041 0 0 1 1.913-.247m10.5 0a48.536 48.536 0 0 0-10.5 0m10.5 0V3.375c0-.621-.504-1.125-1.125-1.125h-8.25c-.621 0-1.125.504-1.125 1.125v3.659M18 10.5h.008v.008H18V10.5Zm-3 0h.008v.008H15V10.5Z',
+  doc: 'M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z',
+  trend: 'M2.25 18 9 11.25l4.306 4.306a11.95 11.95 0 0 1 5.814-5.518l2.74-1.22m0 0-5.94-2.281m5.94 2.28-2.28 5.941',
+  undo: 'M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3',
+  edit: 'm16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10',
+  trash: 'm14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0',
+  refresh: 'M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99',
+  barcode: 'M3.75 4.5v15m3-15v15m3.75-15v15m2.25-15v15m3.75-15v15m3.75-15v15',
+  user: 'M17.982 18.725A7.488 7.488 0 0 0 12 15.75a7.488 7.488 0 0 0-5.982 2.975m11.963 0a9 9 0 1 0-11.963 0m11.963 0A8.966 8.966 0 0 1 12 21a8.966 8.966 0 0 1-5.982-2.275M15 9.75a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
+  inbox: 'M2.25 13.5h3.86a2.25 2.25 0 0 1 2.012 1.244l.256.512a2.25 2.25 0 0 0 2.013 1.244h3.218a2.25 2.25 0 0 0 2.013-1.244l.256-.512a2.25 2.25 0 0 1 2.013-1.244h3.859m-19.5.338V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18v-4.162c0-.224-.034-.447-.1-.661L19.24 5.338a2.25 2.25 0 0 0-2.15-1.588H6.911a2.25 2.25 0 0 0-2.15 1.588L2.35 13.177a2.25 2.25 0 0 0-.1.661Z',
+  clock: 'M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z',
+  arrowRight: 'M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3',
+  eye: 'M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
+  eyeOff: 'M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88',
+};
+
+/* Where a row menu goes: under the button that opened it, right-aligned to
+   it, flipped above when there is no room below, and never off-screen. The
+   menus are fixed elements at the end of <body> — inside a table they would be
+   clipped by its scroll box. */
+function menuPosition(anchor, width, height) {
+  const r = anchor.getBoundingClientRect();
+  const below = r.bottom + 4;
+  const top = below + height > window.innerHeight ? Math.max(8, r.top - 4 - height) : below;
+  const left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8));
+  return { top, left };
+}
+
+function iconSvg(name, cls = 'h-5 w-5') {
+  const d = ICONS[name];
+  if (!d) return '';
+  return `<svg class="${cls}" fill="none" viewBox="0 0 24 24" stroke-width="1.6" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="${d}"/></svg>`;
 }
 
 // The invoice header. Items live in the cart, one entry per line.
@@ -357,8 +478,32 @@ function shopApp() {
     // Shop identity — name, address, contacts. See js/shop-config.js.
     shop: window.SHOP,
 
+    // Who is signed in, from /api/session or the login form. Shown in the
+    // profile menu; the server's cookie is what actually authorises.
+    userEmail: '',
+
+    // ---------------------------------------------------------------- shell
+    page: pageFromHash(location.hash),
+    pages: PAGES,
+    nav: NAV,
+    // Sidebar groups unfolded right now. Reassigned, never pushed to: a
+    // change inside a nested value was once missed here (the old collapsing
+    // sections), while a new top-level value is always picked up.
+    navOpenGroups: [],
+    sidebarCollapsed: readSidebarCollapsed(),
+    // The phone/tablet drawer.
+    navOpen: false,
+    profileOpen: false,
+    alertsOpen: false,
+
+    // Global search (Ctrl+K), over what /api/data has already loaded.
+    searchQuery: '',
+    searchOpen: false,
+    searchIndex: 0,
+    // A field to focus on arriving at the next page, set by a jump (Restock).
+    pendingFocus: '',
+
     // ------------------------------------------------------------ dashboard
-    activeForm: 'sale',
     inventory: [],
     sales: [],
     purchases: [],
@@ -390,16 +535,16 @@ function shopApp() {
     // Exposed so the markup can use the constant instead of repeating the
     // literal 5 — those copies do not follow when the constant changes.
     rowsCollapsed: ROWS_COLLAPSED,
-    /* Two flat booleans rather than one `sections` object: Alpine tracks a
-       change to a top-level property reliably, but a change to a key *inside* a
-       nested object bound as `sections.products` was not picked up here — the
-       value changed and the panel stayed open. Flat is also less to read. */
-    productsOpen: readSections().products,
-    salesOpen: readSections().sales,
-    warrantyOpen: readSections().warranty,
-    faultyOpen: readSections().faulty,
-    expensesOpen: readSections().expenses,
-    purchasesOpen: readSections().purchases,
+
+    // Products page: which stock to list — 'all', 'low', 'out' or 'serial'.
+    invFilter: 'all',
+    // The products table's row menu, placed like actionsMenu: { item, top, left }.
+    productMenu: null,
+
+    // Filters on the derived Customers and Suppliers pages.
+    customerSearch: '',
+    customerDueOnly: false,
+    supplierSearch: '',
 
     sale: blankSale(),
     // The invoice being built: [{ key, item_name, quantity, unit_price, serial_no }].
@@ -433,8 +578,6 @@ function shopApp() {
        productId, error, saving } or null. `row` is a faultyQueue entry, or
        null when marking shelf stock faulty, where productId picks the product. */
     moveDraft: null,
-    // Faulty section: show every move made, not just the queue.
-    showMoves: false,
     dealer: blankDealer(),
     savingSale: false,
     savingDealer: false,
@@ -466,9 +609,8 @@ function shopApp() {
     productSerialCode: '',
     productSerialsLoading: false,
 
-    // Serial / IMEI section. Fetched page by page from the server, never
+    // Serial / IMEI page. Fetched page by page from the server, never
     // shipped with /api/data — a year of phones is thousands of rows.
-    serialsOpen: readSections().serials,
     serialQuery: '',
     serialStatus: 'all',
     serialProductId: '',
@@ -533,11 +675,17 @@ function shopApp() {
       // server knows that.
       if (readSession()) this.isLoggedIn = true;
 
+      // The address bar is the router: back/forward and a pasted link both
+      // arrive here.
+      window.addEventListener('hashchange', () => this.enterPage(pageFromHash(location.hash)));
+      this.enterPage(this.page, { initial: true });
+
       try {
         const res = await fetch('/api/session');
         const data = await res.json().catch(() => ({}));
         if (data.authenticated) {
           this.isLoggedIn = true;
+          this.userEmail = data.email || '';
           writeSession(true);
           this.loadData();
         } else {
@@ -550,6 +698,111 @@ function shopApp() {
         // of a till that is working fine.
         if (this.isLoggedIn) this.loadData();
       }
+    },
+
+    /* ---------------------------------------------------------------- shell */
+
+    // Navigate. Goes through the address bar so back/forward work, except
+    // when already on the page — the hash would not change, and the caller
+    // (a jump from another page, say) still wants the page entered afresh.
+    go(name) {
+      if (!PAGES[name]) name = 'dashboard';
+      this.navOpen = false;
+      this.profileOpen = false;
+      this.alertsOpen = false;
+      if (name === this.page) {
+        this.enterPage(name);
+        return;
+      }
+      location.hash = `#/${PAGES[name].hash}`;
+    },
+
+    // Everything that happens on arriving at a page, however it was reached.
+    enterPage(name, { initial = false } = {}) {
+      this.page = PAGES[name] ? name : 'dashboard';
+      this.navOpen = false;
+      this.actionsMenu = null;
+      this.productMenu = null;
+      // The page's own group unfolds, and the ones it left fold away, so the
+      // sidebar never grows into a list of every page visited.
+      const group = PAGES[this.page].group;
+      if (group) this.navOpenGroups = [group];
+      this.baseTitle = `${PAGES[this.page].title} — ${this.shop?.name || 'NetBazar'}`;
+      if (!this.isReceiptOpen) document.title = this.baseTitle;
+      if (!initial) window.scrollTo({ top: 0 });
+
+      // The serial list is fetched on demand, not with the dashboard — see
+      // GET /api/serials — so arriving on its page is what loads it.
+      if (this.page === 'serials' && !this.serialLoaded && this.isLoggedIn) this.loadSerials();
+
+      // The two tills open ready for the scanner: a shopkeeper with a box in
+      // one hand should never have to click into the barcode field first. A
+      // jump that already knows the next field (Restock) names it instead.
+      const focus = this.pendingFocus || { sale: 'scanInput', purchase: 'dealerScan' }[this.page];
+      this.pendingFocus = '';
+      if (focus) this.focusWhenShown(focus);
+    },
+
+    /* Focus a ref once its page is on screen. x-show reveals a panel on the
+       next animation frame (setTimeout in a background tab), after nextTick,
+       and focus() on a field that is still display:none does nothing — so
+       wait for it to have a box, a few frames at most. */
+    focusWhenShown(ref, tries = 10) {
+      this.$nextTick(() => {
+        const step = (left) => {
+          const el = this.$refs[ref];
+          if (!el) return;
+          if (el.offsetParent !== null) el.focus();
+          else if (left > 0) (document.visibilityState === 'visible' ? requestAnimationFrame : setTimeout)(() => step(left - 1));
+        };
+        step(tries);
+      });
+    },
+
+    pageTitle(name) {
+      return PAGES[name]?.title || '';
+    },
+
+    // The group a page sits in, for highlighting its parent in the sidebar.
+    pageGroup(name) {
+      return PAGES[name]?.group || '';
+    },
+
+    toggleNavGroup(group) {
+      this.navOpenGroups = this.navOpenGroups.includes(group)
+        ? this.navOpenGroups.filter((g) => g !== group)
+        : [...this.navOpenGroups, group];
+    },
+
+    // A folded sidebar has no room for a group's children, so its icon goes
+    // straight to the group's first page instead.
+    openNavGroup(item) {
+      if (this.sidebarCollapsed && window.matchMedia('(min-width: 1024px)').matches) {
+        this.go(item.children[0]);
+        return;
+      }
+      this.toggleNavGroup(item.group);
+    },
+
+    toggleSidebar() {
+      this.sidebarCollapsed = !this.sidebarCollapsed;
+      writeSidebarCollapsed(this.sidebarCollapsed);
+    },
+
+    // A count beside a menu item, only where something is waiting on the shop.
+    navCount(name) {
+      if (name === 'lowstock') return this.lowStockItems.length;
+      if (name === 'warranty') return this.openClaimCount;
+      if (name === 'faulty') return this.faultyQueue.length;
+      return 0;
+    },
+
+    icon: iconSvg,
+
+    // Dashboard quick action: the expense form, ready to type.
+    newExpense() {
+      this.pendingFocus = 'expCategory';
+      this.go('expenses');
     },
 
     // ------------------------------------------------------------- helpers
@@ -912,17 +1165,39 @@ function shopApp() {
         this.actionsMenu = null;
         return;
       }
-      const MENU_WIDTH = 160;
-      const MENU_HEIGHT = 130; // three items; used only to decide on flipping
-      const r = event.currentTarget.getBoundingClientRect();
-      const below = r.bottom + 4;
-      const top = below + MENU_HEIGHT > window.innerHeight ? Math.max(8, r.top - 4 - MENU_HEIGHT) : below;
-      const left = Math.max(8, Math.min(r.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8));
-      this.actionsMenu = { inv, top, left };
+      this.productMenu = null;
+      // Three items; the height is used only to decide on flipping.
+      this.actionsMenu = { inv, ...menuPosition(event.currentTarget, 160, 130) };
     },
 
     closeActionsMenu() {
       this.actionsMenu = null;
+    },
+
+    // The products table's ⋯ menu, on the same footing as the one above.
+    openProductMenu(item, event) {
+      if (Number(this.productMenu?.item.id) === Number(item.id)) {
+        this.productMenu = null;
+        return;
+      }
+      this.actionsMenu = null;
+      this.productMenu = { item, ...menuPosition(event.currentTarget, 176, 170) };
+    },
+
+    runProductMenu(name) {
+      const item = this.productMenu?.item;
+      this.productMenu = null;
+      if (!item) return;
+      if (name === 'delete') {
+        this.openEditProduct(item);
+        this.confirmDelete = true;
+      } else if (name === 'markFaulty') {
+        // Counted goods only; the dialog's product picker starts on this one.
+        this.openMarkFaulty();
+        this.moveDraft.productId = String(item.id);
+      } else {
+        this[name](item);
+      }
     },
 
     // Runs a menu item on the menu's invoice, closing the menu first. Takes
@@ -998,6 +1273,16 @@ function shopApp() {
       return this.invoiceDue(inv) > PAID_EPSILON;
     },
 
+    /* The one-word state of an invoice for the status column. An invoice from
+       before dues were tracked gets no word at all — see invoiceTracksPayment
+       — rather than a PAID the shop cannot stand behind. */
+    invoiceStatus(inv) {
+      if (this.invoiceFullyReturned(inv)) return { label: 'Returned', tone: 'is-neutral' };
+      if (this.isInvoiceDue(inv)) return { label: 'Due', tone: 'is-danger' };
+      if (this.invoiceTracksPayment(inv)) return { label: 'Paid', tone: 'is-success' };
+      return null;
+    },
+
     // "Router ×2" or "Router ×2 +3 more", for the history table.
     invoiceSummary(inv) {
       const lines = inv?.lines || [];
@@ -1033,35 +1318,7 @@ function shopApp() {
       return Number(item.quantity) < LOW_STOCK_THRESHOLD;
     },
 
-    /* ------------------------------------------------- collapsing sections */
-
-    /* Flat `<name>Open` booleans rather than keys on one object: Alpine tracks a
-       change to a top-level property reliably, but a change inside a nested
-       object bound as `sections.products` was not picked up here — the value
-       flipped and the panel stayed open.
-
-       Every flag is written back each time. Omitting one drops it from storage
-       on the next toggle, and it silently reverts to its default. */
-    toggleSection(name) {
-      const key = `${name}Open`;
-      this[key] = !this[key];
-      // The serial list is fetched on demand, not with the dashboard — see
-      // GET /api/serials — so opening the section is what loads it.
-      if (name === 'serials' && this.serialsOpen && !this.serialLoaded) this.loadSerials();
-      this.saveSections();
-    },
-
-    saveSections() {
-      writeSections({
-        products: this.productsOpen,
-        serials: this.serialsOpen,
-        sales: this.salesOpen,
-        warranty: this.warrantyOpen,
-        faulty: this.faultyOpen,
-        expenses: this.expensesOpen,
-        purchases: this.purchasesOpen,
-      });
-    },
+    /* ------------------------------------------------------ list lengths */
 
     // Number.MAX_SAFE_INTEGER rather than the row count, so rows added after
     // expanding (a new sale, a search cleared) stay visible instead of the list
@@ -1093,12 +1350,29 @@ function shopApp() {
     // scanner's trailing Enter does nothing here.
     get filteredInventory() {
       const q = this.invSearch.trim().toLowerCase();
-      if (!q) return this.inventory;
-      return this.inventory.filter(
-        (i) =>
+      return this.inventory.filter((i) => {
+        if (this.invFilter === 'low' && !this.isLowStock(i)) return false;
+        if (this.invFilter === 'out' && Number(i.quantity) > 0) return false;
+        if (this.invFilter === 'serial' && !this.serialTracked(i)) return false;
+        if (!q) return true;
+        return (
           (i.item_name || '').toLowerCase().includes(q) ||
           String(i.barcode || '').toLowerCase().includes(q)
-      );
+        );
+      });
+    },
+
+    // In stock / Low / Out, as a word and a badge tone.
+    stockStatus(item) {
+      const qty = Number(item?.quantity || 0);
+      if (qty <= 0) return { label: 'Out of stock', tone: 'is-danger' };
+      if (this.isLowStock(item)) return { label: 'Low stock', tone: 'is-warning' };
+      return { label: 'In stock', tone: 'is-success' };
+    },
+
+    // Fewest units first: the most urgent restock at the top.
+    get lowStockSorted() {
+      return [...this.lowStockItems].sort((a, b) => Number(a.quantity) - Number(b.quantity) || a.item_name.localeCompare(b.item_name));
     },
 
     // Search matches the invoice number, customer, phone, comment, or any item
@@ -1313,6 +1587,311 @@ function shopApp() {
       return this.filteredPurchases.slice(0, this.purchasesLimit);
     },
 
+    /* ---------------------------------------------------- derived pages
+
+       Customers, Suppliers and the reports are views over data /api/data has
+       already loaded — there is no customer or supplier table behind them.
+       Every figure goes through the same invoice and range functions the
+       sales list uses, so a report can never disagree with the ledger. */
+
+    /* One row per customer, as the invoices name them. A phone number is the
+       firmest identity a walk-in shop has, so invoices sharing one are one
+       customer whatever the name was typed as; without a phone, the name is.
+       Invoices with neither are the walk-in counter trade, kept as one row. */
+    get customers() {
+      const byKey = new Map();
+      for (const inv of this.invoices) {
+        const name = String(inv.customer_name || '').trim();
+        const contact = String(inv.customer_contact || '').trim();
+        const key = contact ? `c:${contact}` : name ? `n:${name.toLowerCase()}` : 'walk-in';
+        let row = byKey.get(key);
+        if (!row) {
+          row = { key, name: '', contact, walkIn: key === 'walk-in', invoices: 0, total: 0, paid: 0, due: 0, last: '' };
+          byKey.set(key, row);
+        }
+        row.invoices += 1;
+        row.total += this.invoiceNet(inv);
+        row.paid += this.invoicePaid(inv);
+        row.due += this.invoiceDue(inv);
+        // The name on their most recent invoice.
+        if ((inv.date || '') >= row.last) {
+          row.last = inv.date || '';
+          if (name) row.name = name;
+        }
+      }
+      return [...byKey.values()].sort((a, b) => b.last.localeCompare(a.last) || b.total - a.total);
+    },
+
+    get filteredCustomers() {
+      const q = this.customerSearch.trim().toLowerCase();
+      return this.customers.filter((c) => {
+        if (this.customerDueOnly && c.due <= PAID_EPSILON) return false;
+        if (!q) return true;
+        return (c.name || 'walk-in').toLowerCase().includes(q) || c.contact.toLowerCase().includes(q);
+      });
+    },
+
+    get customersDueTotal() {
+      return this.customers.reduce((sum, c) => sum + c.due, 0);
+    },
+
+    // A customer's invoices, on the sales page: searched by phone if there is
+    // one (the name may be spelled several ways), over all time, any status.
+    openCustomerSales(c) {
+      this.saleSearch = c.walkIn ? 'Walk-in' : c.contact || c.name;
+      this.saleStatus = 'all';
+      this.setDateRange('all');
+      this.go('sales');
+    },
+
+    // One row per dealer name, as the purchases record it. Purchases carry no
+    // paid amount, so there is no supplier due to show — only what was bought.
+    get suppliers() {
+      const byKey = new Map();
+      for (const p of this.purchases) {
+        const name = String(p.dealer_name || '').trim();
+        if (!name) continue;
+        const key = name.toLowerCase();
+        let row = byKey.get(key);
+        if (!row) {
+          row = { key, name, batches: 0, units: 0, spend: 0, last: '', items: new Set() };
+          byKey.set(key, row);
+        }
+        row.batches += 1;
+        row.units += Number(p.quantity || 0);
+        row.spend += Number(p.total_cost || 0);
+        if (p.item_name) row.items.add(p.item_name);
+        if ((p.date || '') >= row.last) row.last = p.date || '';
+      }
+      return [...byKey.values()]
+        .map((r) => ({ ...r, items: r.items.size }))
+        .sort((a, b) => b.last.localeCompare(a.last) || b.spend - a.spend);
+    },
+
+    get filteredSuppliers() {
+      const q = this.supplierSearch.trim().toLowerCase();
+      if (!q) return this.suppliers;
+      return this.suppliers.filter((s) => s.name.toLowerCase().includes(q));
+    },
+
+    openSupplierPurchases(s) {
+      this.dealerSearch = s.name;
+      this.go('purchases');
+    },
+
+    /* The selected range, day by day. Built from exactly the rows the range
+       totals sum — filteredInvoices, filteredReturns, filteredExpenses and the
+       range's stock moves — so the days always add up to the totals above
+       them. Returns sit on the day the goods came back, as they do there. */
+    get reportDays() {
+      const days = new Map();
+      const day = (date) => {
+        const d = date || '';
+        if (!days.has(d)) {
+          days.set(d, { date: d, invoices: 0, sold: 0, returns: 0, profit: 0, discount: 0, due: 0, expenses: 0, writeOffs: 0 });
+        }
+        return days.get(d);
+      };
+      for (const inv of this.filteredInvoices) {
+        const r = day(inv.date);
+        r.invoices += 1;
+        r.sold += this.invoiceTotal(inv);
+        r.profit += this.profitOf(inv.lines);
+        r.discount += this.invoiceDiscount(inv);
+        r.due += this.invoiceDue(inv);
+      }
+      for (const ret of this.filteredReturns) {
+        const r = day(ret.date);
+        r.returns += ret.lines.reduce((s, rl) => s + Number(rl.amount || 0), 0);
+        r.profit -= this.returnProfitOf(ret.lines);
+      }
+      for (const e of this.filteredExpenses) day(e.date).expenses += Number(e.amount || 0);
+      for (const m of this.movements) {
+        const loss = this.movementLoss(m);
+        if (loss && this.inDateRange(m)) day(m.date).writeOffs += loss;
+      }
+      return [...days.values()]
+        .map((r) => ({ ...r, net: r.profit - r.expenses - r.writeOffs }))
+        .sort((a, b) => b.date.localeCompare(a.date));
+    },
+
+    // Whether a sales-page filter is narrowing the report, so it can say so.
+    get reportFilterNote() {
+      const parts = [];
+      if (this.saleSearch.trim()) parts.push(`sales matching “${this.saleSearch.trim()}”`);
+      if (this.saleStatus !== 'all') parts.push(this.saleStatus === 'due' ? 'due invoices only' : 'paid invoices only');
+      if (this.expenseSearch.trim()) parts.push(`expenses matching “${this.expenseSearch.trim()}”`);
+      return parts.join(', ');
+    },
+
+    clearReportFilters() {
+      this.saleSearch = '';
+      this.saleStatus = 'all';
+      this.expenseSearch = '';
+    },
+
+    // Stock by product, most money on the shelf first.
+    get stockRows() {
+      return [...this.inventory]
+        .map((i) => ({
+          ...i,
+          costValue: Number(i.cost_price || 0) * Number(i.quantity || 0),
+          saleValue: Number(i.selling_price || 0) * Number(i.quantity || 0),
+          potential: this.itemMargin(i) * Number(i.quantity || 0),
+        }))
+        .sort((a, b) => b.costValue - a.costValue);
+    },
+
+    get stockSaleValue() {
+      return this.stockRows.reduce((sum, r) => sum + r.saleValue, 0);
+    },
+
+    /* The last seven days' takings, for the dashboard chart: each day's sales
+       less the returns made that day — todaysRevenue's definition, for every
+       day, so today's bar is exactly the Today's Sales card. */
+    get last7Days() {
+      const pad = (n) => String(n).padStart(2, '0');
+      const iso = (x) => `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}`;
+      const returnDate = new Map(this.returns.map((r) => [Number(r.id), r.date]));
+      const days = [];
+      for (let i = 6; i >= 0; i -= 1) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        days.push({ date: iso(d), label: d.toLocaleDateString('en-GB', { weekday: 'short' }), sold: 0, returns: 0, invoices: 0 });
+      }
+      const byDate = new Map(days.map((d) => [d.date, d]));
+      for (const inv of this.invoices) {
+        const d = byDate.get(inv.date);
+        if (d) {
+          d.sold += this.invoiceTotal(inv);
+          d.invoices += 1;
+        }
+      }
+      for (const rl of this.returnLines) {
+        const d = byDate.get(returnDate.get(Number(rl.return_id)));
+        if (d) d.returns += Number(rl.amount || 0);
+      }
+      const rows = days.map((d) => ({ ...d, net: d.sold - d.returns }));
+      const max = Math.max(1, ...rows.map((r) => r.net));
+      return rows.map((r) => ({ ...r, pct: Math.max(0, (r.net / max) * 100) }));
+    },
+
+    get last7Total() {
+      return this.last7Days.reduce((sum, d) => sum + d.net, 0);
+    },
+
+    // The very first load, before anything has arrived: the moment for
+    // skeletons rather than "nothing here yet".
+    get firstLoad() {
+      return this.loading && !this.invoices.length && !this.inventory.length;
+    },
+
+    get recentInvoices() {
+      return [...this.invoices]
+        .sort((a, b) => (b.date || '').localeCompare(a.date || '') || Number(b.id) - Number(a.id))
+        .slice(0, 6);
+    },
+
+    get recentPurchases() {
+      return this.purchases.slice(0, 5);
+    },
+
+    /* ------------------------------------------------------- global search
+
+       Ctrl+K from anywhere. Searches what is already in memory — products,
+       invoices, customers, suppliers and the pages themselves — and offers a
+       serial lookup, which goes to the Serial page's server-side search. */
+    get searchResults() {
+      const q = this.searchQuery.trim().toLowerCase();
+      if (!q) return [];
+      const out = [];
+      const has = (v) => String(v ?? '').toLowerCase().includes(q);
+
+      for (const [name, p] of Object.entries(PAGES)) {
+        if (has(p.title)) out.push({ kind: 'Pages', key: `pg-${name}`, label: p.title, sub: 'Go to page', run: () => this.go(name) });
+      }
+      const num = q.replace(/^#/, '');
+      this.inventory
+        .filter((i) => has(i.item_name) || has(i.barcode))
+        .slice(0, 5)
+        .forEach((i) => out.push({
+          kind: 'Products', key: `p-${i.id}`, label: i.item_name,
+          sub: `${i.quantity} in stock · ${this.fmt(i.selling_price)}${i.barcode ? ' · ' + i.barcode : ''}`,
+          run: () => { this.invSearch = i.item_name; this.go('products'); },
+        }));
+      this.invoices
+        .filter((inv) => String(inv.id) === num || has(inv.customer_name) || has(inv.customer_contact))
+        .slice(0, 5)
+        .forEach((inv) => out.push({
+          kind: 'Invoices', key: `i-${inv.id}`, label: `#${inv.id} · ${inv.customer_name || 'Walk-in'}`,
+          sub: `${this.fmtDate(inv.date)} · ${this.fmt(this.invoiceNet(inv))}${this.isInvoiceDue(inv) ? ' · Due ' + this.fmt(this.invoiceDue(inv)) : ''}`,
+          run: () => this.showReceipt(inv),
+        }));
+      this.customers
+        .filter((c) => !c.walkIn && (has(c.name) || has(c.contact)))
+        .slice(0, 3)
+        .forEach((c) => out.push({
+          kind: 'Customers', key: `c-${c.key}`, label: c.name || c.contact, sub: [c.contact, `${c.invoices} invoice(s)`].filter(Boolean).join(' · '),
+          run: () => this.openCustomerSales(c),
+        }));
+      this.suppliers
+        .filter((s) => has(s.name))
+        .slice(0, 3)
+        .forEach((s) => out.push({
+          kind: 'Suppliers', key: `s-${s.key}`, label: s.name, sub: `${s.batches} purchase(s)`,
+          run: () => this.openSupplierPurchases(s),
+        }));
+      const code = this.searchQuery.trim();
+      out.push({
+        kind: 'Serial / IMEI', key: 'serial', label: `Find serial “${code}”`, sub: 'Search every unit on the Serial / IMEI page',
+        run: () => {
+          this.serialQuery = code;
+          this.serialProductId = '';
+          this.serialStatus = 'all';
+          this.serialLoaded = false;
+          this.go('serials');
+        },
+      });
+      return out;
+    },
+
+    // Focused at once, not on the next tick: the box is always on screen,
+    // and a shopkeeper typing straight after Ctrl+K must not lose letters.
+    openSearch() {
+      this.searchOpen = true;
+      this.searchIndex = 0;
+      this.$refs.globalSearch?.focus();
+      this.$refs.globalSearch?.select();
+    },
+
+    closeSearch() {
+      this.searchOpen = false;
+      this.searchQuery = '';
+      this.searchIndex = 0;
+    },
+
+    moveSearch(step) {
+      const n = this.searchResults.length;
+      if (!n) return;
+      this.searchIndex = (this.searchIndex + step + n) % n;
+      this.$nextTick(() => document.getElementById(`sr-${this.searchIndex}`)?.scrollIntoView({ block: 'nearest' }));
+    },
+
+    runSearch(i = this.searchIndex) {
+      const hit = this.searchResults[i];
+      if (!hit) return;
+      this.closeSearch();
+      this.$refs.globalSearch?.blur();
+      hit.run();
+    },
+
+    // A product off the stock lists, loaded into the purchase form.
+    restockProduct(item) {
+      this.dealer.barcode = item.barcode || '';
+      this.pendingFocus = this.fillDealerFrom(item);
+      this.go('purchase');
+    },
+
     // ---------------------------------------------------------------- auth
     async login() {
       if (this.loggingIn) return;
@@ -1327,6 +1906,7 @@ function shopApp() {
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.success) {
           this.isLoggedIn = true;
+          this.userEmail = this.loginEmail.trim().toLowerCase();
           writeSession(true);
           this.loginPassword = '';
           this.loadData();
@@ -1346,6 +1926,12 @@ function shopApp() {
       await fetch('/api/logout', { method: 'POST' }).catch(() => {});
       writeSession(false);
       this.isLoggedIn = false;
+      this.userEmail = '';
+      this.profileOpen = false;
+      this.searchQuery = '';
+      this.searchOpen = false;
+      this.serialRows = [];
+      this.serialLoaded = false;
       this.isReceiptOpen = false;
       this.isProductOpen = false;
       this.loginEmail = '';
@@ -1361,6 +1947,7 @@ function shopApp() {
       this.faultyUnits = [];
       this.moveDraft = null;
       this.actionsMenu = null;
+      this.productMenu = null;
       this.inventory = [];
       this.purchases = [];
       this.expenses = [];
@@ -1425,8 +2012,10 @@ function shopApp() {
         this.invoices = buildInvoices(data.invoices || [], this.sales, this.returns, this.returnLines, this.claims);
         this.purchases = data.purchases || [];
         this.expenses = data.expenses || [];
-        // A sale or a return changes serial statuses too.
-        if (this.serialsOpen) this.loadSerials();
+        // A sale or a return changes serial statuses too. Refetched now when
+        // the list is on screen; otherwise marked stale for the next visit.
+        if (this.page === 'serials') this.loadSerials();
+        else this.serialLoaded = false;
       } catch (err) {
         this.loadError = err.message || 'Could not load shop data.';
         this.notify(this.loadError, 'error');
@@ -1985,23 +2574,26 @@ function shopApp() {
 
       const item = this.findByBarcode(code);
       if (item) {
-        this.dealer.item_name = item.item_name;
-        this.dealer.cost_price = item.cost_price;
-        this.dealer.selling_price = item.selling_price;
-        this.dealer.warranty_months = item.warranty_months ?? 0;
-        if (this.dealerBatch.item_name !== item.item_name) this.dealerBatch = blankBatch();
-        if (this.serialTracked(item)) {
-          this.scanOk(`${item.item_name} (${item.quantity} in stock) — scan each unit's serial.`);
-          this.$nextTick(() => this.$refs.dealerSerial?.focus());
-        } else {
-          this.scanOk(`Restocking ${item.item_name}.`);
-          this.$nextTick(() => this.$refs.dealerQty?.focus());
-        }
+        const next = this.fillDealerFrom(item);
+        if (this.serialTracked(item)) this.scanOk(`${item.item_name} (${item.quantity} in stock) — scan each unit's serial.`);
+        else this.scanOk(`Restocking ${item.item_name}.`);
+        this.$nextTick(() => this.$refs[next]?.focus());
       } else {
         this.dealerBatch = blankBatch();
         this.scanOk(`New barcode ${code} — fill in the product details.`);
         this.$nextTick(() => this.$refs.dealerItem?.focus());
       }
+    },
+
+    // Loads a known product into the dealer form for restocking, and names
+    // the field to type in next: its serials if it has them, else the count.
+    fillDealerFrom(item) {
+      this.dealer.item_name = item.item_name;
+      this.dealer.cost_price = item.cost_price;
+      this.dealer.selling_price = item.selling_price;
+      this.dealer.warranty_months = item.warranty_months ?? 0;
+      if (this.dealerBatch.item_name !== item.item_name) this.dealerBatch = blankBatch();
+      return this.serialTracked(item) ? 'dealerSerial' : 'dealerQty';
     },
 
     scanDealerSerial() {
@@ -2473,6 +3065,10 @@ function shopApp() {
       return { open: 'Open', replaced: 'Replaced', repaired: 'Repaired', rejected: 'Not covered' }[c?.status] || c?.status;
     },
 
+    claimTone(c) {
+      return { open: 'is-warning', replaced: 'is-success', repaired: 'is-violet', rejected: 'is-neutral' }[c?.status] || 'is-neutral';
+    },
+
     // One line under the item on the receipt and in the history:
     // "Warranty 26-09-2026: A001 replaced with A002 (no charge)".
     claimText(c) {
@@ -2631,13 +3227,14 @@ function shopApp() {
       }[status] || status;
     },
 
+    // The badge tone for a serial's status (see .nb-badge in input.css).
     serialBadgeClass(status) {
       return {
-        available: 'bg-brand-100 text-brand-800',
-        sold: 'bg-slate-200 text-slate-700',
-        defective: 'bg-red-100 text-red-700',
-        at_supplier: 'bg-indigo-100 text-indigo-700',
-      }[status] || 'bg-slate-100 text-slate-500';
+        available: 'is-success',
+        sold: 'is-neutral',
+        defective: 'is-danger',
+        at_supplier: 'is-violet',
+      }[status] || 'is-neutral';
     },
 
     // Units at the supplier: serials plus the count of goods without them.
@@ -2661,6 +3258,46 @@ function shopApp() {
       }
       // Faulty in the shop first — that is where a decision is waiting.
       return rows.sort((a, b) => (a.state === 'supplier') - (b.state === 'supplier') || a.item_name.localeCompare(b.item_name));
+    },
+
+    get faultyInShop() {
+      return this.faultyQueue.filter((r) => r.state === 'defective');
+    },
+
+    get faultyAtSupplier() {
+      return this.faultyQueue.filter((r) => r.state === 'supplier');
+    },
+
+    /* What is waiting on the shop, for the dashboard and the bell: each a
+       real count from loaded data, and each a way to the page that deals
+       with it. Nothing is listed when nothing is waiting. */
+    get alerts() {
+      const out = [];
+      const low = this.lowStockItems.length;
+      if (low) {
+        out.push({ key: 'low', tone: 'text-red-600 bg-red-50', icon: 'warning',
+          label: `${low} product${low === 1 ? '' : 's'} low on stock`, sub: `Fewer than ${LOW_STOCK_THRESHOLD} units left`,
+          run: () => this.go('lowstock') });
+      }
+      const due = this.invoices.filter((inv) => this.isInvoiceDue(inv));
+      if (due.length) {
+        const amount = due.reduce((sum, inv) => sum + this.invoiceDue(inv), 0);
+        out.push({ key: 'due', tone: 'text-red-600 bg-red-50', icon: 'banknotes',
+          label: `${this.fmt(amount)} still due`, sub: `On ${due.length} invoice${due.length === 1 ? '' : 's'}`,
+          run: () => { this.saleSearch = ''; this.saleStatus = 'due'; this.setDateRange('all'); this.go('sales'); } });
+      }
+      if (this.openClaimCount) {
+        out.push({ key: 'claims', tone: 'text-amber-700 bg-amber-50', icon: 'shield',
+          label: `${this.openClaimCount} open warranty claim${this.openClaimCount === 1 ? '' : 's'}`, sub: 'Taken in, waiting to be settled',
+          run: () => { this.claimFilter = 'open'; this.go('warranty'); } });
+      }
+      if (this.faultyQueue.length) {
+        out.push({ key: 'faulty', tone: 'text-violet-700 bg-violet-50', icon: 'wrench',
+          label: `${this.faultyQueue.length} faulty item${this.faultyQueue.length === 1 ? '' : 's'} waiting`,
+          sub: `${this.faultyInShop.length} in the shop · ${this.faultyAtSupplier.length} with a supplier`,
+          run: () => this.go('faulty') });
+      }
+      return out;
     },
 
     // The queue row's buying price, for the write-off confirmation.
@@ -3062,13 +3699,12 @@ function shopApp() {
 
     // "Serials" on a product row: this section, filtered to that product.
     openSerialsFor(item) {
-      this.serialsOpen = true;
-      this.saveSections();
       this.serialProductId = String(item.id);
       this.serialQuery = '';
       this.serialStatus = 'all';
-      this.loadSerials();
-      this.$nextTick(() => document.getElementById('serials-section')?.scrollIntoView({ behavior: 'smooth' }));
+      // Stale, so arriving on the page fetches the filtered list.
+      this.serialLoaded = false;
+      this.go('serials');
     },
 
     // The invoice a sold serial went out on, opened as its receipt.
