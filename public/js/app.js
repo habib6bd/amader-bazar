@@ -180,19 +180,20 @@ function pageFromHash(hash) {
 }
 
 /* The sidebar, built from the pages above. Only what the app really does is
-   listed — no menu item leads to a placeholder. */
+   listed — no menu item leads to a placeholder. `emoji` is the colourful
+   glyph the menu shows (drawn by the system's emoji font, nothing to load). */
 const NAV = [
-  { page: 'dashboard', label: 'Dashboard', icon: 'home' },
-  { group: 'sales', label: 'Sales', icon: 'cart', children: ['sale', 'sales'] },
-  { group: 'purchases', label: 'Purchases', icon: 'truck', children: ['purchase', 'purchases'] },
-  { group: 'stock', label: 'Products & Stock', icon: 'cube', children: ['products', 'lowstock'] },
-  { page: 'customers', label: 'Customers', icon: 'users' },
-  { page: 'suppliers', label: 'Suppliers', icon: 'store' },
-  { page: 'expenses', label: 'Expenses', icon: 'banknotes' },
-  { page: 'serials', label: 'Serial / IMEI', icon: 'hashtag' },
-  { page: 'warranty', label: 'Warranty Claims', icon: 'shield' },
-  { page: 'faulty', label: 'Faulty & Supplier', icon: 'wrench' },
-  { group: 'reports', label: 'Reports', icon: 'chart', children: ['rsales', 'rpnl', 'rstock', 'rexpenses'] },
+  { page: 'dashboard', label: 'Dashboard', emoji: '🏠' },
+  { group: 'sales', label: 'Sales', emoji: '🛒', children: ['sale', 'sales'] },
+  { group: 'purchases', label: 'Purchases', emoji: '🚚', children: ['purchase', 'purchases'] },
+  { group: 'stock', label: 'Products & Stock', emoji: '📦', children: ['products', 'lowstock'] },
+  { page: 'customers', label: 'Customers', emoji: '👥' },
+  { page: 'suppliers', label: 'Suppliers', emoji: '🏭' },
+  { page: 'expenses', label: 'Expenses', emoji: '💸' },
+  { page: 'serials', label: 'Serial / IMEI', emoji: '#️⃣' },
+  { page: 'warranty', label: 'Warranty Claims', emoji: '🛡️' },
+  { page: 'faulty', label: 'Faulty & Supplier', emoji: '🛠️' },
+  { group: 'reports', label: 'Reports', emoji: '📊', children: ['rsales', 'rpnl', 'rstock', 'rexpenses'] },
 ];
 
 /* ---------------------------------------------------------------- icons
@@ -3281,24 +3282,24 @@ function shopApp() {
       const out = [];
       const low = this.lowStockItems.length;
       if (low) {
-        out.push({ key: 'low', tone: 'text-red-600 bg-red-100', icon: 'warning',
+        out.push({ key: 'low', tone: 'bg-[#fee2e2]', emoji: '⚠️',
           label: `${low} product${low === 1 ? '' : 's'} low on stock`, sub: `Fewer than ${LOW_STOCK_THRESHOLD} units left`,
           run: () => this.go('lowstock') });
       }
       const due = this.invoices.filter((inv) => this.isInvoiceDue(inv));
       if (due.length) {
         const amount = due.reduce((sum, inv) => sum + this.invoiceDue(inv), 0);
-        out.push({ key: 'due', tone: 'text-amber-700 bg-amber-100', icon: 'banknotes',
+        out.push({ key: 'due', tone: 'bg-[#fef3c7]', emoji: '💵',
           label: `${this.fmt(amount)} still due`, sub: `On ${due.length} invoice${due.length === 1 ? '' : 's'}`,
           run: () => { this.saleSearch = ''; this.saleStatus = 'due'; this.setDateRange('all'); this.go('sales'); } });
       }
       if (this.openClaimCount) {
-        out.push({ key: 'claims', tone: 'text-blue-700 bg-blue-100', icon: 'shield',
+        out.push({ key: 'claims', tone: 'bg-[#dbeafe]', emoji: '🛡️',
           label: `${this.openClaimCount} open warranty claim${this.openClaimCount === 1 ? '' : 's'}`, sub: 'Taken in, waiting to be settled',
           run: () => { this.claimFilter = 'open'; this.go('warranty'); } });
       }
       if (this.faultyQueue.length) {
-        out.push({ key: 'faulty', tone: 'text-violet-700 bg-violet-100', icon: 'wrench',
+        out.push({ key: 'faulty', tone: 'bg-[#ede9fe]', emoji: '🛠️',
           label: `${this.faultyQueue.length} faulty item${this.faultyQueue.length === 1 ? '' : 's'} waiting`,
           sub: `${this.faultyInShop.length} in the shop · ${this.faultyAtSupplier.length} with a supplier`,
           run: () => this.go('faulty') });
