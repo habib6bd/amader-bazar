@@ -48,7 +48,7 @@
                                            class="nb-input h-11 pr-12 sm:h-11" required>
                                     <button type="button" @click="showLoginPassword = !showLoginPassword"
                                             :aria-label="showLoginPassword ? 'Hide password' : 'Show password'"
-                                            class="absolute inset-y-0 right-0 px-3.5 flex items-center text-slate-500 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-r-lg">
+                                            class="absolute inset-y-0 right-0 px-3.5 flex items-center text-slate-500 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-green-600 rounded-r-lg">
                                         <svg x-show="!showLoginPassword" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
@@ -243,21 +243,28 @@
                     <div class="relative" @click.outside="profileOpen = false" @keydown.escape.window="profileOpen = false">
                         <button type="button" @click="profileOpen = !profileOpen; alertsOpen = false"
                                 :aria-expanded="profileOpen" aria-haspopup="menu" aria-label="Account menu"
-                                class="flex items-center gap-2 rounded-lg p-1 outline-none hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-brand-500">
+                                class="flex items-center gap-2 rounded-lg p-1 outline-none hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-green-600">
                             <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-linear-135 from-violet-500 to-blue-500 text-sm font-bold text-white"
-                                  x-text="(userEmail || 'A').charAt(0).toUpperCase()"></span>
+                                  x-text="(userName || userEmail || 'A').charAt(0).toUpperCase()"></span>
                             <span class="hidden text-left leading-tight xl:block">
-                                <span class="block max-w-[11rem] truncate text-[13px] font-semibold text-ink" x-text="userEmail || 'Signed in'"></span>
-                                <span class="block text-[11px] text-slate-500">Administrator</span>
+                                <span class="block max-w-[11rem] truncate text-[13px] font-semibold text-ink" x-text="userName || userEmail || 'Signed in'"></span>
+                                <span class="block text-[11px] text-slate-500" x-text="isAdmin ? 'Administrator' : 'Staff'"></span>
                             </span>
                             <span class="hidden text-slate-400 xl:block" x-html="icon('chevronDown', 'h-4 w-4')"></span>
                         </button>
                         <div x-show="profileOpen" x-cloak x-transition.origin.top.right role="menu"
                              class="nb-menu absolute right-0 top-full z-40 mt-1.5 w-60">
                             <div class="border-b border-slate-100 px-3 pt-1.5 pb-2.5">
-                                <p class="truncate text-sm font-semibold text-ink" x-text="userEmail || 'Signed in'"></p>
-                                <p class="text-xs text-slate-500">Administrator · <span x-text="shop.name"></span></p>
+                                <p class="truncate text-sm font-semibold text-ink" x-text="userName || userEmail || 'Signed in'"></p>
+                                <p class="truncate text-xs text-slate-500" x-show="userName" x-cloak x-text="userEmail"></p>
+                                <p class="text-xs text-slate-500"><span x-text="isAdmin ? 'Administrator' : 'Staff'"></span> · <span x-text="shop.name"></span></p>
                             </div>
+                            <button type="button" role="menuitem" class="nb-menu-item" @click="editMyName()">
+                                <span class="text-slate-400" x-html="icon('user', 'h-4 w-4')"></span> <span x-text="userName ? 'Change your name' : 'Add your name'"></span>
+                            </button>
+                            <button type="button" role="menuitem" class="nb-menu-item" x-show="isAdmin" @click="profileOpen = false; go('users')">
+                                <span class="text-slate-400" x-html="icon('users', 'h-4 w-4')"></span> Users
+                            </button>
                             <button type="button" role="menuitem" class="nb-menu-item"
                                     @click="profileOpen = false; isPasswordOpen = true; resetError = ''; resetSuccess = ''">
                                 <span class="text-slate-400" x-html="icon('key', 'h-4 w-4')"></span> Change password
@@ -305,7 +312,7 @@
                                 <p class="nb-page-desc">How the shop stands today, <span x-text="fmtDate(today())"></span>.</p>
                             </div>
                             <div class="flex flex-wrap gap-2">
-                                <a href="#/purchases/new" class="nb-btn nb-btn-secondary rounded-[10px] border-[#e5ebe7]"><span class="nb-emoji" aria-hidden="true">🚚</span>New Purchase</a>
+                                <a href="#/purchases/new" x-show="isAdmin" class="nb-btn nb-btn-secondary rounded-[10px] border-[#e5ebe7]"><span class="nb-emoji" aria-hidden="true">🚚</span>New Purchase</a>
                                 <a href="#/sales/new" class="nb-btn nb-btn-primary rounded-[10px]"><span aria-hidden="true">＋</span>New Sale</a>
                             </div>
                         </div>
@@ -451,7 +458,7 @@
                                                 <p class="truncate text-[13px] font-medium text-ink" :title="item.item_name" x-text="item.item_name"></p>
                                                 <span class="nb-pill mt-0.5 inline-block text-[11px] font-bold" :class="stockStatus(item).tone" x-text="item.quantity + ' left'"></span>
                                             </div>
-                                            <button type="button" @click="restockProduct(item)" class="nb-btn nb-btn-secondary rounded-[10px] border-[#e5ebe7]">Restock</button>
+                                            <button type="button" x-show="isAdmin" @click="restockProduct(item)" class="nb-btn nb-btn-secondary rounded-[10px] border-[#e5ebe7]">Restock</button>
                                         </li>
                                     </template>
                                 </ul>
@@ -497,9 +504,9 @@
                                 <div class="grid grid-cols-2 gap-3 p-[18px]">
                                     <a href="#/sales/new" class="nb-qa">
                                         <span class="nb-qa-icon nb-emoji bg-[#dcfce7]" aria-hidden="true">🛒</span>New Sale</a>
-                                    <a href="#/purchases/new" class="nb-qa">
+                                    <a href="#/purchases/new" x-show="isAdmin" class="nb-qa">
                                         <span class="nb-qa-icon nb-emoji bg-[#ffedd5]" aria-hidden="true">🚚</span>New Purchase</a>
-                                    <button type="button" @click="openAddProduct()" class="nb-qa">
+                                    <button type="button" x-show="isAdmin" @click="openAddProduct()" class="nb-qa">
                                         <span class="nb-qa-icon nb-emoji bg-[#dbeafe]" aria-hidden="true">📦</span>Add Product</button>
                                     <button type="button" @click="newExpense()" class="nb-qa">
                                         <span class="nb-qa-icon nb-emoji bg-[#fce7f3]" aria-hidden="true">💸</span>Add Expense</button>
@@ -515,18 +522,28 @@
                          half-built invoice. -->
                     <section x-show="page === 'sale'" x-cloak aria-labelledby="h-sale">
                         <div class="nb-page-head">
-                            <div>
-                                <h1 id="h-sale" class="nb-page-title">New Sale</h1>
-                                <p class="nb-page-desc">Scan or pick the items, take the payment, and print the invoice.</p>
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('sale')"></span>
+                                <div>
+                                    <h1 id="h-sale" class="nb-page-title">New Sale</h1>
+                                    <p class="nb-page-desc">Scan or pick the items, take the payment, and print the invoice.</p>
+                                </div>
                             </div>
                             <a href="#/sales" class="nb-btn nb-btn-secondary">Sales History</a>
+                        </div>
+
+                        <!-- The name is what prints under "Sold by" on the receipt; until
+                             one is set the server falls back to the email. -->
+                        <div class="nb-note is-info mb-5 flex flex-wrap items-center gap-2" x-show="isLoggedIn && userRole && !userName" x-cloak>
+                            <span>Add your name so it prints as <strong>Sold by</strong> on your receipts.</span>
+                            <button type="button" @click="editMyName()" class="nb-btn nb-btn-sm nb-btn-secondary ml-auto">Add your name</button>
                         </div>
 
                         <form @submit.prevent="submitSale" class="grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
 
                             <div class="nb-card">
                                 <div class="nb-card-head">
-                                    <h2 class="nb-card-title">Items</h2>
+                                    <h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#dbeafe]" aria-hidden="true">📦</span>Items</h2>
                                     <span class="nb-badge is-plain is-success tabular-nums" x-show="cart.length" x-cloak
                                           x-text="cart.length + (cart.length === 1 ? ' item' : ' items') + ' · ' + cartPieces + ' pcs'"></span>
                                 </div>
@@ -539,7 +556,7 @@
                                         <div>
                                             <label for="sale-scan" class="nb-label">Scan barcode</label>
                                             <div class="relative">
-                                                <span class="pointer-events-none absolute inset-y-0 left-3 flex items-center text-brand-700" x-html="icon('barcode', 'h-5 w-5')"></span>
+                                                <span class="pointer-events-none absolute inset-y-0 left-3 flex items-center text-green-600" x-html="icon('barcode', 'h-5 w-5')"></span>
                                                 <input id="sale-scan" type="text" x-model="scanCode" x-ref="scanInput"
                                                        autocomplete="off" enterkeyhint="done" placeholder="Scan to add an item…"
                                                        @keydown.enter.prevent.stop="scanBarcode()"
@@ -593,7 +610,7 @@
                                     </div>
 
                                     <!-- Or type / pick an item. Picking a known product fills its set price. -->
-                                    <div class="rounded-lg border border-dashed border-slate-300 bg-slate-50/60 p-3">
+                                    <div class="rounded-[14px] border border-dashed border-[#cfdcd4] bg-[#f7faf8] p-3.5">
                                         <div class="grid grid-cols-[1fr_1fr] gap-2.5 sm:grid-cols-[minmax(0,1fr)_5.5rem_8rem_auto] sm:items-end">
                                             <div class="col-span-2 sm:col-span-1">
                                                 <label for="sale-item" class="nb-label">Or add by name</label>
@@ -627,16 +644,16 @@
                                     </div>
 
                                     <!-- The invoice so far, numbered as it will print. -->
-                                    <div class="nb-empty rounded-lg border border-slate-200 py-8" x-show="cart.length === 0">
+                                    <div class="nb-empty rounded-[14px] border border-[#e5ebe7] py-8" x-show="cart.length === 0">
                                         <span class="nb-empty-icon" x-html="icon('cart')"></span>
                                         <p class="nb-empty-title">No items yet</p>
                                         <p class="nb-empty-desc">Scan a barcode or add an item by name above.</p>
                                     </div>
-                                    <ol class="divide-y divide-slate-100 rounded-lg border border-slate-200" x-show="cart.length" x-cloak>
+                                    <ol class="divide-y divide-[#eef2ef] overflow-hidden rounded-[14px] border border-[#e5ebe7]" x-show="cart.length" x-cloak>
                                         <template x-for="(l, i) in cart" :key="l.key">
-                                            <li class="nb-pop p-3" :class="outOfStock(l.item_name) ? 'bg-red-50/60' : overStock(l) ? 'bg-amber-50/60' : ''">
+                                            <li class="nb-pop p-3 transition-colors" :class="outOfStock(l.item_name) ? 'bg-red-50/60' : overStock(l) ? 'bg-amber-50/60' : 'hover:bg-[#f6fbf7]'">
                                                 <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-                                                    <span class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-600 tabular-nums" x-text="i + 1"></span>
+                                                    <span class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] bg-green-100 text-xs font-bold text-green-800 tabular-nums" x-text="i + 1"></span>
                                                     <p class="min-w-0 flex-1 basis-40 text-sm font-semibold break-words text-ink" x-text="l.item_name"></p>
                                                     <div class="flex items-center gap-1.5">
                                                         <!-- One unit per serial-tracked line; more units are more scans. -->
@@ -685,7 +702,7 @@
                             <!-- Right: who, when, how much — and the one button. -->
                             <div class="space-y-5 xl:sticky xl:top-22">
                                 <div class="nb-card">
-                                    <div class="nb-card-head"><h2 class="nb-card-title">Customer</h2></div>
+                                    <div class="nb-card-head"><h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#ede9fe]" aria-hidden="true">👤</span>Customer</h2></div>
                                     <div class="nb-card-body space-y-3.5">
                                         <div>
                                             <label for="sale-customer" class="nb-label">Name <span class="nb-opt">(optional)</span></label>
@@ -701,7 +718,7 @@
                                 </div>
 
                                 <div class="nb-card">
-                                    <div class="nb-card-head"><h2 class="nb-card-title">Payment</h2></div>
+                                    <div class="nb-card-head"><h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#dcfce7]" aria-hidden="true">💳</span>Payment</h2></div>
                                     <div class="nb-card-body space-y-3.5">
                                         <!-- No Time field: the server stamps the time of sale on save, so
                                              it can never be the stale value a pre-filled input would hold. -->
@@ -714,6 +731,16 @@
                                              sends the cart total — so a cash sale needs no typing and still
                                              prints a PAID receipt. A figure below the total makes it a due
                                              money receipt. -->
+                                        <!-- How the customer paid. Cash is pre-selected, so a cash sale
+                                             needs no click. -->
+                                        <div>
+                                            <label for="sale-method" class="nb-label">Payment method</label>
+                                            <select id="sale-method" x-model="sale.payment_method" class="nb-input">
+                                                <template x-for="m in paymentMethods" :key="m.id">
+                                                    <option :value="m.id" x-text="m.label" :selected="sale.payment_method === m.id"></option>
+                                                </template>
+                                            </select>
+                                        </div>
                                         <div>
                                             <label for="sale-paid" class="nb-label">Paid <span class="nb-opt">(blank = full payment)</span></label>
                                             <input id="sale-paid" type="number" step="0.01" min="0" inputmode="decimal"
@@ -728,20 +755,18 @@
                                                       class="nb-input"></textarea>
                                         </div>
 
-                                        <dl class="space-y-1.5 rounded-lg bg-slate-50 p-3 text-sm">
-                                            <div class="flex items-baseline justify-between">
-                                                <dt class="text-slate-500">Items</dt>
-                                                <dd class="tabular-nums"><span x-text="cart.length"></span> · <span x-text="cartPieces"></span> pcs</dd>
+                                        <!-- The till's headline number, in the dashboard's green card. -->
+                                        <div class="nb-total-card text-sm" aria-live="polite">
+                                            <div class="relative z-[1] flex items-baseline justify-between">
+                                                <span class="text-[13px] opacity-90">Total</span>
+                                                <span class="text-xs opacity-85 tabular-nums"><span x-text="cart.length"></span> items · <span x-text="cartPieces"></span> pcs</span>
                                             </div>
-                                            <div class="flex items-baseline justify-between border-t border-slate-200 pt-1.5">
-                                                <dt class="font-semibold text-ink">Total</dt>
-                                                <dd class="text-xl font-semibold text-ink tabular-nums" x-text="fmt(cartTotal)"></dd>
+                                            <span class="relative z-[1] mt-1 block text-[28px] leading-tight font-bold tracking-[-0.5px] tabular-nums" x-text="fmt(cartTotal)"></span>
+                                            <div class="relative z-[1] mt-2 flex items-center justify-between gap-2" x-show="saleDue > 0" x-cloak>
+                                                <span class="text-xs opacity-90">Due after this payment</span>
+                                                <span class="rounded-full bg-white px-2.5 py-0.5 text-xs font-bold text-red-700 tabular-nums" x-text="fmt(saleDue)"></span>
                                             </div>
-                                            <div class="flex items-baseline justify-between text-red-600" x-show="saleDue > 0" x-cloak>
-                                                <dt class="font-semibold">Due</dt>
-                                                <dd class="font-semibold tabular-nums" x-text="fmt(saleDue)"></dd>
-                                            </div>
-                                        </dl>
+                                        </div>
 
                                         <button type="submit" :disabled="savingSale" class="nb-btn nb-btn-primary nb-btn-lg w-full">
                                             <span x-text="savingSale ? 'Saving…' : (cart.length > 1 ? 'Save & Generate Invoice (' + cart.length + ' items)' : 'Save & Generate Invoice')"></span>
@@ -755,10 +780,13 @@
                     <!-- ================= NEW PURCHASE ================= -->
                     <section x-show="page === 'purchase'" x-cloak aria-labelledby="h-purchase">
                         <div class="nb-page-head">
-                            <div>
-                                <h1 id="h-purchase" class="nb-page-title">New Purchase</h1>
-                                <p class="nb-page-desc">Adds stock from a dealer and sets the product's prices — restocking updates them.
-                                    Products with serials: scan the barcode, then each unit's serial; every scan is saved at once.</p>
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('purchase')"></span>
+                                <div>
+                                    <h1 id="h-purchase" class="nb-page-title">New Purchase</h1>
+                                    <p class="nb-page-desc">Adds stock from a dealer and sets the product's prices — restocking updates them.
+                                        Products with serials: scan the barcode, then each unit's serial; every scan is saved at once.</p>
+                                </div>
                             </div>
                             <a href="#/purchases" class="nb-btn nb-btn-secondary">Purchase History</a>
                         </div>
@@ -766,7 +794,7 @@
                         <form @submit.prevent="submitDealer" class="grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
                             <div class="space-y-5">
                                 <div class="nb-card">
-                                    <div class="nb-card-head"><h2 class="nb-card-title">Dealer &amp; product</h2></div>
+                                    <div class="nb-card-head"><h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#ffedd5]" aria-hidden="true">🚚</span>Dealer &amp; product</h2></div>
                                     <div class="nb-card-body space-y-4">
                                         <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
                                             <div>
@@ -832,7 +860,7 @@
                                 <div class="nb-card" :class="dealerTracked && 'border-amber-300'">
                                     <div class="nb-card-head">
                                         <div>
-                                            <h2 class="nb-card-title">Serials / IMEI</h2>
+                                            <h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#e0e7ff]" aria-hidden="true">#️⃣</span>Serials / IMEI</h2>
                                             <p class="text-xs text-slate-500" x-show="!dealerTracked">Only for products with serials — skip for cables and the like.</p>
                                         </div>
                                         <span class="nb-badge is-warning tabular-nums" x-show="dealerTracked" x-cloak x-text="dealerBatch.units.length + ' scanned now'"></span>
@@ -869,7 +897,7 @@
 
                             <div class="xl:sticky xl:top-22">
                                 <div class="nb-card">
-                                    <div class="nb-card-head"><h2 class="nb-card-title">Summary</h2></div>
+                                    <div class="nb-card-head"><h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#dcfce7]" aria-hidden="true">🧮</span>Summary</h2></div>
                                     <div class="nb-card-body space-y-3.5">
                                         <div>
                                             <label for="dealer-date" class="nb-label nb-req">Date</label>
@@ -903,9 +931,12 @@
                     <!-- ================= SALES HISTORY ================= -->
                     <section x-show="page === 'sales'" x-cloak aria-labelledby="h-sales">
                         <div class="nb-page-head">
-                            <div>
-                                <h1 id="h-sales" class="nb-page-title">Sales History</h1>
-                                <p class="nb-page-desc">Every invoice. Open or print it, take a payment, record a return or a warranty claim.</p>
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('sales')"></span>
+                                <div>
+                                    <h1 id="h-sales" class="nb-page-title">Sales History</h1>
+                                    <p class="nb-page-desc">Every invoice. Open or print it, take a payment, record a return or a warranty claim.</p>
+                                </div>
                             </div>
                             <a href="#/sales/new" class="nb-btn nb-btn-primary"><span x-html="icon('plus', 'h-4 w-4')"></span>New Sale</a>
                         </div>
@@ -956,47 +987,47 @@
                             </div>
 
                             <!-- The answer to "how much did I sell on this day". -->
-                            <dl class="grid grid-cols-2 gap-px overflow-hidden rounded-b-xl border-t border-slate-100 bg-slate-100 sm:grid-cols-3 xl:grid-cols-9">
-                                <div class="bg-white px-4 py-3">
+                            <dl class="grid grid-cols-2 gap-px overflow-hidden rounded-b-2xl border-t border-[#e5ebe7] bg-[#e5ebe7] sm:grid-cols-3 xl:grid-cols-9">
+                                <div class="nb-stat-cell is-blue">
                                     <dt class="nb-stat-label" x-text="rangeLabel"></dt>
                                     <dd class="nb-stat-value"><span x-text="filteredInvoices.length"></span> invoice(s)</dd>
                                 </div>
-                                <div class="bg-white px-4 py-3">
+                                <div class="nb-stat-cell is-green">
                                     <dt class="nb-stat-label">Total sold</dt>
                                     <dd class="nb-stat-value" x-text="fmt(rangeRevenue)"></dd>
                                 </div>
                                 <!-- Dated by the day the goods came back, not the day they were
                                      sold, so a past day's Total Sold never changes afterwards. -->
-                                <div class="bg-white px-4 py-3">
+                                <div class="nb-stat-cell is-red">
                                     <dt class="nb-stat-label">Returns</dt>
                                     <dd class="nb-stat-value" :class="rangeReturns > 0 ? 'text-rose-700' : 'text-slate-500'" x-text="rangeReturns > 0 ? '−' + fmt(rangeReturns) : fmt(0)"></dd>
                                     <dd class="text-xs text-slate-500 tabular-nums" x-show="rangeRefunds > 0" x-cloak>Refunded <span x-text="fmt(rangeRefunds)"></span></dd>
                                 </div>
-                                <div class="bg-white px-4 py-3">
+                                <div class="nb-stat-cell is-violet">
                                     <dt class="nb-stat-label">Profit</dt>
                                     <dd class="nb-stat-value" :class="rangeProfit < 0 ? 'text-red-600' : 'text-green-700'" x-text="fmt(rangeProfit)"></dd>
                                 </div>
-                                <div class="bg-white px-4 py-3">
+                                <div class="nb-stat-cell is-amber">
                                     <dt class="nb-stat-label">Discount given</dt>
                                     <dd class="nb-stat-value text-amber-700" x-text="fmt(rangeDiscount)"></dd>
                                 </div>
-                                <div class="bg-white px-4 py-3">
+                                <div class="nb-stat-cell is-red">
                                     <dt class="nb-stat-label">Expenses</dt>
                                     <dd class="nb-stat-value text-rose-700" x-text="fmt(rangeExpenses)"></dd>
                                 </div>
                                 <!-- Faulty stock given up on, at its buying price. -->
-                                <div class="bg-white px-4 py-3">
+                                <div class="nb-stat-cell is-amber">
                                     <dt class="nb-stat-label">Write-offs</dt>
                                     <dd class="nb-stat-value" :class="rangeWriteOffs > 0 ? 'text-rose-700' : 'text-slate-500'" x-text="fmt(rangeWriteOffs)"></dd>
                                 </div>
                                 <!-- Money sold but not yet collected. Not subtracted from profit:
                                      the goods left the shop and the sale is real — this is what is
                                      still out on credit, which is a different question. -->
-                                <div class="bg-white px-4 py-3">
+                                <div class="nb-stat-cell is-red">
                                     <dt class="nb-stat-label">Due</dt>
                                     <dd class="nb-stat-value" :class="rangeDue > 0 ? 'text-red-600' : 'text-slate-500'" x-text="fmt(rangeDue)"></dd>
                                 </div>
-                                <div class="col-span-2 bg-white px-4 py-3 sm:col-span-1">
+                                <div class="nb-stat-cell col-span-2 sm:col-span-1" :class="rangeNetProfit < 0 ? 'is-red' : 'is-green'">
                                     <dt class="nb-stat-label">Net profit</dt>
                                     <dd class="nb-stat-value text-lg" :class="rangeNetProfit < 0 ? 'text-red-600' : 'text-green-700'" x-text="fmt(rangeNetProfit)"></dd>
                                 </div>
@@ -1038,7 +1069,7 @@
                                             <th class="num">Due</th>
                                             <th class="num">
                                                 <!-- Hidden by default, same reasoning as Margin on Products. -->
-                                                <button type="button" @click="profitVisible = !profitVisible" class="inline-flex items-center gap-1 uppercase hover:text-brand-700"
+                                                <button type="button" @click="profitVisible = !profitVisible" class="inline-flex items-center gap-1 uppercase hover:text-green-700"
                                                         :aria-pressed="profitVisible" aria-label="Show or hide profit">
                                                     Profit <span x-html="icon(profitVisible ? 'eyeOff' : 'eye', 'h-3.5 w-3.5')"></span>
                                                 </button>
@@ -1053,6 +1084,7 @@
                                                 <td class="whitespace-nowrap">
                                                     <button type="button" @click="showReceipt(inv)" class="font-semibold text-ink tabular-nums hover:underline" x-text="'#' + inv.id"></button>
                                                     <span class="block text-xs text-slate-500" x-text="fmtDate(inv.date)"></span>
+                                                    <span class="block text-xs text-slate-400" x-show="inv.sold_by" x-cloak x-text="'by ' + inv.sold_by"></span>
                                                 </td>
                                                 <td class="min-w-[9rem]">
                                                     <span class="font-medium text-ink" x-text="inv.customer_name || 'Walk-in'"></span>
@@ -1083,8 +1115,10 @@
                                                     <span class="block text-xs text-rose-700" x-show="invoiceRefunded(inv) > 0" x-cloak>Refunded <span x-text="fmt(invoiceRefunded(inv))"></span></span>
                                                     <span class="block text-xs text-amber-700" x-show="invoiceDiscount(inv) > 0" x-cloak>−<span x-text="fmt(invoiceDiscount(inv))"></span> off</span>
                                                 </td>
-                                                <td class="num" :class="!invoiceTracksPayment(inv) && 'text-slate-400'"
-                                                    x-text="invoiceTracksPayment(inv) ? fmt(invoicePaid(inv)) : '—'"></td>
+                                                <td class="num" :class="!invoiceTracksPayment(inv) && 'text-slate-400'">
+                                                    <span x-text="invoiceTracksPayment(inv) ? fmt(invoicePaid(inv)) : '—'"></span>
+                                                    <span class="block text-xs font-normal text-slate-500" x-show="paymentMethodLabel(inv)" x-cloak x-text="paymentMethodLabel(inv)"></span>
+                                                </td>
                                                 <!-- What is still owed on this receipt. -->
                                                 <td class="num font-semibold" :class="isInvoiceDue(inv) ? 'text-red-600' : 'text-slate-400 font-normal'"
                                                     x-text="isInvoiceDue(inv) ? fmt(invoiceDue(inv)) : '—'"></td>
@@ -1136,6 +1170,7 @@
                                                 <span class="text-xs text-slate-500" x-text="fmtDate(inv.date)"></span>
                                             </div>
                                         </div>
+                                        <p class="text-xs text-slate-400" x-show="inv.sold_by" x-cloak x-text="'Sold by ' + inv.sold_by"></p>
                                         <!-- Every item listed, since an invoice may hold several. -->
                                         <ul class="mt-2 space-y-0.5 text-sm text-slate-600">
                                             <template x-for="l in inv.lines" :key="'ml-' + l.id">
@@ -1167,6 +1202,7 @@
                                                 <p class="font-semibold text-ink tabular-nums" x-text="fmt(invoiceNet(inv))"></p>
                                                 <p class="text-xs text-rose-700 tabular-nums" x-show="invoiceRefunded(inv) > 0" x-cloak>Refunded <span x-text="fmt(invoiceRefunded(inv))"></span></p>
                                                 <p class="text-xs font-semibold text-red-600 tabular-nums" x-show="isInvoiceDue(inv)" x-cloak>Due <span x-text="fmt(invoiceDue(inv))"></span></p>
+                                                <p class="text-xs text-slate-500" x-show="paymentMethodLabel(inv)" x-cloak x-text="paymentMethodLabel(inv)"></p>
                                             </div>
                                         </div>
                                         <p class="mt-1.5 text-xs text-slate-500 italic" x-show="inv.comment" x-cloak x-text="inv.comment"></p>
@@ -1198,11 +1234,14 @@
                     <!-- ================= PURCHASE HISTORY ================= -->
                     <section x-show="page === 'purchases'" x-cloak aria-labelledby="h-purchases">
                         <div class="nb-page-head">
-                            <div>
-                                <h1 id="h-purchases" class="nb-page-title">Purchase History</h1>
-                                <p class="nb-page-desc">Every batch bought from a dealer, newest first.</p>
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('purchases')"></span>
+                                <div>
+                                    <h1 id="h-purchases" class="nb-page-title">Purchase History</h1>
+                                    <p class="nb-page-desc">Every batch bought from a dealer, newest first.</p>
+                                </div>
                             </div>
-                            <a href="#/purchases/new" class="nb-btn nb-btn-primary"><span x-html="icon('plus', 'h-4 w-4')"></span>New Purchase</a>
+                            <a href="#/purchases/new" x-show="isAdmin" class="nb-btn nb-btn-primary"><span x-html="icon('plus', 'h-4 w-4')"></span>New Purchase</a>
                         </div>
 
                         <div class="nb-card">
@@ -1268,36 +1307,26 @@
                     <!-- ================= PRODUCTS ================= -->
                     <section x-show="page === 'products'" x-cloak aria-labelledby="h-products">
                         <div class="nb-page-head">
-                            <div>
-                                <h1 id="h-products" class="nb-page-title">Products &amp; Stock</h1>
-                                <p class="nb-page-desc">Everything the shop sells: stock on hand, prices, warranty and serial tracking.</p>
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('products')"></span>
+                                <div>
+                                    <h1 id="h-products" class="nb-page-title">Products &amp; Stock</h1>
+                                    <p class="nb-page-desc">Everything the shop sells: stock on hand, prices, warranty and serial tracking.</p>
+                                </div>
                             </div>
                             <div class="flex flex-wrap gap-2">
-                                <button type="button" @click="openMarkFaulty()" class="nb-btn nb-btn-secondary">Mark stock faulty</button>
-                                <button type="button" @click="openAddProduct()" class="nb-btn nb-btn-primary"><span x-html="icon('plus', 'h-4 w-4')"></span>Add Product</button>
+                                <button type="button" x-show="isAdmin" @click="openMarkFaulty()" class="nb-btn nb-btn-secondary">Mark stock faulty</button>
+                                <button type="button" x-show="isAdmin" @click="openAddProduct()" class="nb-btn nb-btn-primary"><span x-html="icon('plus', 'h-4 w-4')"></span>Add Product</button>
                             </div>
                         </div>
 
                         <!-- What the stock on hand is worth, and what it stands to earn if it
                              all sells at the set price. -->
                         <div class="mb-5 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-                            <div class="nb-card px-4 py-3">
-                                <p class="nb-stat-label">Products</p>
-                                <p class="nb-stat-value text-xl" x-text="inventory.length"></p>
-                            </div>
-                            <div class="nb-card px-4 py-3">
-                                <p class="nb-stat-label">Stock value (at cost)</p>
-                                <p class="nb-stat-value text-xl" x-text="fmt(stockValue)"></p>
-                            </div>
-                            <div class="nb-card px-4 py-3">
-                                <p class="nb-stat-label">Expected profit</p>
-                                <p class="nb-stat-value text-xl text-green-700" x-text="fmt(expectedProfit)"></p>
-                            </div>
-                            <button type="button" @click="invFilter = 'low'" class="nb-card px-4 py-3 text-left outline-none hover:border-slate-300 focus-visible:ring-2 focus-visible:ring-brand-500"
-                                    :class="lowStockItems.length && 'border-red-200 bg-red-50/60'">
-                                <p class="nb-stat-label" :class="lowStockItems.length && 'text-red-700'">Low stock</p>
-                                <p class="nb-stat-value text-xl" :class="lowStockItems.length && 'text-red-600'" x-text="lowStockItems.length"></p>
-                            </button>
+                            <div class="nb-kpi-card is-compact is-blue"><span class="nb-kpi-card-label">Products</span><strong class="nb-kpi-card-value" x-text="inventory.length"></strong><span class="nb-kpi-card-sub"><span x-text="inventory.reduce((s, i) => s + Number(i.quantity || 0), 0)"></span> units in stock</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">📦</span></div>
+                            <div class="nb-kpi-card is-compact is-teal"><span class="nb-kpi-card-label">Stock value (at cost)</span><strong class="nb-kpi-card-value" x-text="fmt(stockValue)"></strong><span class="nb-kpi-card-sub">What the shelf cost to buy</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">🏷️</span></div>
+                            <div class="nb-kpi-card is-compact is-violet"><span class="nb-kpi-card-label">Expected profit</span><strong class="nb-kpi-card-value" x-text="fmt(expectedProfit)"></strong><span class="nb-kpi-card-sub">If it all sells at the set price</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">💰</span></div>
+                            <button type="button" @click="invFilter = 'low'" class="nb-kpi-card is-compact" :class="lowStockItems.length ? 'is-red' : 'is-teal'"><span class="nb-kpi-card-label">Low stock</span><strong class="nb-kpi-card-value" x-text="lowStockItems.length"></strong><span class="nb-kpi-card-sub">Below 5 units · tap to filter</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">⚠️</span></button>
                         </div>
 
                         <div class="nb-card">
@@ -1325,7 +1354,7 @@
                                 <p class="nb-empty-desc" x-text="inventory.length ? 'Try changing your search or filters.' : 'Add one, or record a dealer purchase.'"></p>
                                 <div class="mt-3 flex gap-2">
                                     <button type="button" @click="invSearch = ''; invFilter = 'all'" x-show="inventory.length" x-cloak class="nb-btn nb-btn-sm nb-btn-secondary">Clear filters</button>
-                                    <button type="button" @click="openAddProduct()" x-show="!inventory.length" x-cloak class="nb-btn nb-btn-sm nb-btn-primary">Add Product</button>
+                                    <button type="button" @click="openAddProduct()" x-show="isAdmin && !inventory.length" x-cloak class="nb-btn nb-btn-sm nb-btn-primary">Add Product</button>
                                 </div>
                             </div>
 
@@ -1337,7 +1366,7 @@
                                             <th class="num">In stock</th>
                                             <th class="num">
                                                 <!-- Blurred with Margin, on the same switch: either one gives the other away. -->
-                                                <button type="button" @click="marginVisible = !marginVisible" class="inline-flex items-center gap-1 uppercase hover:text-brand-700"
+                                                <button type="button" @click="marginVisible = !marginVisible" class="inline-flex items-center gap-1 uppercase hover:text-green-700"
                                                         :aria-pressed="marginVisible" aria-label="Show or hide buying price and margin">
                                                     Buying <span x-html="icon(marginVisible ? 'eyeOff' : 'eye', 'h-3.5 w-3.5')"></span>
                                                 </button>
@@ -1346,7 +1375,7 @@
                                             <th class="num">
                                                 <!-- Hidden by default: a customer glancing at the screen should
                                                      not read the shop's margins off it. -->
-                                                <button type="button" @click="marginVisible = !marginVisible" class="inline-flex items-center gap-1 uppercase hover:text-brand-700"
+                                                <button type="button" @click="marginVisible = !marginVisible" class="inline-flex items-center gap-1 uppercase hover:text-green-700"
                                                         :aria-pressed="marginVisible" aria-label="Show or hide buying price and margin">
                                                     Margin <span x-html="icon(marginVisible ? 'eyeOff' : 'eye', 'h-3.5 w-3.5')"></span>
                                                 </button>
@@ -1381,10 +1410,10 @@
                                                 <td><span class="nb-badge" :class="stockStatus(item).tone" x-text="stockStatus(item).label"></span></td>
                                                 <td>
                                                     <div class="flex items-center justify-end gap-1.5">
-                                                        <button type="button" @click="openEditProduct(item)" class="nb-btn nb-btn-sm nb-btn-secondary">
+                                                        <button type="button" x-show="isAdmin" @click="openEditProduct(item)" class="nb-btn nb-btn-sm nb-btn-secondary">
                                                             <span x-html="icon('edit', 'h-3.5 w-3.5')"></span>Edit
                                                         </button>
-                                                        <button type="button" @click.stop="openProductMenu(item, $event)" class="nb-icon-btn"
+                                                        <button type="button" x-show="isAdmin || serialTracked(item)" @click.stop="openProductMenu(item, $event)" class="nb-icon-btn"
                                                                 :aria-expanded="Number(productMenu?.item.id) === Number(item.id)" aria-haspopup="menu"
                                                                 :aria-label="'More actions for ' + item.item_name" title="More actions" x-html="icon('dots', 'h-5 w-5')"></button>
                                                     </div>
@@ -1428,10 +1457,10 @@
                                             <div><dt class="text-xs text-slate-500">Warranty</dt><dd class="text-slate-700 tabular-nums" x-text="item.warranty_months ? item.warranty_months + ' months' : '—'"></dd></div>
                                         </dl>
                                         <div class="mt-3 grid grid-cols-2 gap-2">
-                                            <button type="button" @click="openEditProduct(item)" class="nb-btn nb-btn-secondary h-10">Edit</button>
-                                            <button type="button" @click="restockProduct(item)" class="nb-btn nb-btn-secondary h-10">Restock</button>
+                                            <button type="button" x-show="isAdmin" @click="openEditProduct(item)" class="nb-btn nb-btn-secondary h-10">Edit</button>
+                                            <button type="button" x-show="isAdmin" @click="restockProduct(item)" class="nb-btn nb-btn-secondary h-10">Restock</button>
                                             <button type="button" @click="openSerialsFor(item)" x-show="serialTracked(item)" x-cloak class="nb-btn nb-btn-secondary h-10">Serials</button>
-                                            <button type="button" @click="openEditProduct(item); confirmDelete = true" class="nb-btn nb-btn-danger-soft h-10">Delete</button>
+                                            <button type="button" x-show="isAdmin" @click="openEditProduct(item); confirmDelete = true" class="nb-btn nb-btn-danger-soft h-10">Delete</button>
                                         </div>
                                     </div>
                                 </template>
@@ -1449,9 +1478,12 @@
                     <!-- ================= LOW STOCK ================= -->
                     <section x-show="page === 'lowstock'" x-cloak aria-labelledby="h-lowstock">
                         <div class="nb-page-head">
-                            <div>
-                                <h1 id="h-lowstock" class="nb-page-title">Low Stock</h1>
-                                <p class="nb-page-desc">Products with fewer than 5 units left, emptiest first. Restock opens the purchase form with the product filled in.</p>
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('lowstock')"></span>
+                                <div>
+                                    <h1 id="h-lowstock" class="nb-page-title">Low Stock</h1>
+                                    <p class="nb-page-desc">Products with fewer than 5 units left, emptiest first. Restock opens the purchase form with the product filled in.</p>
+                                </div>
                             </div>
                             <a href="#/products" class="nb-btn nb-btn-secondary">All products</a>
                         </div>
@@ -1476,8 +1508,8 @@
                                                 <td><span class="nb-badge" :class="stockStatus(item).tone" x-text="stockStatus(item).label"></span></td>
                                                 <td>
                                                     <div class="flex justify-end gap-1.5">
-                                                        <button type="button" @click="openEditProduct(item)" class="nb-btn nb-btn-sm nb-btn-ghost">Edit</button>
-                                                        <button type="button" @click="restockProduct(item)" class="nb-btn nb-btn-sm nb-btn-primary">Restock</button>
+                                                        <button type="button" x-show="isAdmin" @click="openEditProduct(item)" class="nb-btn nb-btn-sm nb-btn-ghost">Edit</button>
+                                                        <button type="button" x-show="isAdmin" @click="restockProduct(item)" class="nb-btn nb-btn-sm nb-btn-primary">Restock</button>
                                                     </div>
                                                 </td>
                                             </tr>
@@ -1492,25 +1524,18 @@
                          Built from the invoices — the shop keeps no customer table. -->
                     <section x-show="page === 'customers'" x-cloak aria-labelledby="h-customers">
                         <div class="nb-page-head">
-                            <div>
-                                <h1 id="h-customers" class="nb-page-title">Customers</h1>
-                                <p class="nb-page-desc">Everyone named on an invoice, grouped by phone number (or by name where there is none).</p>
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('customers')"></span>
+                                <div>
+                                    <h1 id="h-customers" class="nb-page-title">Customers</h1>
+                                    <p class="nb-page-desc">Everyone named on an invoice, grouped by phone number (or by name where there is none).</p>
+                                </div>
                             </div>
                         </div>
                         <div class="mb-5 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
-                            <div class="nb-card px-4 py-3">
-                                <p class="nb-stat-label">Customers</p>
-                                <p class="nb-stat-value text-xl" x-text="customers.filter((c) => !c.walkIn).length"></p>
-                            </div>
-                            <div class="nb-card px-4 py-3">
-                                <p class="nb-stat-label">Invoices</p>
-                                <p class="nb-stat-value text-xl" x-text="invoices.length"></p>
-                            </div>
-                            <button type="button" @click="customerDueOnly = !customerDueOnly" class="nb-card col-span-2 px-4 py-3 text-left outline-none hover:border-slate-300 focus-visible:ring-2 focus-visible:ring-brand-500 lg:col-span-1"
-                                    :class="customersDueTotal > 0.005 && 'border-red-200 bg-red-50/60'">
-                                <p class="nb-stat-label" :class="customersDueTotal > 0.005 && 'text-red-700'">Outstanding due</p>
-                                <p class="nb-stat-value text-xl" :class="customersDueTotal > 0.005 && 'text-red-600'" x-text="fmt(customersDueTotal)"></p>
-                            </button>
+                            <div class="nb-kpi-card is-compact is-blue"><span class="nb-kpi-card-label">Customers</span><strong class="nb-kpi-card-value" x-text="customers.filter((c) => !c.walkIn).length"></strong><span class="nb-kpi-card-sub">Named on an invoice</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">👥</span></div>
+                            <div class="nb-kpi-card is-compact is-green"><span class="nb-kpi-card-label">Invoices</span><strong class="nb-kpi-card-value" x-text="invoices.length"></strong><span class="nb-kpi-card-sub">All time</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">🧾</span></div>
+                            <button type="button" @click="customerDueOnly = !customerDueOnly" :aria-pressed="customerDueOnly" class="nb-kpi-card is-compact col-span-2 lg:col-span-1" :class="customersDueTotal > 0.005 ? 'is-red' : 'is-teal'"><span class="nb-kpi-card-label">Outstanding due</span><strong class="nb-kpi-card-value" x-text="fmt(customersDueTotal)"></strong><span class="nb-kpi-card-sub">Tap to show only customers who owe</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">💵</span></button>
                         </div>
                         <div class="nb-card">
                             <div class="nb-card-head">
@@ -1571,16 +1596,19 @@
                          Built from the dealer purchases. -->
                     <section x-show="page === 'suppliers'" x-cloak aria-labelledby="h-suppliers">
                         <div class="nb-page-head">
-                            <div>
-                                <h1 id="h-suppliers" class="nb-page-title">Suppliers</h1>
-                                <p class="nb-page-desc">Every dealer the shop has bought from. Purchases record no payment to the dealer, so no supplier due is shown.</p>
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('suppliers')"></span>
+                                <div>
+                                    <h1 id="h-suppliers" class="nb-page-title">Suppliers</h1>
+                                    <p class="nb-page-desc">Every dealer the shop has bought from. Purchases record no payment to the dealer, so no supplier due is shown.</p>
+                                </div>
                             </div>
-                            <a href="#/purchases/new" class="nb-btn nb-btn-primary"><span x-html="icon('plus', 'h-4 w-4')"></span>New Purchase</a>
+                            <a href="#/purchases/new" x-show="isAdmin" class="nb-btn nb-btn-primary"><span x-html="icon('plus', 'h-4 w-4')"></span>New Purchase</a>
                         </div>
                         <div class="mb-5 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
-                            <div class="nb-card px-4 py-3"><p class="nb-stat-label">Suppliers</p><p class="nb-stat-value text-xl" x-text="suppliers.length"></p></div>
-                            <div class="nb-card px-4 py-3"><p class="nb-stat-label">Purchases</p><p class="nb-stat-value text-xl" x-text="purchases.length"></p></div>
-                            <div class="nb-card col-span-2 px-4 py-3 lg:col-span-1"><p class="nb-stat-label">Total bought</p><p class="nb-stat-value text-xl" x-text="fmt(dealerSpend)"></p></div>
+                            <div class="nb-kpi-card is-compact is-blue"><span class="nb-kpi-card-label">Suppliers</span><strong class="nb-kpi-card-value" x-text="suppliers.length"></strong><span class="nb-kpi-card-sub">Dealers bought from</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">🏭</span></div>
+                            <div class="nb-kpi-card is-compact is-teal"><span class="nb-kpi-card-label">Purchases</span><strong class="nb-kpi-card-value" x-text="purchases.length"></strong><span class="nb-kpi-card-sub">Stock deliveries recorded</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">🚚</span></div>
+                            <div class="nb-kpi-card is-compact col-span-2 lg:col-span-1 is-amber"><span class="nb-kpi-card-label">Total bought</span><strong class="nb-kpi-card-value" x-text="fmt(dealerSpend)"></strong><span class="nb-kpi-card-sub">At buying price</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">💵</span></div>
                         </div>
                         <div class="nb-card">
                             <div class="nb-card-head">
@@ -1628,12 +1656,88 @@
                         </div>
                     </section>
 
+                    <!-- ================= USERS =================
+                         Admin only: who can sign in, and as what. Staff sell, collect
+                         dues, take returns and claims and add expenses; only an admin
+                         adds, edits or deletes stock and records. -->
+                    <section x-show="page === 'users' && isAdmin" x-cloak aria-labelledby="h-users">
+                        <div class="nb-page-head">
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('users')"></span>
+                                <div>
+                                    <h1 id="h-users" class="nb-page-title">Users</h1>
+                                    <p class="nb-page-desc">Staff can sell, collect dues, take returns and warranty claims, and add expenses. Only an admin can add, edit or delete products, purchases and records.</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
+                            <form @submit.prevent="saveUser()" class="nb-card">
+                                <div class="nb-card-head"><h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#dcfce7]" aria-hidden="true">👤</span>Add user</h2></div>
+                                <div class="nb-card-body space-y-3.5">
+                                    <div>
+                                        <label for="user-name" class="nb-label nb-req">Name <span class="nb-opt">(prints as "Sold by" on receipts)</span></label>
+                                        <input id="user-name" type="text" x-model="userDraft.name" autocomplete="off" maxlength="60" required
+                                               placeholder="e.g. Karim Hasan" class="nb-input">
+                                    </div>
+                                    <div>
+                                        <label for="user-email" class="nb-label nb-req">Email</label>
+                                        <input id="user-email" type="email" x-model="userDraft.email" autocomplete="off" required class="nb-input">
+                                    </div>
+                                    <div>
+                                        <label for="user-password" class="nb-label nb-req">Password <span class="nb-opt">(at least 8 characters)</span></label>
+                                        <input id="user-password" type="text" x-model="userDraft.password" autocomplete="new-password" minlength="8" required class="nb-input">
+                                    </div>
+                                    <div>
+                                        <label for="user-role" class="nb-label">Role</label>
+                                        <select id="user-role" x-model="userDraft.role" class="nb-input">
+                                            <option value="staff">Staff</option>
+                                            <option value="admin">Admin</option>
+                                        </select>
+                                    </div>
+                                    <p class="nb-note is-danger" x-show="userError" x-cloak x-text="userError"></p>
+                                    <button type="submit" :disabled="savingUser" class="nb-btn nb-btn-primary w-full">
+                                        <span x-text="savingUser ? 'Adding…' : 'Add user'"></span>
+                                    </button>
+                                </div>
+                            </form>
+                            <div class="nb-card">
+                                <div class="nb-card-head"><h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#dbeafe]" aria-hidden="true">👥</span>Accounts</h2></div>
+                                <ul class="divide-y divide-slate-100">
+                                    <template x-for="u in users" :key="'u-' + u.id">
+                                        <li class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:px-5">
+                                            <div class="min-w-0 flex-1 basis-48">
+                                                <p class="flex flex-wrap items-center gap-2">
+                                                    <span class="truncate font-semibold text-ink" x-text="u.name || 'No name yet'" :class="!u.name && 'text-slate-400 italic font-normal'"></span>
+                                                    <span class="nb-badge is-neutral" x-show="u.email === userEmail" x-cloak>You</span>
+                                                </p>
+                                                <p class="truncate text-xs text-slate-500" x-text="u.email"></p>
+                                            </div>
+                                            <select :value="u.role" @change="changeUserRole(u, $event.target.value)" :disabled="u.email === userEmail"
+                                                    :aria-label="'Role of ' + u.email" class="nb-input w-auto">
+                                                <option value="staff" :selected="u.role === 'staff'">Staff</option>
+                                                <option value="admin" :selected="u.role === 'admin'">Admin</option>
+                                            </select>
+                                            <div class="flex gap-1.5">
+                                                <button type="button" @click="renameUser(u)" class="nb-btn nb-btn-sm nb-btn-secondary">Rename</button>
+                                                <button type="button" @click="resetUserPassword(u)" class="nb-btn nb-btn-sm nb-btn-secondary">Reset password</button>
+                                                <button type="button" @click="deleteUser(u)" x-show="u.email !== userEmail" class="nb-btn nb-btn-sm nb-btn-danger-soft">Remove</button>
+                                            </div>
+                                        </li>
+                                    </template>
+                                </ul>
+                            </div>
+                        </div>
+                    </section>
+
                     <!-- ================= EXPENSES ================= -->
                     <section x-show="page === 'expenses'" x-cloak aria-labelledby="h-expenses">
                         <div class="nb-page-head">
-                            <div>
-                                <h1 id="h-expenses" class="nb-page-title">Expenses</h1>
-                                <p class="nb-page-desc">শপের চলতি খরচ — ভাড়া, বিদ্যুৎ, বেতন, চা, যাতায়াত। মালের কেনা এখানে নয়, সেটা New Purchase-এ।</p>
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('expenses')"></span>
+                                <div>
+                                    <h1 id="h-expenses" class="nb-page-title">Expenses</h1>
+                                    <p class="nb-page-desc">শপের চলতি খরচ — ভাড়া, বিদ্যুৎ, বেতন, চা, যাতায়াত। মালের কেনা এখানে নয়, সেটা New Purchase-এ।</p>
+                                </div>
                             </div>
                         </div>
 
@@ -1661,11 +1765,11 @@
                                             </div>
                                         </div>
                                     </div>
-                                    <dl class="grid grid-cols-2 gap-px overflow-hidden rounded-b-xl border-t border-slate-100 bg-slate-100 sm:grid-cols-4">
-                                        <div class="bg-white px-4 py-3"><dt class="nb-stat-label" x-text="rangeLabel"></dt><dd class="nb-stat-value"><span x-text="filteredExpenses.length"></span> expense(s)</dd></div>
-                                        <div class="bg-white px-4 py-3"><dt class="nb-stat-label">Profit (sales)</dt><dd class="nb-stat-value" :class="rangeProfit < 0 ? 'text-red-600' : 'text-green-700'" x-text="fmt(rangeProfit)"></dd></div>
-                                        <div class="bg-white px-4 py-3"><dt class="nb-stat-label">Expenses</dt><dd class="nb-stat-value text-rose-700" x-text="fmt(rangeExpenses)"></dd></div>
-                                        <div class="bg-white px-4 py-3"><dt class="nb-stat-label">Net profit</dt><dd class="nb-stat-value text-lg" :class="rangeNetProfit < 0 ? 'text-red-600' : 'text-green-700'" x-text="fmt(rangeNetProfit)"></dd></div>
+                                    <dl class="grid grid-cols-2 gap-px overflow-hidden rounded-b-2xl border-t border-[#e5ebe7] bg-[#e5ebe7] sm:grid-cols-4">
+                                        <div class="nb-stat-cell is-blue"><dt class="nb-stat-label" x-text="rangeLabel"></dt><dd class="nb-stat-value"><span x-text="filteredExpenses.length"></span> expense(s)</dd></div>
+                                        <div class="nb-stat-cell is-violet"><dt class="nb-stat-label">Profit (sales)</dt><dd class="nb-stat-value" :class="rangeProfit < 0 ? 'text-red-600' : 'text-green-700'" x-text="fmt(rangeProfit)"></dd></div>
+                                        <div class="nb-stat-cell is-red"><dt class="nb-stat-label">Expenses</dt><dd class="nb-stat-value text-rose-700" x-text="fmt(rangeExpenses)"></dd></div>
+                                        <div class="nb-stat-cell" :class="rangeNetProfit < 0 ? 'is-red' : 'is-green'"><dt class="nb-stat-label">Net profit</dt><dd class="nb-stat-value text-lg" :class="rangeNetProfit < 0 ? 'text-red-600' : 'text-green-700'" x-text="fmt(rangeNetProfit)"></dd></div>
                                     </dl>
                                 </div>
                                 <p class="-mt-3 text-xs text-slate-500">
@@ -1708,8 +1812,8 @@
                                                         <td class="num font-semibold text-rose-700" x-text="fmt(e.amount)"></td>
                                                         <td>
                                                             <div class="flex justify-end gap-1.5">
-                                                                <button type="button" @click="openEditExpense(e)" class="nb-btn nb-btn-sm nb-btn-secondary">Edit</button>
-                                                                <button type="button" @click="openEditExpense(e); confirmExpenseDelete = true" class="nb-icon-btn hover:bg-red-50 hover:text-red-600"
+                                                                <button type="button" x-show="isAdmin" @click="openEditExpense(e)" class="nb-btn nb-btn-sm nb-btn-secondary">Edit</button>
+                                                                <button type="button" x-show="isAdmin" @click="openEditExpense(e); confirmExpenseDelete = true" class="nb-icon-btn hover:bg-red-50 hover:text-red-600"
                                                                         :aria-label="'Delete ' + e.category" title="Delete" x-html="icon('trash', 'h-4 w-4')"></button>
                                                             </div>
                                                         </td>
@@ -1728,8 +1832,8 @@
                                                 <p class="mt-1 text-xs text-slate-500" x-text="fmtDate(e.date)"></p>
                                                 <p class="mt-1 text-xs text-slate-500 italic" x-show="e.note" x-cloak x-text="e.note"></p>
                                                 <div class="mt-3 grid grid-cols-2 gap-2">
-                                                    <button type="button" @click="openEditExpense(e)" class="nb-btn nb-btn-secondary h-10">Edit</button>
-                                                    <button type="button" @click="openEditExpense(e); confirmExpenseDelete = true" class="nb-btn nb-btn-danger-soft h-10">Delete</button>
+                                                    <button type="button" x-show="isAdmin" @click="openEditExpense(e)" class="nb-btn nb-btn-secondary h-10">Edit</button>
+                                                    <button type="button" x-show="isAdmin" @click="openEditExpense(e); confirmExpenseDelete = true" class="nb-btn nb-btn-danger-soft h-10">Delete</button>
                                                 </div>
                                             </div>
                                         </template>
@@ -1750,7 +1854,7 @@
                             <div class="nb-card xl:sticky xl:top-22">
                                 <div class="nb-card-head">
                                     <div>
-                                        <h2 class="nb-card-title">Add expense</h2>
+                                        <h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#fce7f3]" aria-hidden="true">💸</span>Add expense</h2>
                                         <p class="text-xs text-slate-500">মালের কেনা এখানে নয় — তা প্রতিটি বিক্রির কেনা দামে ধরা আছে।</p>
                                     </div>
                                 </div>
@@ -1796,9 +1900,12 @@
                          from the server rather than with the dashboard. -->
                     <section x-show="page === 'serials'" x-cloak aria-labelledby="h-serials">
                         <div class="nb-page-head">
-                            <div>
-                                <h1 id="h-serials" class="nb-page-title">Serial / IMEI</h1>
-                                <p class="nb-page-desc">Every tracked unit — scan one to find its invoice, history and warranty.</p>
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('serials')"></span>
+                                <div>
+                                    <h1 id="h-serials" class="nb-page-title">Serial / IMEI</h1>
+                                    <p class="nb-page-desc">Every tracked unit — scan one to find its invoice, history and warranty.</p>
+                                </div>
                             </div>
                         </div>
                         <div class="nb-card">
@@ -1862,7 +1969,7 @@
                                                 <td class="text-xs text-slate-500">
                                                     <template x-if="row.status === 'sold'">
                                                         <div>
-                                                            <button type="button" @click="openSerialInvoice(row)" class="font-semibold text-brand-800 underline hover:no-underline" x-text="'#' + row.invoice_id"></button>
+                                                            <button type="button" @click="openSerialInvoice(row)" class="font-semibold text-green-700 underline hover:no-underline" x-text="'#' + row.invoice_id"></button>
                                                             <span class="whitespace-nowrap" x-text="fmtDate(row.sold_date)"></span>
                                                             <span class="block" x-text="[row.customer_name, row.customer_contact].filter(Boolean).join(' · ')"></span>
                                                         </div>
@@ -1894,7 +2001,7 @@
                                         <p class="text-xs text-slate-500" x-text="row.item_name || '(deleted product)'"></p>
                                         <p class="text-xs text-slate-500">In: <span x-text="fmtDate(row.received_date)"></span><span x-show="row.dealer_name" x-text="' — ' + row.dealer_name"></span></p>
                                         <p class="text-xs text-slate-500" x-show="row.status === 'sold'" x-cloak>
-                                            Out: <button type="button" @click="openSerialInvoice(row)" class="font-semibold text-brand-800 underline" x-text="'#' + row.invoice_id"></button>
+                                            Out: <button type="button" @click="openSerialInvoice(row)" class="font-semibold text-green-700 underline" x-text="'#' + row.invoice_id"></button>
                                             <span x-text="[row.customer_name, row.customer_contact, fmtDate(row.sold_date)].filter(Boolean).join(' · ')"></span>
                                         </p>
                                         <div class="flex flex-wrap gap-2">
@@ -1921,9 +2028,12 @@
                          on is the thing not to forget. -->
                     <section x-show="page === 'warranty'" x-cloak aria-labelledby="h-warranty">
                         <div class="nb-page-head">
-                            <div>
-                                <h1 id="h-warranty" class="nb-page-title">Warranty Claims</h1>
-                                <p class="nb-page-desc">Faulty units customers brought back under warranty. New claims start from an invoice or a serial.</p>
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('warranty')"></span>
+                                <div>
+                                    <h1 id="h-warranty" class="nb-page-title">Warranty Claims</h1>
+                                    <p class="nb-page-desc">Faulty units customers brought back under warranty. New claims start from an invoice or a serial.</p>
+                                </div>
                             </div>
                             <a href="#/sales" class="nb-btn nb-btn-secondary">Find the invoice</a>
                         </div>
@@ -1961,7 +2071,7 @@
                                                 </td>
                                                 <td>
                                                     <span x-text="claimInvoice(c)?.customer_name || 'Walk-in'"></span>
-                                                    <button type="button" @click="claimInvoice(c) && showReceipt(claimInvoice(c))" class="block text-xs font-semibold text-brand-800 underline hover:no-underline"
+                                                    <button type="button" @click="claimInvoice(c) && showReceipt(claimInvoice(c))" class="block text-xs font-semibold text-green-700 underline hover:no-underline"
                                                             x-text="'Invoice #' + c.invoice_id"></button>
                                                 </td>
                                                 <td class="whitespace-nowrap text-slate-500">
@@ -1993,7 +2103,7 @@
                                         </p>
                                         <p class="text-xs text-slate-500">
                                             In <span x-text="fmtDate(c.date)"></span> ·
-                                            <button type="button" @click="claimInvoice(c) && showReceipt(claimInvoice(c))" class="font-semibold text-brand-800 underline" x-text="'#' + c.invoice_id"></button>
+                                            <button type="button" @click="claimInvoice(c) && showReceipt(claimInvoice(c))" class="font-semibold text-green-700 underline" x-text="'#' + c.invoice_id"></button>
                                             <span x-text="claimInvoice(c)?.customer_name || 'Walk-in'"></span>
                                         </p>
                                         <button type="button" @click="openResolveClaim(c)" x-show="c.status === 'open'" class="nb-btn nb-btn-sm nb-btn-primary">Settle</button>
@@ -2008,22 +2118,25 @@
                          stock or lost yet; each row waits on a decision. -->
                     <section x-show="page === 'faulty'" x-cloak aria-labelledby="h-faulty">
                         <div class="nb-page-head">
-                            <div>
-                                <h1 id="h-faulty" class="nb-page-title">Faulty &amp; Supplier</h1>
-                                <p class="nb-page-desc">Returns and warranty units that came in faulty wait here: send them to the supplier, put them back in stock, or write them off.</p>
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('faulty')"></span>
+                                <div>
+                                    <h1 id="h-faulty" class="nb-page-title">Faulty &amp; Supplier</h1>
+                                    <p class="nb-page-desc">Returns and warranty units that came in faulty wait here: send them to the supplier, put them back in stock, or write them off.</p>
+                                </div>
                             </div>
-                            <button type="button" @click="openMarkFaulty()" class="nb-btn nb-btn-secondary">Mark stock faulty</button>
+                            <button type="button" x-show="isAdmin" @click="openMarkFaulty()" class="nb-btn nb-btn-secondary">Mark stock faulty</button>
                         </div>
                         <div class="mb-5 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
-                            <div class="nb-card px-4 py-3"><p class="nb-stat-label">Faulty in shop</p><p class="nb-stat-value text-xl" :class="faultyInShop.length && 'text-red-600'" x-text="faultyInShop.length"></p></div>
-                            <div class="nb-card px-4 py-3"><p class="nb-stat-label">With supplier</p><p class="nb-stat-value text-xl" :class="faultyAtSupplier.length && 'text-violet-700'" x-text="faultyAtSupplier.length"></p></div>
-                            <div class="nb-card col-span-2 px-4 py-3 lg:col-span-1"><p class="nb-stat-label">Written off, all time</p><p class="nb-stat-value text-xl" :class="totalWriteOffs > 0 && 'text-rose-700'" x-text="fmt(totalWriteOffs)"></p></div>
+                            <div class="nb-kpi-card is-compact" :class="faultyInShop.length ? 'is-red' : 'is-teal'"><span class="nb-kpi-card-label">Faulty in shop</span><strong class="nb-kpi-card-value" x-text="faultyInShop.length"></strong><span class="nb-kpi-card-sub">Waiting for a decision</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">🛠️</span></div>
+                            <div class="nb-kpi-card is-compact is-violet"><span class="nb-kpi-card-label">With supplier</span><strong class="nb-kpi-card-value" x-text="faultyAtSupplier.length"></strong><span class="nb-kpi-card-sub">Sent back for repair or exchange</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">🚚</span></div>
+                            <div class="nb-kpi-card is-compact col-span-2 lg:col-span-1 is-amber"><span class="nb-kpi-card-label">Written off, all time</span><strong class="nb-kpi-card-value" x-text="fmt(totalWriteOffs)"></strong><span class="nb-kpi-card-sub">At buying price</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">📉</span></div>
                         </div>
 
                         <div class="grid grid-cols-1 gap-5 xl:grid-cols-2">
                             <div class="nb-card">
                                 <div class="nb-card-head">
-                                    <h2 class="nb-card-title">Faulty in shop</h2>
+                                    <h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#fee2e2]" aria-hidden="true">🛠️</span>Faulty in shop</h2>
                                     <span class="nb-badge is-danger" x-show="faultyInShop.length" x-cloak x-text="faultyInShop.length + ' waiting'"></span>
                                 </div>
                                 <div class="nb-empty" x-show="!faultyInShop.length">
@@ -2045,9 +2158,9 @@
                                                 </p>
                                             </div>
                                             <div class="flex flex-wrap gap-1.5">
-                                                <button type="button" @click="openMove(row, 'supplier')" class="nb-btn nb-btn-sm nb-btn-secondary">Send to supplier</button>
-                                                <button type="button" @click="openMove(row, 'stock')" class="nb-btn nb-btn-sm nb-btn-secondary">Fixed — to stock</button>
-                                                <button type="button" @click="openMove(row, 'written_off')" class="nb-btn nb-btn-sm nb-btn-danger-soft">Write off</button>
+                                                <button type="button" x-show="isAdmin" @click="openMove(row, 'supplier')" class="nb-btn nb-btn-sm nb-btn-secondary">Send to supplier</button>
+                                                <button type="button" x-show="isAdmin" @click="openMove(row, 'stock')" class="nb-btn nb-btn-sm nb-btn-secondary">Fixed — to stock</button>
+                                                <button type="button" x-show="isAdmin" @click="openMove(row, 'written_off')" class="nb-btn nb-btn-sm nb-btn-danger-soft">Write off</button>
                                             </div>
                                         </li>
                                     </template>
@@ -2056,7 +2169,7 @@
 
                             <div class="nb-card">
                                 <div class="nb-card-head">
-                                    <h2 class="nb-card-title">With supplier</h2>
+                                    <h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#ede9fe]" aria-hidden="true">🚚</span>With supplier</h2>
                                     <span class="nb-badge is-violet" x-show="faultyAtSupplier.length" x-cloak x-text="faultyAtSupplier.length + ' away'"></span>
                                 </div>
                                 <div class="nb-empty" x-show="!faultyAtSupplier.length">
@@ -2078,9 +2191,9 @@
                                                 </p>
                                             </div>
                                             <div class="flex flex-wrap gap-1.5">
-                                                <button type="button" @click="openMove(row, 'stock')" class="nb-btn nb-btn-sm nb-btn-secondary">Back — to stock</button>
-                                                <button type="button" @click="openMove(row, 'defective')" class="nb-btn nb-btn-sm nb-btn-secondary">Back, still faulty</button>
-                                                <button type="button" @click="openMove(row, 'written_off')" class="nb-btn nb-btn-sm nb-btn-danger-soft">Write off</button>
+                                                <button type="button" x-show="isAdmin" @click="openMove(row, 'stock')" class="nb-btn nb-btn-sm nb-btn-secondary">Back — to stock</button>
+                                                <button type="button" x-show="isAdmin" @click="openMove(row, 'defective')" class="nb-btn nb-btn-sm nb-btn-secondary">Back, still faulty</button>
+                                                <button type="button" x-show="isAdmin" @click="openMove(row, 'written_off')" class="nb-btn nb-btn-sm nb-btn-danger-soft">Write off</button>
                                             </div>
                                         </li>
                                     </template>
@@ -2091,7 +2204,7 @@
                         <!-- Every move made by hand, newest first — the audit trail for the
                              queue above. Returns and claims keep their own. -->
                         <div class="nb-card mt-5" x-show="movements.length" x-cloak>
-                            <div class="nb-card-head"><h2 class="nb-card-title">History</h2></div>
+                            <div class="nb-card-head"><h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#dbeafe]" aria-hidden="true">🕘</span>History</h2></div>
                             <div class="nb-table-wrap">
                                 <table class="nb-table">
                                     <thead><tr><th>Date</th><th>Item</th><th>Move</th><th>Supplier / note</th><th class="num">Loss</th></tr></thead>
@@ -2118,12 +2231,15 @@
                          sidebar, topbar and filters are no-print. -->
                     <section x-show="pageGroup(page) === 'reports'" x-cloak aria-labelledby="h-report">
                         <div class="nb-page-head">
-                            <div>
-                                <h1 id="h-report" class="nb-page-title" x-text="pageTitle(page)"></h1>
-                                <p class="nb-page-desc">
-                                    <span x-show="page !== 'rstock'"><span x-text="rangeLabel"></span> · <span x-text="shop.name"></span></span>
-                                    <span x-show="page === 'rstock'" x-cloak>Stock on hand now · <span x-text="shop.name"></span></span>
-                                </p>
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji(page)"></span>
+                                <div>
+                                    <h1 id="h-report" class="nb-page-title" x-text="pageTitle(page)"></h1>
+                                    <p class="nb-page-desc">
+                                        <span x-show="page !== 'rstock'"><span x-text="rangeLabel"></span> · <span x-text="shop.name"></span></span>
+                                        <span x-show="page === 'rstock'" x-cloak>Stock on hand now · <span x-text="shop.name"></span></span>
+                                    </p>
+                                </div>
                             </div>
                             <button type="button" onclick="window.print()" class="nb-btn nb-btn-secondary no-print"><span x-html="icon('printer', 'h-4 w-4')"></span>Print</button>
                         </div>
@@ -2165,13 +2281,13 @@
                         <!-- Sales report -->
                         <div x-show="page === 'rsales'" x-cloak class="space-y-5">
                             <div class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-                                <div class="nb-card px-4 py-3"><p class="nb-stat-label">Invoices</p><p class="nb-stat-value text-xl" x-text="filteredInvoices.length"></p></div>
-                                <div class="nb-card px-4 py-3"><p class="nb-stat-label">Net sales</p><p class="nb-stat-value text-xl" x-text="fmt(rangeNetSales)"></p><p class="text-xs text-slate-500">Sold <span x-text="fmt(rangeRevenue)"></span> − returns <span x-text="fmt(rangeReturns)"></span></p></div>
-                                <div class="nb-card px-4 py-3"><p class="nb-stat-label">Profit on sales</p><p class="nb-stat-value text-xl" :class="rangeProfit < 0 ? 'text-red-600' : 'text-green-700'" x-text="fmt(rangeProfit)"></p><p class="text-xs text-slate-500">Discount given <span x-text="fmt(rangeDiscount)"></span></p></div>
-                                <div class="nb-card px-4 py-3"><p class="nb-stat-label">Still due</p><p class="nb-stat-value text-xl" :class="rangeDue > 0 && 'text-red-600'" x-text="fmt(rangeDue)"></p><p class="text-xs text-slate-500" x-show="rangeRefunds > 0" x-cloak>Refunded <span x-text="fmt(rangeRefunds)"></span></p></div>
+                                <div class="nb-kpi-card is-compact is-blue"><span class="nb-kpi-card-label">Invoices</span><strong class="nb-kpi-card-value" x-text="filteredInvoices.length"></strong><span class="nb-kpi-card-sub"><span x-text="rangeLabel"></span></span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">🧾</span></div>
+                                <div class="nb-kpi-card is-compact is-green"><span class="nb-kpi-card-label">Net sales</span><strong class="nb-kpi-card-value" x-text="fmt(rangeNetSales)"></strong><span class="nb-kpi-card-sub">Sold <span x-text="fmt(rangeRevenue)"></span> − returns <span x-text="fmt(rangeReturns)"></span></span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">🛒</span></div>
+                                <div class="nb-kpi-card is-compact" :class="rangeProfit < 0 ? 'is-red' : 'is-violet'"><span class="nb-kpi-card-label">Profit on sales</span><strong class="nb-kpi-card-value" x-text="fmt(rangeProfit)"></strong><span class="nb-kpi-card-sub">Discount given <span x-text="fmt(rangeDiscount)"></span></span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">💰</span></div>
+                                <div class="nb-kpi-card is-compact" :class="rangeDue > 0 ? 'is-red' : 'is-teal'"><span class="nb-kpi-card-label">Still due</span><strong class="nb-kpi-card-value" x-text="fmt(rangeDue)"></strong><span class="nb-kpi-card-sub"><span x-show="rangeRefunds > 0" x-cloak>Refunded <span x-text="fmt(rangeRefunds)"></span></span><span x-show="!(rangeRefunds > 0)">Not yet collected</span></span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">💵</span></div>
                             </div>
                             <div class="nb-card">
-                                <div class="nb-card-head"><h2 class="nb-card-title">By day</h2><span class="text-xs text-slate-500">Returns count on the day the goods came back</span></div>
+                                <div class="nb-card-head"><h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#dbeafe]" aria-hidden="true">📅</span>By day</h2><span class="text-xs text-slate-500">Returns count on the day the goods came back</span></div>
                                 <div class="nb-empty" x-show="!reportDays.length">
                                     <span class="nb-empty-icon" x-html="icon('chart')"></span>
                                     <p class="nb-empty-title">Nothing in this range</p>
@@ -2215,7 +2331,7 @@
                         <!-- Profit & loss -->
                         <div x-show="page === 'rpnl'" x-cloak class="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
                             <div class="nb-card">
-                                <div class="nb-card-head"><h2 class="nb-card-title">Statement</h2></div>
+                                <div class="nb-card-head"><h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#ede9fe]" aria-hidden="true">📄</span>Statement</h2></div>
                                 <dl class="divide-y divide-slate-100 text-sm">
                                     <div class="flex justify-between px-5 py-2.5"><dt>Sales</dt><dd class="tabular-nums" x-text="fmt(rangeRevenue)"></dd></div>
                                     <div class="flex justify-between px-5 py-2.5 text-slate-600"><dt>Less returns</dt><dd class="tabular-nums" x-text="'−' + fmt(rangeReturns)"></dd></div>
@@ -2231,7 +2347,7 @@
                                 <p class="px-5 pb-4 text-xs text-slate-500" x-show="rangeHasUnknownCost" x-cloak>Some sales have no buying price recorded, so profit — and net profit — exclude them.</p>
                             </div>
                             <div class="nb-card min-w-0">
-                                <div class="nb-card-head"><h2 class="nb-card-title">By day</h2></div>
+                                <div class="nb-card-head"><h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#dbeafe]" aria-hidden="true">📅</span>By day</h2></div>
                                 <div class="nb-empty" x-show="!reportDays.length">
                                     <span class="nb-empty-icon" x-html="icon('chart')"></span>
                                     <p class="nb-empty-title">Nothing in this range</p>
@@ -2267,13 +2383,13 @@
                         <!-- Stock report -->
                         <div x-show="page === 'rstock'" x-cloak class="space-y-5">
                             <div class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-                                <div class="nb-card px-4 py-3"><p class="nb-stat-label">Products</p><p class="nb-stat-value text-xl" x-text="inventory.length"></p><p class="text-xs text-slate-500"><span x-text="inventory.reduce((s, i) => s + Number(i.quantity || 0), 0)"></span> units in stock</p></div>
-                                <div class="nb-card px-4 py-3"><p class="nb-stat-label">Value at cost</p><p class="nb-stat-value text-xl" x-text="fmt(stockValue)"></p></div>
-                                <div class="nb-card px-4 py-3"><p class="nb-stat-label">Value at selling price</p><p class="nb-stat-value text-xl" x-text="fmt(stockSaleValue)"></p></div>
-                                <div class="nb-card px-4 py-3"><p class="nb-stat-label">Expected profit</p><p class="nb-stat-value text-xl text-green-700" x-text="fmt(expectedProfit)"></p></div>
+                                <div class="nb-kpi-card is-compact is-blue"><span class="nb-kpi-card-label">Products</span><strong class="nb-kpi-card-value" x-text="inventory.length"></strong><span class="nb-kpi-card-sub"><span x-text="inventory.reduce((s, i) => s + Number(i.quantity || 0), 0)"></span> units in stock</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">📦</span></div>
+                                <div class="nb-kpi-card is-compact is-teal"><span class="nb-kpi-card-label">Value at cost</span><strong class="nb-kpi-card-value" x-text="fmt(stockValue)"></strong><span class="nb-kpi-card-sub">What the shelf cost to buy</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">🏷️</span></div>
+                                <div class="nb-kpi-card is-compact is-green"><span class="nb-kpi-card-label">Value at selling price</span><strong class="nb-kpi-card-value" x-text="fmt(stockSaleValue)"></strong><span class="nb-kpi-card-sub">At the set prices</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">💵</span></div>
+                                <div class="nb-kpi-card is-compact is-violet"><span class="nb-kpi-card-label">Expected profit</span><strong class="nb-kpi-card-value" x-text="fmt(expectedProfit)"></strong><span class="nb-kpi-card-sub">If it all sells</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">💰</span></div>
                             </div>
                             <div class="nb-card">
-                                <div class="nb-card-head"><h2 class="nb-card-title">By product</h2><span class="text-xs text-slate-500">Most money on the shelf first</span></div>
+                                <div class="nb-card-head"><h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#dbeafe]" aria-hidden="true">📦</span>By product</h2><span class="text-xs text-slate-500">Most money on the shelf first</span></div>
                                 <div class="nb-empty" x-show="!stockRows.length"><span class="nb-empty-icon" x-html="icon('cube')"></span><p class="nb-empty-title">No products yet</p></div>
                                 <div class="nb-table-wrap" x-show="stockRows.length" x-cloak>
                                     <table class="nb-table">
@@ -2312,7 +2428,7 @@
                         <div x-show="page === 'rexpenses'" x-cloak class="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
                             <div class="nb-card">
                                 <div class="nb-card-head">
-                                    <h2 class="nb-card-title">By head</h2>
+                                    <h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#fce7f3]" aria-hidden="true">🏷️</span>By head</h2>
                                     <span class="text-sm font-semibold text-rose-700 tabular-nums" x-text="fmt(rangeExpenses)"></span>
                                 </div>
                                 <div class="nb-empty" x-show="!expenseByCategory.length"><span class="nb-empty-icon" x-html="icon('banknotes')"></span><p class="nb-empty-title">No expenses in this range</p></div>
@@ -2334,7 +2450,7 @@
                                 </ul>
                             </div>
                             <div class="nb-card min-w-0">
-                                <div class="nb-card-head"><h2 class="nb-card-title">All expenses</h2><span class="text-xs text-slate-500"><span x-text="filteredExpenses.length"></span> in range</span></div>
+                                <div class="nb-card-head"><h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#fef3c7]" aria-hidden="true">🧾</span>All expenses</h2><span class="text-xs text-slate-500"><span x-text="filteredExpenses.length"></span> in range</span></div>
                                 <div class="nb-empty" x-show="!filteredExpenses.length"><span class="nb-empty-icon" x-html="icon('banknotes')"></span><p class="nb-empty-title">No expenses in this range</p></div>
                                 <div class="nb-table-wrap" x-show="filteredExpenses.length" x-cloak>
                                     <table class="nb-table">
@@ -2523,7 +2639,7 @@
                             </p>
                             <!-- Only on receipts that track payment; see the stamp above. -->
                             <p class="inv-total-line" x-show="invoiceTracksPayment(currentReceipt)" x-cloak>
-                                <span>Paid</span>
+                                <span>Paid<span x-show="paymentMethodLabel(currentReceipt)" x-text="` (${paymentMethodLabel(currentReceipt)})`"></span></span>
                                 <span class="tabular-nums" x-text="fmt(invoicePaid(currentReceipt))"></span>
                             </p>
                             <p class="inv-total-line is-due" x-show="isInvoiceDue(currentReceipt)" x-cloak>
@@ -2543,9 +2659,12 @@
                                 </template>
                             </ul>
                         </div>
+                        <!-- The seller's name sits where they sign, as it was when the
+                             sale was made. Receipts from before this print as they did. -->
                         <div class="inv-signature">
                             <p class="inv-signature-name" x-text="'For: ' + shop.invoiceName"></p>
-                            <p class="inv-signature-rule">Authorized Signatory</p>
+                            <p class="inv-signature-seller" x-show="currentReceipt.sold_by" x-cloak x-text="currentReceipt.sold_by"></p>
+                            <p class="inv-signature-rule" x-text="currentReceipt.sold_by ? 'Sold by · Authorized Signatory' : 'Authorized Signatory'"></p>
                         </div>
                     </div>
 
@@ -2880,7 +2999,7 @@
 
                     <!-- Worked out, not typed: the customer gets back what they paid
                          beyond the new total. With money still due, the due goes down first. -->
-                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 rounded-[14px] border border-[#dcefe2] bg-linear-160 from-green-50 to-white p-3.5">
                         <div>
                             <p class="nb-stat-label">Returned</p>
                             <p class="text-sm font-bold text-rose-700 tabular-nums" x-text="fmt(returnAmount)"></p>
@@ -2962,7 +3081,7 @@
                         <p class="text-xs text-slate-600 tabular-nums break-all" x-show="claimDraft.kind === 'resolve'"
                            x-text="'Taken in ' + fmtDate(claimDraft.claim?.date) + ': ' + (claimDraft.claim?.faulty_serial_no || claimDraft.claim?.quantity + ' pc(s)') + (claimDraft.claim?.problem ? ' — ' + claimDraft.claim.problem : '')"></p>
                         <p class="text-xs mt-1" x-show="lineWarrantyUntil(claimLine)"
-                           :class="lineInWarranty(claimLine) ? 'text-brand-800' : 'text-red-600 font-semibold'"
+                           :class="lineInWarranty(claimLine) ? 'text-green-700' : 'text-red-600 font-semibold'"
                            x-text="(lineInWarranty(claimLine) ? 'Under warranty until ' : 'Warranty ended ') + fmtDate(lineWarrantyUntil(claimLine))"></p>
                         <p class="text-xs mt-1 text-red-600 font-semibold" x-show="claimLine && !lineWarrantyUntil(claimLine)">This sale carried no warranty.</p>
                     </div>
@@ -2983,11 +3102,11 @@
                             </div>
                             <div class="space-y-1.5 text-sm">
                                 <label class="flex items-center gap-2 cursor-pointer">
-                                    <input type="radio" class="accent-brand-700" :value="true" :checked="claimDraft.replaceNow" @change="claimDraft.replaceNow = true">
+                                    <input type="radio" class="accent-green-700" :value="true" :checked="claimDraft.replaceNow" @change="claimDraft.replaceNow = true">
                                     Give a replacement now, from stock
                                 </label>
                                 <label class="flex items-center gap-2 cursor-pointer">
-                                    <input type="radio" class="accent-brand-700" :value="false" :checked="!claimDraft.replaceNow" @change="claimDraft.replaceNow = false">
+                                    <input type="radio" class="accent-green-700" :value="false" :checked="!claimDraft.replaceNow" @change="claimDraft.replaceNow = false">
                                     Take it in — decide later
                                 </label>
                             </div>
@@ -2997,13 +3116,13 @@
                     <template x-if="claimDraft.kind === 'resolve'">
                         <div class="space-y-1.5 text-sm">
                             <label class="flex items-center gap-2 cursor-pointer">
-                                <input type="radio" class="accent-brand-700" value="replace" x-model="claimDraft.action"> Give a replacement from stock
+                                <input type="radio" class="accent-green-700" value="replace" x-model="claimDraft.action"> Give a replacement from stock
                             </label>
                             <label class="flex items-center gap-2 cursor-pointer">
-                                <input type="radio" class="accent-brand-700" value="repaired" x-model="claimDraft.action"> Repaired — hand the same unit back
+                                <input type="radio" class="accent-green-700" value="repaired" x-model="claimDraft.action"> Repaired — hand the same unit back
                             </label>
                             <label class="flex items-center gap-2 cursor-pointer">
-                                <input type="radio" class="accent-brand-700" value="rejected" x-model="claimDraft.action"> Not covered — hand it back as it is
+                                <input type="radio" class="accent-green-700" value="rejected" x-model="claimDraft.action"> Not covered — hand it back as it is
                             </label>
                         </div>
                     </template>
@@ -3101,7 +3220,7 @@
                          loss: the new one goes into stock and the old one is closed off. -->
                     <div x-show="moveDraft.row?.serialId && moveFrom === 'supplier' && moveDraft.to === 'stock'" x-cloak class="space-y-2">
                         <label class="flex items-center gap-2 text-sm cursor-pointer">
-                            <input type="checkbox" class="h-4 w-4 accent-brand-700" x-model="moveDraft.exchange">
+                            <input type="checkbox" class="h-4 w-4 accent-green-700" x-model="moveDraft.exchange">
                             The supplier gave a different unit
                         </label>
                         <input type="text" x-show="moveDraft.exchange" x-cloak x-model="moveDraft.newSerial" @keydown.enter.prevent="submitMove()"
@@ -3127,7 +3246,7 @@
                         <button type="button" @click="closeMove()"
                                 class="nb-btn nb-btn-secondary h-10 flex-1">Cancel</button>
                         <button type="button" @click="submitMove()" :disabled="moveDraft.saving"
-                                :class="moveDraft.to === 'written_off' || moveDraft.to === 'defective' ? 'bg-red-600 hover:bg-red-700' : 'bg-brand-700 hover:bg-brand-800'"
+                                :class="moveDraft.to === 'written_off' || moveDraft.to === 'defective' ? 'bg-red-600 hover:bg-red-700' : 'bg-green-700 hover:bg-green-800'"
                                 class="nb-btn nb-btn-secondary h-10 flex-1"
                                 x-text="moveDraft.saving ? 'Saving…' : moveActionLabel(moveFrom, moveDraft.to)"></button>
                     </div>
@@ -3175,12 +3294,12 @@
          @scroll.window="productMenu = null" @resize.window="productMenu = null">
         <template x-if="productMenu">
             <div>
-                <button type="button" role="menuitem" class="nb-menu-item" @click="runProductMenu('restockProduct')">Restock</button>
+                <button type="button" role="menuitem" class="nb-menu-item" x-show="isAdmin" @click="runProductMenu('restockProduct')">Restock</button>
                 <button type="button" role="menuitem" class="nb-menu-item" @click="runProductMenu('openSerialsFor')" x-show="serialTracked(productMenu.item)">View serials</button>
                 <button type="button" role="menuitem" class="nb-menu-item" @click="runProductMenu('markFaulty')"
-                        x-show="!serialTracked(productMenu.item) && Number(productMenu.item.quantity) > 0">Mark faulty</button>
-                <div class="my-1 border-t border-slate-100"></div>
-                <button type="button" role="menuitem" class="nb-menu-item text-red-700 hover:bg-red-50" @click="runProductMenu('delete')">Delete…</button>
+                        x-show="isAdmin && !serialTracked(productMenu.item) && Number(productMenu.item.quantity) > 0">Mark faulty</button>
+                <div class="my-1 border-t border-slate-100" x-show="isAdmin"></div>
+                <button type="button" role="menuitem" class="nb-menu-item text-red-700 hover:bg-red-50" x-show="isAdmin" @click="runProductMenu('delete')">Delete…</button>
             </div>
         </template>
     </div>
@@ -3286,7 +3405,7 @@
 
             <!-- Total and Due are read-only. The invoice's lines are what set the
                  total, and this dialog deliberately cannot touch them. -->
-            <div class="grid grid-cols-2 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+            <div class="grid grid-cols-2 gap-3 rounded-[14px] border border-[#dcefe2] bg-linear-160 from-green-50 to-white p-3.5">
                 <div>
                     <p class="nb-stat-label">Total</p>
                     <p class="text-base font-bold text-slate-800 tabular-nums" x-text="fmt(paymentDraft.total)"></p>
@@ -3294,7 +3413,7 @@
                 <div>
                     <p class="nb-stat-label">Due</p>
                     <p class="text-base font-bold tabular-nums"
-                       :class="paymentDue > 0 ? 'text-red-600' : 'text-brand-800'" x-text="fmt(paymentDue)"></p>
+                       :class="paymentDue > 0 ? 'text-red-600' : 'text-green-700'" x-text="fmt(paymentDue)"></p>
                 </div>
             </div>
 
@@ -3356,7 +3475,7 @@
                     </label>
                 </div>
                 <p class="text-sm text-red-600" x-show="resetError" x-cloak x-text="resetError"></p>
-                <p class="text-sm text-brand-800 font-medium" x-show="resetSuccess" x-cloak x-text="resetSuccess"></p>
+                <p class="text-sm text-green-700 font-medium" x-show="resetSuccess" x-cloak x-text="resetSuccess"></p>
                 <div class="flex gap-2.5">
                     <button type="button" @click="isPasswordOpen = false"
                             class="nb-btn nb-btn-secondary nb-btn-lg flex-1">Cancel</button>

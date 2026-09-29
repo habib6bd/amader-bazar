@@ -14,6 +14,16 @@ const ROWS_COLLAPSED = 25;
 // match PAID_EPSILON in server.js, which validates the paid amount the same way.
 const PAID_EPSILON = 0.005;
 
+// How a customer can pay, in the order the till shows them. Cash is the
+// default. The ids must match PAYMENT_METHODS in server.js.
+const PAYMENT_METHODS = [
+  { id: 'cash', label: 'Cash' },
+  { id: 'bkash', label: 'bKash' },
+  { id: 'nagad', label: 'Nagad' },
+  { id: 'rocket', label: 'Rocket' },
+  { id: 'card', label: 'Card' },
+];
+
 // Local calendar date as YYYY-MM-DD. Deliberately not toISOString(), which is
 // UTC — in Bangladesh (UTC+6) that returns yesterday's date until 6am.
 function todayLocal() {
@@ -154,7 +164,8 @@ const PAGES = {
   dashboard: { hash: '', title: 'Dashboard' },
   sale: { hash: 'sales/new', title: 'New Sale', group: 'sales' },
   sales: { hash: 'sales', title: 'Sales History', group: 'sales' },
-  purchase: { hash: 'purchases/new', title: 'New Purchase', group: 'purchases' },
+  // adminOnly: staff are sent to the dashboard, and the sidebar leaves it out.
+  purchase: { hash: 'purchases/new', title: 'New Purchase', group: 'purchases', adminOnly: true },
   purchases: { hash: 'purchases', title: 'Purchase History', group: 'purchases' },
   products: { hash: 'products', title: 'Products', group: 'stock' },
   lowstock: { hash: 'products/low-stock', title: 'Low Stock', group: 'stock' },
@@ -168,6 +179,7 @@ const PAGES = {
   rpnl: { hash: 'reports/profit-loss', title: 'Profit & Loss', group: 'reports' },
   rstock: { hash: 'reports/stock', title: 'Stock Report', group: 'reports' },
   rexpenses: { hash: 'reports/expenses', title: 'Expense Report', group: 'reports' },
+  users: { hash: 'users', title: 'Users', adminOnly: true },
 };
 
 // hash → page name, for reading the address bar.
@@ -194,7 +206,20 @@ const NAV = [
   { page: 'warranty', label: 'Warranty Claims', emoji: '🛡️' },
   { page: 'faulty', label: 'Faulty & Supplier', emoji: '🛠️' },
   { group: 'reports', label: 'Reports', emoji: '📊', children: ['rsales', 'rpnl', 'rstock', 'rexpenses'] },
+  { page: 'users', label: 'Users', emoji: '👤' },
 ];
+
+// Header emoji for pages that share a sidebar group but are not the same
+// thing — see pageEmoji(). Everything else takes its sidebar emoji.
+const PAGE_EMOJI = {
+  sales: '🧾',
+  purchases: '📋',
+  lowstock: '⚠️',
+  rsales: '📈',
+  rpnl: '💰',
+  rstock: '📦',
+  rexpenses: '💸',
+};
 
 /* ---------------------------------------------------------------- icons
 
@@ -278,6 +303,7 @@ function blankSale() {
     date: todayLocal(),
     comment: '',
     paid_amount: '',
+    payment_method: 'cash',
   };
 }
 
@@ -482,11 +508,22 @@ function shopApp() {
     // Who is signed in, from /api/session or the login form. Shown in the
     // profile menu; the server's cookie is what actually authorises.
     userEmail: '',
+    // 'admin' or 'staff'. Only decides what is shown; every admin-only route
+    // is refused by the server for staff regardless.
+    userRole: '',
+    // The signed-in person's name, printed on the receipts they issue.
+    // Empty until they set one; the server then uses their email instead.
+    userName: '',
+
+    // The Users page (admin only).
+    users: [],
+    userDraft: { name: '', email: '', password: '', role: 'staff' },
+    userError: '',
+    savingUser: false,
 
     // ---------------------------------------------------------------- shell
     page: pageFromHash(location.hash),
     pages: PAGES,
-    nav: NAV,
     // Sidebar groups unfolded right now. Reassigned, never pushed to: a
     // change inside a nested value was once missed here (the old collapsing
     // sections), while a new top-level value is always picked up.
@@ -554,6 +591,7 @@ function shopApp() {
     supplierSearch: '',
 
     sale: blankSale(),
+    paymentMethods: PAYMENT_METHODS,
     // The invoice being built: [{ key, item_name, quantity, unit_price, serial_no }].
     cart: [],
     line: blankLine(),
@@ -693,7 +731,11 @@ function shopApp() {
         if (data.authenticated) {
           this.isLoggedIn = true;
           this.userEmail = data.email || '';
+          this.userRole = data.role || '';
+          this.userName = data.name || '';
           writeSession(true);
+          // The page in the address bar was entered before the role was known.
+          this.enterPage(this.page, { initial: true });
           this.loadData();
         } else {
           this.isLoggedIn = false;
@@ -705,6 +747,27 @@ function shopApp() {
         // of a till that is working fine.
         if (this.isLoggedIn) this.loadData();
       }
+    },
+
+    // The emoji on a page's header chip: its sidebar emoji, or its group's,
+    // except where a page in a group deserves one of its own.
+    pageEmoji(name) {
+      if (PAGE_EMOJI[name]) return PAGE_EMOJI[name];
+      const hit = NAV.find((n) => n.page === name) || NAV.find((n) => n.children?.includes(name));
+      return hit?.emoji || '📄';
+    },
+
+    get isAdmin() {
+      return this.userRole === 'admin';
+    },
+
+    // The sidebar for whoever is signed in: admin-only pages are left out for
+    // staff, and a group left with no pages goes too.
+    get nav() {
+      const allowed = (name) => this.isAdmin || !PAGES[name].adminOnly;
+      return NAV.map((item) => (item.children ? { ...item, children: item.children.filter(allowed) } : item)).filter(
+        (item) => (item.children ? item.children.length > 0 : allowed(item.page))
+      );
     },
 
     /* ---------------------------------------------------------------- shell */
@@ -727,6 +790,12 @@ function shopApp() {
     // Everything that happens on arriving at a page, however it was reached.
     enterPage(name, { initial = false } = {}) {
       this.page = PAGES[name] ? name : 'dashboard';
+      // Before the session answers the role is unknown (''), so nothing is
+      // redirected yet; init() enters the page again once it is.
+      if (PAGES[this.page].adminOnly && this.userRole && !this.isAdmin) {
+        this.page = 'dashboard';
+        history.replaceState(null, '', '#/');
+      }
       this.navOpen = false;
       this.actionsMenu = null;
       this.productMenu = null;
@@ -741,6 +810,7 @@ function shopApp() {
       // The serial list is fetched on demand, not with the dashboard — see
       // GET /api/serials — so arriving on its page is what loads it.
       if (this.page === 'serials' && !this.serialLoaded && this.isLoggedIn) this.loadSerials();
+      if (this.page === 'users' && this.isAdmin) this.loadUsers();
 
       // The two tills open ready for the scanner: a shopkeeper with a box in
       // one hand should never have to click into the barcode field first. A
@@ -1256,6 +1326,11 @@ function shopApp() {
        and should not stamp a claim on paper that it cannot stand behind. */
     invoiceTracksPayment(inv) {
       return inv?.paid_amount !== null && inv?.paid_amount !== undefined;
+    },
+
+    // "bKash", or '' for an invoice from before methods were recorded.
+    paymentMethodLabel(inv) {
+      return PAYMENT_METHODS.find((m) => m.id === inv?.payment_method)?.label || '';
     },
 
     // Everything the customer has handed over, refunds not taken off. This is
@@ -1914,7 +1989,10 @@ function shopApp() {
         if (res.ok && data.success) {
           this.isLoggedIn = true;
           this.userEmail = this.loginEmail.trim().toLowerCase();
+          this.userRole = data.role || '';
+          this.userName = data.name || '';
           writeSession(true);
+          this.enterPage(this.page);
           this.loginPassword = '';
           this.loadData();
         } else {
@@ -1934,6 +2012,9 @@ function shopApp() {
       writeSession(false);
       this.isLoggedIn = false;
       this.userEmail = '';
+      this.userRole = '';
+      this.userName = '';
+      this.users = [];
       this.profileOpen = false;
       this.searchQuery = '';
       this.searchOpen = false;
@@ -1999,6 +2080,109 @@ function shopApp() {
       }
     },
 
+    // ---------------------------------------------------------------- users
+    // Admin only. The server refuses all of this for staff; the page is also
+    // left out of their sidebar.
+    async loadUsers() {
+      try {
+        const res = await fetch('/api/users');
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not load the users.'));
+        this.users = await res.json();
+      } catch (err) {
+        this.notify(err.message, 'error');
+      }
+    },
+
+    async saveUser() {
+      if (this.savingUser) return;
+      this.savingUser = true;
+      this.userError = '';
+      try {
+        const res = await fetch('/api/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.userDraft),
+        });
+        if (!res.ok) {
+          this.userError = await this.describeFailure(res, 'Could not add the user.');
+          return;
+        }
+        this.notify(`${this.userDraft.name} can now sign in.`);
+        this.userDraft = { name: '', email: '', password: '', role: 'staff' };
+        await this.loadUsers();
+      } catch {
+        this.userError = 'Connection error. Try again.';
+      } finally {
+        this.savingUser = false;
+      }
+    },
+
+    // Sends { password } or { role } to PUT /api/users/:id.
+    async updateUser(u, changes, done) {
+      try {
+        const res = await fetch(`/api/users/${u.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(changes),
+        });
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not update the user.'));
+        this.notify(done);
+        await this.loadUsers();
+      } catch (err) {
+        this.notify(err.message, 'error');
+        await this.loadUsers(); // puts a refused role change back in the select
+      }
+    },
+
+    resetUserPassword(u) {
+      const password = window.prompt(`New password for ${u.email} (at least 8 characters):`);
+      if (password == null) return;
+      this.updateUser(u, { password }, `Password changed for ${u.email}.`);
+    },
+
+    renameUser(u) {
+      const name = window.prompt(`Name for ${u.email} — printed on the receipts they issue:`, u.name || '');
+      if (name == null || !name.trim()) return;
+      this.updateUser(u, { name }, `Renamed to ${name.trim()}. Receipts already issued keep the old name.`);
+      if (u.email === this.userEmail) this.userName = name.trim();
+    },
+
+    // Anyone can set their own name — see PUT /api/me.
+    async editMyName() {
+      this.profileOpen = false;
+      const name = window.prompt('Your name, as it should print on your receipts:', this.userName);
+      if (name == null || !name.trim()) return;
+      try {
+        const res = await fetch('/api/me', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not save your name.'));
+        this.userName = (await res.json()).name;
+        this.notify('Your name will print on the receipts you issue.');
+        if (this.page === 'users') this.loadUsers();
+      } catch (err) {
+        this.notify(err.message, 'error');
+      }
+    },
+
+    changeUserRole(u, role) {
+      this.updateUser(u, { role }, `${u.email} is now ${role === 'admin' ? 'an admin' : 'staff'}.`);
+    },
+
+    async deleteUser(u) {
+      if (!window.confirm(`Remove ${u.email}? They will not be able to sign in any more.`)) return;
+      try {
+        const res = await fetch(`/api/users/${u.id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not remove the user.'));
+        this.notify(`${u.email} removed.`);
+        await this.loadUsers();
+      } catch (err) {
+        this.notify(err.message, 'error');
+      }
+    },
+
     // ---------------------------------------------------------------- data
     // `quiet` skips the loading state, for the refresh that follows a scan:
     // blanking every table on each unit scanned in would flicker the page.
@@ -2007,6 +2191,12 @@ function shopApp() {
       this.loadError = '';
       try {
         const res = await fetch('/api/data');
+        // The session ended under us — expired, or the admin removed this
+        // account. Back to the login screen rather than an empty dashboard.
+        if (res.status === 401) {
+          await this.logout();
+          return;
+        }
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Could not load shop data.');
         this.inventory = data.inventory || [];
@@ -2215,6 +2405,7 @@ function shopApp() {
             // null would record the invoice as untracked and print no label,
             // and a cash sale deserves its PAID receipt.
             paid_amount: this.sale.paid_amount === '' ? this.cartTotal : Number(this.sale.paid_amount),
+            payment_method: this.sale.payment_method,
             items: this.cart.map((l) => ({
               item_name: l.item_name,
               quantity: Number(l.quantity),

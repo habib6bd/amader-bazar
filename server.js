@@ -236,6 +236,10 @@ async function migrate() {
      that was never owed. The client reads NULL as settled and prints no label. */
   await addColumnIfMissing('invoices', 'paid_amount', 'REAL');
 
+  // How the customer paid — see PAYMENT_METHODS. NULL means "issued before the
+  // shop recorded it", and shows no method rather than inventing "cash".
+  await addColumnIfMissing('invoices', 'payment_method', 'TEXT');
+
   // Every expense list is filtered by date, so that is what gets the index.
   // setup() creates the table before calling migrate(), so this can never
   // reference a table that does not exist yet.
@@ -278,6 +282,22 @@ async function migrate() {
   // Goods without serials sent to the supplier for repair — the counterpart
   // of a serial's 'at_supplier' status. Not in stock, not lost.
   await addColumnIfMissing('inventory', 'supplier_quantity', 'INTEGER NOT NULL DEFAULT 0');
+
+  /* Who an account is: 'admin' can do everything, 'staff' works the counter —
+     sells, collects dues, takes returns and claims, adds expenses — but cannot
+     add, edit or delete stock or records. See requireAdmin. The default makes
+     every account that existed before roles an admin, which is what it was. */
+  await addColumnIfMissing('admin', 'role', "TEXT NOT NULL DEFAULT 'admin'");
+
+  // The person's name, printed on the receipts they issue. Nullable: an
+  // account without one falls back to its email — see displayName().
+  await addColumnIfMissing('admin', 'name', 'TEXT');
+
+  /* Who made the sale, as their name read at that moment. A copy, not a link
+     to the account: renaming or removing someone later must not change a
+     receipt already in a customer's hand. NULL is a receipt from before this
+     existed, and prints no name. */
+  await addColumnIfMissing('invoices', 'sold_by', 'TEXT');
 
   await linkLegacySales();
 }
@@ -362,7 +382,7 @@ async function linkLegacySales() {
    need, since each awaited statement completes before the next is issued. */
 /* Bump whenever setup() or migrate() gains a step. A database already at this
    version skips the whole migration on boot. */
-const SCHEMA_VERSION = '2026-09-27-stock-moves';
+const SCHEMA_VERSION = '2026-09-30-sold-by';
 
 // One read instead of ~20 statements, several of which take a write lock even
 // when they end up changing nothing. On Vercel every cold start runs this, each
@@ -442,7 +462,9 @@ async function setup() {
     date TEXT NOT NULL,
     sale_time TEXT,
     comment TEXT,
-    paid_amount REAL
+    paid_amount REAL,
+    payment_method TEXT,
+    sold_by TEXT
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS dealer_purchases (
@@ -607,7 +629,9 @@ async function setup() {
   await run(`CREATE TABLE IF NOT EXISTS admin (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL,
-    password TEXT NOT NULL
+    password TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'admin',
+    name TEXT
   )`);
 
   await migrate();
@@ -734,7 +758,7 @@ if (!JWT_SECRET) {
 }
 
 function issueSession(res, admin) {
-  const token = jwt.sign({ sub: admin.id, email: admin.email }, JWT_SECRET || 'dev-only-insecure-secret', {
+  const token = jwt.sign({ sub: admin.id, email: admin.email, role: admin.role }, JWT_SECRET || 'dev-only-insecure-secret', {
     expiresIn: `${SESSION_HOURS}h`,
   });
   res.cookie(COOKIE, token, {
@@ -758,10 +782,51 @@ function readSession(req) {
   }
 }
 
-function requireAuth(req, res, next) {
+/* The account behind a session, read fresh rather than trusted from the token.
+   The token lives for SESSION_HOURS; without this, a staff account the admin
+   deleted — or an admin demoted to staff — would keep its old powers until
+   then. One primary-key read per request. */
+async function sessionUser(req) {
   const session = readSession(req);
-  if (!session) return res.status(401).json({ error: 'Not signed in.' });
-  req.admin = session;
+  if (!session) return null;
+  const user = await get(`SELECT id, email, role, name FROM admin WHERE id = ?`, [session.sub]);
+  return user ? { id: Number(user.id), email: user.email, role: user.role, name: user.name || null } : null;
+}
+
+// What a receipt calls this person: their name, or failing that the part of
+// their email before the @, which is at least recognisable in the shop.
+function displayName(user) {
+  return String(user?.name ?? '').trim() || String(user?.email ?? '').split('@')[0] || null;
+}
+
+// Returns { error } or { name }. Required wherever it is set.
+function validateName(value) {
+  const name = String(value ?? '').trim().replace(/\s+/g, ' ');
+  if (!name) return { error: 'Name is required — it prints on the receipts this person issues.' };
+  if (name.length > 60) return { error: 'Name is too long (max 60 characters).' };
+  return { name };
+}
+
+async function requireAuth(req, res, next) {
+  try {
+    const user = await sessionUser(req);
+    if (!user) {
+      res.clearCookie(COOKIE);
+      return res.status(401).json({ error: 'Not signed in.' });
+    }
+    req.admin = { sub: user.id, email: user.email };
+    req.user = user;
+    next();
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/* For the routes that add, edit or delete stock and records. Staff get a
+   plain refusal; the buttons are hidden from them too, but this is the check
+   that counts. Mounted after requireAuth, so req.user is always set. */
+function requireAdmin(req, res, next) {
+  if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Only the admin can do this.' });
   next();
 }
 
@@ -815,7 +880,7 @@ app.post('/api/login', async (req, res) => {
 
     attempts.delete(req.ip);
     issueSession(res, admin);
-    res.json({ success: true, message: 'Login successful' });
+    res.json({ success: true, message: 'Login successful', role: admin.role, name: admin.name || null });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Could not sign in.' });
   }
@@ -828,9 +893,13 @@ app.post('/api/logout', (req, res) => {
 
 // Lets the browser find out whether its cookie is still good, so a restored tab
 // shows the login screen instead of an empty dashboard full of failed requests.
-app.get('/api/session', (req, res) => {
-  const session = readSession(req);
-  res.json({ authenticated: Boolean(session), email: session?.email ?? null });
+app.get('/api/session', async (req, res) => {
+  try {
+    const user = await sessionUser(req);
+    res.json({ authenticated: Boolean(user), email: user?.email ?? null, role: user?.role ?? null, name: user?.name ?? null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /* Changing the password now requires being signed in AND knowing the current
@@ -931,6 +1000,21 @@ function validatePaidAmount(value, total) {
     return { error: `Paid amount cannot be more than the invoice total (${total.toFixed(2)}).` };
   }
   return { paid_amount: paid };
+}
+
+/* How the customer paid. Must match PAYMENT_METHODS in app.js.
+
+   Absent or blank is read as cash, the default at the till, so a page cached
+   from before this existed keeps saving sales. */
+const PAYMENT_METHODS = ['cash', 'bkash', 'nagad', 'rocket', 'card'];
+
+function validatePaymentMethod(value) {
+  const method = String(value ?? '').trim().toLowerCase();
+  if (method === '') return { payment_method: 'cash' };
+  if (!PAYMENT_METHODS.includes(method)) {
+    return { error: 'Payment method must be Cash, bKash, Nagad, Rocket or Card.' };
+  }
+  return { payment_method: method };
 }
 
 /* ---------------------------------------------------------------------------
@@ -1218,6 +1302,8 @@ app.post('/api/sales', async (req, res) => {
   const invoiceTotal = items.reduce((sum, item) => sum + item.total_price, 0);
   const paid = validatePaidAmount(body.paid_amount, invoiceTotal);
   if (paid.error) return res.status(400).json({ error: paid.error });
+  const method = validatePaymentMethod(body.payment_method);
+  if (method.error) return res.status(400).json({ error: method.error });
 
   /* All or nothing. An invoice whose third line failed must not leave the first
      two recorded and their stock deducted — the shop would be short on stock
@@ -1227,9 +1313,11 @@ app.post('/api/sales', async (req, res) => {
     const invoiceId = await inWriteTx(async (q) => {
       const time = nowLocalTime();
       const invoice = await q.run(
-        `INSERT INTO invoices (customer_name, customer_contact, date, sale_time, comment, paid_amount)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [customer_name, customer_contact, date, time, comment, paid.paid_amount]
+        `INSERT INTO invoices (customer_name, customer_contact, date, sale_time, comment, paid_amount, payment_method, sold_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        // sold_by comes from the session, never the request: the till cannot
+        // put someone else's name on a sale.
+        [customer_name, customer_contact, date, time, comment, paid.paid_amount, method.payment_method, displayName(req.user)]
       );
       const invoiceId = invoice.lastID;
 
@@ -1349,7 +1437,7 @@ app.post('/api/sales', async (req, res) => {
    Serial-tracked products come in through POST /api/serials/receive instead,
    one scan per unit, and are refused here: a typed quantity of fans would add
    stock no serial stands behind. */
-app.post('/api/dealer', async (req, res) => {
+app.post('/api/dealer', requireAdmin, async (req, res) => {
   const body = req.body || {};
   const dealer = String(body.dealer_name ?? '').trim();
   const qty = Number(body.quantity);
@@ -1412,7 +1500,7 @@ app.post('/api/dealer', async (req, res) => {
      - the product screen: product_id only, no dealer — the units the shop
        already had before it began scanning serials in. No purchase is
        recorded for those; they were bought long ago. */
-app.post('/api/serials/receive', async (req, res) => {
+app.post('/api/serials/receive', requireAdmin, async (req, res) => {
   const body = req.body || {};
   const code = String(body.serial_no ?? '').trim();
   if (!code) return res.status(400).json({ error: 'Scan a serial number.' });
@@ -1484,7 +1572,7 @@ app.post('/api/serials/receive', async (req, res) => {
    If that was the product's last serial of any status, the product goes back
    to being untracked with the count it had before, so a cable given a serial
    by mistake is not stuck asking for serials at the till forever. */
-app.delete('/api/serials/:id', async (req, res) => {
+app.delete('/api/serials/:id', requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   try {
     const product = await inWriteTx(async (q) => {
@@ -2062,7 +2150,7 @@ const STATE_COLUMN = { stock: 'quantity', defective: 'defective_quantity', suppl
    new_serial_no is for a supplier that sends back a different unit: the new
    one is received into stock and the old one is marked 'exchanged', which is
    not a loss — the shop is whole again. */
-app.post('/api/stock-movements', async (req, res) => {
+app.post('/api/stock-movements', requireAdmin, async (req, res) => {
   const body = req.body || {};
   const to = String(body.to_state ?? '');
   const party = String(body.party ?? '').trim().slice(0, 80) || null;
@@ -2222,7 +2310,7 @@ async function findConflict(item, excludeId = null) {
 // transaction as the product, so a serial that turns out to be taken leaves
 // no half-created product behind. With serials, stock is their count and any
 // typed quantity is ignored.
-app.post('/api/inventory', async (req, res) => {
+app.post('/api/inventory', requireAdmin, async (req, res) => {
   const { error, item } = validateItem(req.body);
   if (error) return res.status(400).json({ error });
 
@@ -2275,7 +2363,7 @@ app.post('/api/inventory', async (req, res) => {
 });
 
 // API: Update a product, cascading a rename through its history
-app.put('/api/inventory/:id', async (req, res) => {
+app.put('/api/inventory/:id', requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   const { error, item } = validateItem(req.body);
   if (error) return res.status(400).json({ error });
@@ -2375,7 +2463,7 @@ app.put('/api/inventory/:id', async (req, res) => {
 //
 // Its registered serials go with it: they describe units of a product that no
 // longer exists. Receipts already printed keep the serial on their own line.
-app.delete('/api/inventory/:id', async (req, res) => {
+app.delete('/api/inventory/:id', requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   try {
     await inWriteTx(async (q) => {
@@ -2451,7 +2539,7 @@ app.post('/api/expenses', async (req, res) => {
    No 409 anywhere in this file's expense routes: `expenses` has no uniqueness
    constraint, and inventing one — same head, same day, same amount — would
    refuse the second cup of tea on the same afternoon. */
-app.put('/api/expenses/:id', async (req, res) => {
+app.put('/api/expenses/:id', requireAdmin, async (req, res) => {
   const { error, expense } = validateExpense(req.body);
   if (error) return res.status(400).json({ error });
 
@@ -2472,7 +2560,7 @@ app.put('/api/expenses/:id', async (req, res) => {
 });
 
 // API: Delete an expense. Nothing references it, so there is nothing to cascade.
-app.delete('/api/expenses/:id', async (req, res) => {
+app.delete('/api/expenses/:id', requireAdmin, async (req, res) => {
   try {
     const result = await run(`DELETE FROM expenses WHERE id = ?`, [Number(req.params.id)]);
     if (result.changes === 0) return res.status(404).json({ error: 'That expense no longer exists.' });
@@ -2513,8 +2601,112 @@ app.put('/api/invoices/:id/payment', async (req, res) => {
     const { error, paid_amount } = validatePaidAmount(req.body?.paid_amount, ceiling);
     if (error) return res.status(400).json({ error });
 
+    // payment_method is not touched: it is chosen once, at the sale.
     await run(`UPDATE invoices SET paid_amount = ? WHERE id = ?`, [paid_amount, id]);
     res.json({ id, paid_amount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ===========================================================================
+   Users — the admin adds staff, resets their passwords, removes them.
+
+   The table is still called `admin`, from when there was only one kind of
+   account; renaming it would buy nothing but a migration. Passwords never
+   leave the server, and there is always at least one admin left, so the shop
+   cannot lock itself out of its own settings.
+   =========================================================================== */
+const ROLES = ['admin', 'staff'];
+
+// Anyone signed in can set their own name — the admin who set the shop up has
+// none yet, and should not need a second admin to get one.
+app.put('/api/me', async (req, res) => {
+  const named = validateName(req.body?.name);
+  if (named.error) return res.status(400).json({ error: named.error });
+  try {
+    await run(`UPDATE admin SET name = ? WHERE id = ?`, [named.name, req.user.id]);
+    res.json({ name: named.name });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+async function adminCount() {
+  const row = await get(`SELECT COUNT(*) AS n FROM admin WHERE role = 'admin'`);
+  return Number(row.n);
+}
+
+app.get('/api/users', requireAdmin, async (req, res) => {
+  try {
+    res.json(await all(`SELECT id, email, role, name FROM admin ORDER BY role, COALESCE(name, email) COLLATE NOCASE`));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/users', requireAdmin, async (req, res) => {
+  const email = String(req.body?.email ?? '').trim().toLowerCase();
+  const password = String(req.body?.password ?? '');
+  const role = String(req.body?.role ?? 'staff');
+  const named = validateName(req.body?.name);
+  if (named.error) return res.status(400).json({ error: named.error });
+  if (!/^\S+@\S+$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address.' });
+  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  if (!ROLES.includes(role)) return res.status(400).json({ error: 'Role must be admin or staff.' });
+
+  try {
+    const taken = await get(`SELECT id FROM admin WHERE email = ? COLLATE NOCASE`, [email]);
+    if (taken) return res.status(409).json({ error: 'An account with that email already exists.' });
+    const r = await run(`INSERT INTO admin (email, password, role, name) VALUES (?, ?, ?, ?)`, [
+      email,
+      bcrypt.hashSync(password, 12),
+      role,
+      named.name,
+    ]);
+    res.json({ id: r.lastID, email, role, name: named.name });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Body: { password?, role?, name? } — reset a password, change a role, rename.
+app.put('/api/users/:id', requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const password = req.body?.password == null ? '' : String(req.body.password);
+  const role = req.body?.role == null ? null : String(req.body.role);
+  if (password && password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  if (role && !ROLES.includes(role)) return res.status(400).json({ error: 'Role must be admin or staff.' });
+  const named = req.body?.name == null ? null : validateName(req.body.name);
+  if (named?.error) return res.status(400).json({ error: named.error });
+
+  try {
+    const user = await get(`SELECT id, role FROM admin WHERE id = ?`, [id]);
+    if (!user) return res.status(404).json({ error: 'That account no longer exists.' });
+    if (role === 'staff' && user.role === 'admin') {
+      if (id === req.user.id) return res.status(409).json({ error: 'You cannot remove your own admin role.' });
+      if ((await adminCount()) <= 1) return res.status(409).json({ error: 'There must always be at least one admin.' });
+    }
+    if (password) await run(`UPDATE admin SET password = ? WHERE id = ?`, [bcrypt.hashSync(password, 12), id]);
+    if (role) await run(`UPDATE admin SET role = ? WHERE id = ?`, [role, id]);
+    if (named) await run(`UPDATE admin SET name = ? WHERE id = ?`, [named.name, id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/users/:id', requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  if (id === req.user.id) return res.status(409).json({ error: 'You cannot delete your own account.' });
+  try {
+    const user = await get(`SELECT id, role FROM admin WHERE id = ?`, [id]);
+    if (!user) return res.status(404).json({ error: 'That account no longer exists.' });
+    if (user.role === 'admin' && (await adminCount()) <= 1) {
+      return res.status(409).json({ error: 'There must always be at least one admin.' });
+    }
+    await run(`DELETE FROM admin WHERE id = ?`, [id]);
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
