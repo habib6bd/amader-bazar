@@ -583,8 +583,10 @@
                                             <div class="relative">
                                                 <span class="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-400" x-html="icon('hashtag', 'h-5 w-5')"></span>
                                                 <input id="sale-serial" type="text" x-model="serialCode" x-ref="serialInput"
-                                                       autocomplete="off" enterkeyhint="done" placeholder="Scan the serial / IMEI…"
+                                                       list="sale-serial-options" x-effect="ensureSaleSerials()"
+                                                       autocomplete="off" enterkeyhint="done" placeholder="Scan or type the serial / IMEI…"
                                                        @keydown.enter.prevent.stop="scanSerial()"
+                                                       @input="serialPicked($event)"
                                                        :class="unnamedCount ? 'is-scan-alt' : ''"
                                                        class="nb-input h-11 pl-10 sm:h-11">
                                             </div>
@@ -594,6 +596,32 @@
                                                     (<span class="tabular-nums" x-text="unnamedCount"></span> units still need a serial)
                                                 </span>
                                             </p>
+                                            <!-- No scanner, or a label that will not read: the product's
+                                                 serials in stock, to tap or to pick while typing. -->
+                                            <datalist id="sale-serial-options">
+                                                <template x-for="code in (waitingSerialOptions || [])" :key="code">
+                                                    <option :value="code"></option>
+                                                </template>
+                                            </datalist>
+                                            <div class="mt-2" x-show="unnamedCount && waitingSerialOptions" x-cloak>
+                                                <template x-if="waitingSerialOptions?.length">
+                                                    <div>
+                                                        <p class="text-xs text-slate-500">In stock — tap to use:</p>
+                                                        <div class="mt-1 flex flex-wrap gap-1.5">
+                                                            <template x-for="code in waitingSerialOptions.slice(0, 12)" :key="code">
+                                                                <button type="button" @click="pickSerial(code)"
+                                                                        class="nb-btn nb-btn-sm nb-btn-secondary tabular-nums" x-text="code"></button>
+                                                            </template>
+                                                        </div>
+                                                        <p class="mt-1 text-xs text-slate-500" x-show="waitingSerialOptions.length > 12">
+                                                            +<span class="tabular-nums" x-text="waitingSerialOptions.length - 12"></span> more — type a few characters to search.
+                                                        </p>
+                                                    </div>
+                                                </template>
+                                                <p class="text-xs text-slate-500" x-show="!waitingSerialOptions?.length">
+                                                    No serials in stock for this product. Type the serial from the box and press Enter.
+                                                </p>
+                                            </div>
                                             <!-- An unregistered serial is refused, not silently accepted, but
                                                  the shop may hold units from before it scanned serials in. -->
                                             <div class="nb-note is-danger mt-2 flex flex-wrap items-center gap-2 py-1.5" x-show="serialOverride" x-cloak>
@@ -2553,8 +2581,8 @@
                         </div>
                     </div>
 
-                    <!-- Item lines. One sale is one line today; the numbered
-                         column is here so extra lines drop straight in. -->
+                    <!-- Item lines, as receiptRows() groups them: units of one
+                         serial-tracked product share a row, their serials under it. -->
                     <table class="inv-table">
                         <thead>
                             <tr>
@@ -2567,7 +2595,7 @@
                         </thead>
                         <tbody>
                             <!-- One row per item, numbered in the order they were entered. -->
-                            <template x-for="(l, i) in (currentReceipt.lines || [])" :key="'rl-' + (l.id ?? i)">
+                            <template x-for="(l, i) in receiptRows(currentReceipt)" :key="'rl-' + (l.id ?? i)">
                                 <tr>
                                     <td class="col-idx tabular-nums" x-text="i + 1"></td>
                                     <td>
@@ -2604,7 +2632,7 @@
                                  rules and all. Dropped once there are enough real lines to do
                                  that, so a long invoice is not pushed onto a second page by
                                  empty space. -->
-                            <tr class="inv-fill-row" aria-hidden="true" x-show="(currentReceipt.lines || []).length < 4">
+                            <tr class="inv-fill-row" aria-hidden="true" x-show="receiptRows(currentReceipt).length < 4">
                                 <td class="col-idx"></td>
                                 <td></td>
                                 <td class="col-qty"></td>

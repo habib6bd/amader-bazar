@@ -649,6 +649,11 @@ function shopApp() {
     dealerSerialCode: '',
     dealerBatch: blankBatch(),
 
+    // Sale form: the in-stock serials of each tracked product in the cart, by
+    // product id — picked from a list when the scanner is not to hand.
+    saleSerials: {},
+    saleSerialsLoading: false,
+
     // Product screen: the available serials of the product being edited.
     productSerials: [],
     productSerialCode: '',
@@ -1039,9 +1044,56 @@ function shopApp() {
     // "Serial: SN-A9F2210034", or '' for the goods that carry none. Kept beside
     // warrantyText because they print together and for the same reason.
     serialText(row) {
+      // A receipt row standing for several units lists every one of them, one
+      // to a line and numbered, so a unit is easy to find on a claim.
+      if (row?.serials?.length > 1) {
+        return row.serials
+          .map((s, i) => `Serial${i + 1}: ${s.code}${s.returned_date ? ' (returned)' : ''}`)
+          .join('\n');
+      }
       const code = String(row?.serial_no || '').trim();
       if (!code) return '';
       return row.returned_date ? `Serial: ${code} (returned ${this.fmtDateDMY(row.returned_date)})` : `Serial: ${code}`;
+    },
+
+    /* The receipt's rows. Each serial-tracked unit is stored as its own qty-1
+       line — a return or a warranty claim is about one piece — but the
+       customer should read "Router, Qty 3" with the three serials under it,
+       not the same router three times.
+
+       Only units of the same product at the same price and warranty merge, so
+       Qty × Price/Unit is still the Amount printed beside them. Goods without
+       a serial pass through untouched: addToCart() already merged those. A row
+       takes the place of its first unit, keeping the order they were entered. */
+    receiptRows(inv) {
+      const rows = [];
+      const groups = new Map();
+      for (const l of inv?.lines || []) {
+        const code = String(l.serial_no || '').trim();
+        if (!code) {
+          rows.push(l);
+          continue;
+        }
+        const key = [l.item_name, this.unitPrice(l).toFixed(2), l.warranty_months ?? ''].join('\u0000');
+        let row = groups.get(key);
+        if (!row) {
+          row = {
+            id: `g${l.id}`, item_name: l.item_name, date: l.date, warranty_months: l.warranty_months,
+            quantity: 0, total_price: 0, returned_qty: 0, returned_amount: 0, serials: [], claims: [], lines: [],
+          };
+          groups.set(key, row);
+          rows.push(row);
+        }
+        row.lines.push(l);
+        row.quantity += Number(l.quantity || 0);
+        row.total_price += Number(l.total_price || 0);
+        row.returned_qty += Number(l.returned_qty || 0);
+        row.returned_amount += Number(l.returned_amount || 0);
+        row.serials.push({ code, returned_date: l.returned_date });
+        row.claims.push(...(l.claims || []));
+      }
+      // A group of one is just that line, printed exactly as it always was.
+      return rows.map((r) => (r.lines?.length === 1 && r.serials ? r.lines[0] : r));
     },
 
     /* --------------------------------------------------------------- profit
@@ -2213,6 +2265,8 @@ function shopApp() {
         // the list is on screen; otherwise marked stale for the next visit.
         if (this.page === 'serials') this.loadSerials();
         else this.serialLoaded = false;
+        // And a serial just sold must not be offered on the next sale.
+        this.saleSerials = {};
       } catch (err) {
         this.loadError = err.message || 'Could not load shop data.';
         this.notify(this.loadError, 'error');
@@ -2273,6 +2327,61 @@ function shopApp() {
 
     get unnamedCount() {
       return this.cart.filter((l) => l.tracked && !String(l.serial_no || '').trim()).length;
+    },
+
+    // The product whose serial the serial box is waiting for, or null — the
+    // same line the "Waiting:" hint names.
+    get waitingSerialProduct() {
+      const t = this.serialTargetLine;
+      const line = t && t.tracked && !t.serial_no ? t : this.nextUnnamed();
+      return line ? this.productByName(line.item_name) : null;
+    },
+
+    /* Its serials in stock that this invoice has not already taken, for when
+       the scanner is broken or the label will not read: tap one, or type a
+       few characters and pick. Null while they have not been fetched. */
+    get waitingSerialOptions() {
+      const product = this.waitingSerialProduct;
+      const list = product && this.saleSerials[product.id];
+      if (!list) return null;
+      return list.filter((code) => !this.cart.some((l) => sameCode(l.serial_no, code)));
+    },
+
+    // Fetches the waiting product's serials the first time it waits. Run from
+    // an x-effect beside the serial box, so every way a line lands in the cart
+    // is covered.
+    async ensureSaleSerials() {
+      const product = this.waitingSerialProduct;
+      if (!product || this.saleSerials[product.id] || this.saleSerialsLoading) return;
+      this.saleSerialsLoading = true;
+      try {
+        const res = await fetch(`/api/serials?product_id=${product.id}&status=available&limit=1000`);
+        if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not load the serials in stock.'));
+        const data = await res.json();
+        this.saleSerials = { ...this.saleSerials, [product.id]: (data.rows || []).map((r) => r.serial_no) };
+      } catch (err) {
+        // Typing the serial still works; the list is only a shortcut.
+        this.saleSerials = { ...this.saleSerials, [product.id]: [] };
+        this.notify(err.message || 'Could not load the serials in stock.', 'error');
+      } finally {
+        this.saleSerialsLoading = false;
+      }
+    },
+
+    // A serial picked from the list goes through the same checks as a scan.
+    pickSerial(code) {
+      this.serialCode = code;
+      this.scanSerial();
+    },
+
+    /* Choosing a suggestion from the serial box's dropdown fills the box but
+       presses no Enter, so it would sit there unused. A choice arrives as one
+       replacement rather than typed keys — a scanner's or a person's typing
+       never looks like that — and is taken at once. */
+    serialPicked(event) {
+      if (event.inputType && event.inputType !== 'insertReplacementText') return;
+      const code = String(event.target.value || '').trim();
+      if ((this.waitingSerialOptions || []).some((c) => sameCode(c, code))) this.pickSerial(code);
     },
 
     // Returns false when the row is not valid, so submitSale can stop.
@@ -2364,6 +2473,13 @@ function shopApp() {
       // An item typed into the row but not yet added is almost certainly meant
       // to be on the invoice. Add it rather than silently leaving it off.
       if (String(this.line.item_name || '').trim() && !this.addLine()) return;
+
+      // Likewise a serial left in its box without Enter: it names the unit
+      // that is waiting, so take it rather than refuse for want of one.
+      if (String(this.serialCode || '').trim() && this.nextUnnamed()) {
+        await this.scanSerial();
+        if (this.nextUnnamed() && this.serialOverride) return;
+      }
 
       if (this.cart.length === 0) {
         this.notify('Add at least one item to the invoice.', 'error');

@@ -1085,10 +1085,15 @@
    phone and a digit misread is a warranty refused. */
 .inv-item-serial {
   display: block;
+  /* Several units' serials come as one text, a line each. */
+  white-space: pre-line;
   margin-top: 0.1rem;
   font-size: 0.62rem;
   font-variant-numeric: tabular-nums;
   color: var(--inv-ink);
+  /* A run of IMEIs has no spaces to break at; wrap inside Item name rather
+     than push the price columns off the sheet. */
+  overflow-wrap: anywhere;
 }
 
 /* Keeps a one-line invoice from collapsing to a sliver: the item block always
