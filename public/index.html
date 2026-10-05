@@ -456,7 +456,7 @@
                                         <li class="flex items-center justify-between gap-2.5 px-5 py-3">
                                             <div class="min-w-0 flex-1">
                                                 <p class="truncate text-[13px] font-medium text-ink" :title="item.item_name" x-text="item.item_name"></p>
-                                                <span class="nb-pill mt-0.5 inline-block text-[11px] font-bold" :class="stockStatus(item).tone" x-text="item.quantity + ' left'"></span>
+                                                <span class="nb-pill mt-0.5 inline-block text-[11px] font-bold" :class="stockStatus(item).tone" x-text="qtyText(item) + ' left'"></span>
                                             </div>
                                             <button type="button" x-show="isAdmin" @click="restockProduct(item)" class="nb-btn nb-btn-secondary rounded-[10px] border-[#e5ebe7]">Restock</button>
                                         </li>
@@ -545,7 +545,7 @@
                                 <div class="nb-card-head">
                                     <h2 class="nb-card-title"><span class="nb-title-icon nb-emoji bg-[#dbeafe]" aria-hidden="true">📦</span>Items</h2>
                                     <span class="nb-badge is-plain is-success tabular-nums" x-show="cart.length" x-cloak
-                                          x-text="cart.length + (cart.length === 1 ? ' item' : ' items') + ' · ' + cartPieces + ' pcs'"></span>
+                                          x-text="cart.length + (cart.length === 1 ? ' item' : ' items') + ' · ' + cartCountText"></span>
                                 </div>
                                 <div class="nb-card-body space-y-4">
                                     <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -648,12 +648,13 @@
                                                        class="nb-input">
                                             </div>
                                             <div>
-                                                <label for="sale-qty" class="nb-label">Qty</label>
-                                                <input id="sale-qty" type="number" min="1" step="1" x-model="line.quantity"
+                                                <!-- Meters for a cable, which can be cut at 2.5. -->
+                                                <label for="sale-qty" class="nb-label" x-text="unitOfName(line.item_name) === 'meter' ? 'Meters' : 'Qty'"></label>
+                                                <input id="sale-qty" type="number" min="0" :step="unitOfName(line.item_name) === 'meter' ? '0.01' : '1'" x-model="line.quantity"
                                                        @keydown.enter.prevent="addLine()" class="nb-input tabular-nums">
                                             </div>
                                             <div>
-                                                <label for="sale-rate" class="nb-label">Price <span class="nb-opt">/ pc</span></label>
+                                                <label for="sale-rate" class="nb-label">Price <span class="nb-opt" x-text="unitOfName(line.item_name) === 'meter' ? '/ m' : '/ pc'"></span></label>
                                                 <input id="sale-rate" type="number" min="0" step="0.01" x-model="line.unit_price" placeholder="0.00"
                                                        @keydown.enter.prevent="addLine()" class="nb-input tabular-nums">
                                             </div>
@@ -682,10 +683,13 @@
                                             <li class="nb-pop p-3 transition-colors" :class="outOfStock(l.item_name) ? 'bg-red-50/60' : overStock(l) ? 'bg-amber-50/60' : 'hover:bg-[#f6fbf7]'">
                                                 <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
                                                     <span class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] bg-green-100 text-xs font-bold text-green-800 tabular-nums" x-text="i + 1"></span>
-                                                    <p class="min-w-0 flex-1 basis-40 text-sm font-semibold break-words text-ink" x-text="l.item_name"></p>
+                                                    <p class="min-w-0 flex-1 basis-40 text-sm font-semibold break-words text-ink">
+                                                        <span x-text="l.item_name"></span>
+                                                        <span class="ml-1 text-xs font-normal text-slate-500" x-show="l.unit === 'meter'" x-cloak>(meters)</span>
+                                                    </p>
                                                     <div class="flex items-center gap-1.5">
                                                         <!-- One unit per serial-tracked line; more units are more scans. -->
-                                                        <input type="number" min="1" step="1" x-model="l.quantity" :aria-label="'Quantity of ' + l.item_name"
+                                                        <input type="number" min="0" :step="l.unit === 'meter' ? '0.01' : '1'" x-model="l.quantity" :aria-label="'Quantity of ' + l.item_name"
                                                                :readonly="l.tracked" @keydown.enter.prevent class="nb-input w-16 text-center tabular-nums">
                                                         <span class="text-slate-400" aria-hidden="true">×</span>
                                                         <input type="number" min="0" step="0.01" x-model="l.unit_price" :aria-label="'Price per piece of ' + l.item_name"
@@ -703,7 +707,7 @@
                                                         This item is stock out.
                                                     </p>
                                                     <p class="mt-1.5 text-xs text-amber-700" x-show="overStock(l) && !outOfStock(l.item_name) && !l.tracked" x-cloak>
-                                                        Only <span class="font-semibold tabular-nums" x-text="stockFor(l.item_name)"></span> in stock.
+                                                        Only <span class="font-semibold tabular-nums" x-text="qtyText({ quantity: stockFor(l.item_name), unit: l.unit })"></span> in stock.
                                                     </p>
                                                     <!-- Only on serial-tracked lines, so the cart does not grow an
                                                          empty box under every cable and bulb. Read-only: a serial is
@@ -769,11 +773,33 @@
                                                 </template>
                                             </select>
                                         </div>
+                                        <!-- The round-off a customer asks for: 1010 → 1000. Round off
+                                             fills in the odd taka; any figure can be typed instead. -->
                                         <div>
-                                            <label for="sale-paid" class="nb-label">Paid <span class="nb-opt">(blank = full payment)</span></label>
+                                            <label for="sale-discount" class="nb-label">Discount <span class="nb-opt">(round-off)</span></label>
+                                            <div class="flex gap-2">
+                                                <input id="sale-discount" type="number" step="0.01" min="0" inputmode="decimal"
+                                                       x-model="sale.discount" @keydown.enter.prevent placeholder="0"
+                                                       class="nb-input min-w-0 flex-1 tabular-nums">
+                                                <button type="button" @click="roundOffSale()" :disabled="!cart.length"
+                                                        class="nb-btn nb-btn-secondary shrink-0" title="Take the odd taka off — 1010 → 1000">Round off</button>
+                                            </div>
+                                        </div>
+                                        <!-- A customer who already owes on earlier receipts, found by
+                                             phone or name the way the Customers page finds them. The
+                                             receipt prints it as Previous Balance. -->
+                                        <p class="nb-note is-danger" x-show="salePreviousDue > 0" x-cloak>
+                                            Previous due on this customer: <strong class="tabular-nums" x-text="fmt(salePreviousDue)"></strong>.
+                                            Money received above this sale clears their oldest dues first.
+                                        </p>
+                                        <div>
+                                            <label for="sale-paid" class="nb-label">
+                                                <span x-text="salePreviousDue > 0 ? 'Received' : 'Paid'"></span>
+                                                <span class="nb-opt">(blank = full payment)</span>
+                                            </label>
                                             <input id="sale-paid" type="number" step="0.01" min="0" inputmode="decimal"
                                                    x-model="sale.paid_amount" @keydown.enter.prevent
-                                                   :placeholder="cart.length ? fmtNum(cartTotal) : 'Full amount'" class="nb-input tabular-nums">
+                                                   :placeholder="cart.length ? fmtNum(salePayable) : 'Full amount'" class="nb-input tabular-nums">
                                         </div>
                                         <!-- Private to the shop: shown in the sales history, never printed
                                              on the customer's invoice. -->
@@ -787,12 +813,24 @@
                                         <div class="nb-total-card text-sm" aria-live="polite">
                                             <div class="relative z-[1] flex items-baseline justify-between">
                                                 <span class="text-[13px] opacity-90">Total</span>
-                                                <span class="text-xs opacity-85 tabular-nums"><span x-text="cart.length"></span> items · <span x-text="cartPieces"></span> pcs</span>
+                                                <span class="text-xs opacity-85 tabular-nums"><span x-text="cart.length"></span> items · <span x-text="cartCountText"></span></span>
                                             </div>
-                                            <span class="relative z-[1] mt-1 block text-[28px] leading-tight font-bold tracking-[-0.5px] tabular-nums" x-text="fmt(cartTotal)"></span>
+                                            <!-- The payable, with the line total struck above it once a
+                                                 round-off is taken. -->
+                                            <span class="relative z-[1] mt-1 block text-xs opacity-80 line-through tabular-nums" x-show="saleRoundOff > 0" x-cloak x-text="fmt(cartTotal)"></span>
+                                            <span class="relative z-[1] mt-1 block text-[28px] leading-tight font-bold tracking-[-0.5px] tabular-nums" x-text="fmt(salePayable)"></span>
+                                            <div class="relative z-[1] mt-1 flex items-center justify-between gap-2 text-xs" x-show="saleRoundOff > 0" x-cloak>
+                                                <span class="opacity-90">Discount</span>
+                                                <span class="font-semibold tabular-nums" x-text="'−' + fmt(saleRoundOff)"></span>
+                                            </div>
                                             <div class="relative z-[1] mt-2 flex items-center justify-between gap-2" x-show="saleDue > 0" x-cloak>
                                                 <span class="text-xs opacity-90">Due after this payment</span>
                                                 <span class="rounded-full bg-white px-2.5 py-0.5 text-xs font-bold text-red-700 tabular-nums" x-text="fmt(saleDue)"></span>
+                                            </div>
+                                            <div class="relative z-[1] mt-2 flex items-center justify-between gap-2" x-show="salePreviousDue > 0" x-cloak>
+                                                <span class="text-xs opacity-90">Customer's balance after this sale</span>
+                                                <span class="rounded-full bg-white px-2.5 py-0.5 text-xs font-bold tabular-nums"
+                                                      :class="saleCurrentBalance > 0 ? 'text-red-700' : 'text-green-700'" x-text="fmt(saleCurrentBalance)"></span>
                                             </div>
                                         </div>
 
@@ -859,9 +897,19 @@
                                             <!-- Counted goods only. A serial-tracked product's quantity is the
                                                  number of serials scanned in below, never a typed figure. -->
                                             <div x-show="!dealerTracked">
-                                                <label for="dealer-qty" class="nb-label nb-req">Quantity bought</label>
-                                                <input id="dealer-qty" type="number" min="1" step="1" x-model="dealer.quantity" x-ref="dealerQty" placeholder="50"
+                                                <label for="dealer-qty" class="nb-label nb-req" x-text="dealerUnit === 'meter' ? 'Meters bought' : 'Quantity bought'"></label>
+                                                <input id="dealer-qty" type="number" min="0" :step="dealerUnit === 'meter' ? '0.01' : '1'" x-model="dealer.quantity" x-ref="dealerQty" placeholder="50"
                                                        :required="!dealerTracked" class="nb-input tabular-nums">
+                                            </div>
+                                            <!-- Picked for a new product only; a restock keeps its own. -->
+                                            <div x-show="!dealerTracked">
+                                                <label for="dealer-unit" class="nb-label">Sold by</label>
+                                                <select id="dealer-unit" x-model="dealer.unit" :disabled="!!dealerProduct" class="nb-input"
+                                                        :title="dealerProduct ? 'Set on the product' : ''">
+                                                    <template x-for="u in units" :key="'du-' + u.id">
+                                                        <option :value="u.id" x-text="u.label" :selected="dealerUnit === u.id"></option>
+                                                    </template>
+                                                </select>
                                             </div>
                                             <div>
                                                 <label for="dealer-warranty" class="nb-label">Warranty <span class="nb-opt">(months)</span></label>
@@ -934,7 +982,7 @@
                                         <!-- What this batch costs and what it stands to earn, before saving. -->
                                         <dl class="space-y-1.5 rounded-lg bg-slate-50 p-3 text-sm" x-show="!dealerTracked">
                                             <div class="flex items-baseline justify-between">
-                                                <dt class="text-slate-500">Total cost (<span class="tabular-nums" x-text="dealer.quantity || 0"></span> pcs)</dt>
+                                                <dt class="text-slate-500">Total cost (<span class="tabular-nums" x-text="dealer.quantity || 0"></span> <span x-text="dealerUnit === 'meter' ? 'm' : 'pcs'"></span>)</dt>
                                                 <dd class="text-lg font-semibold text-ink tabular-nums" x-text="fmt(dealerTotalCost)"></dd>
                                             </div>
                                             <div class="flex items-baseline justify-between">
@@ -1126,6 +1174,8 @@
                                                          device can be matched to their receipt at a glance once
                                                          the search has narrowed the list to it. -->
                                                     <span class="block text-xs text-slate-400 tabular-nums" x-show="invoiceSerials(inv)" x-cloak x-text="invoiceSerials(inv)"></span>
+                                                    <!-- Not printed: who last corrected the receipt. -->
+                                                    <span class="block text-xs text-slate-400" x-show="inv.edited_by" x-cloak x-text="'Edited by ' + inv.edited_by"></span>
                                                     <span class="block text-xs text-slate-400" x-show="inv.lines.length > 1" x-cloak x-text="inv.lines.length + ' items'"></span>
                                                     <!-- What came back, line by line. -->
                                                     <template x-for="l in inv.lines.filter((x) => x.returned_qty > 0)" :key="'rt-' + l.id">
@@ -1234,12 +1284,13 @@
                                             </div>
                                         </div>
                                         <p class="mt-1.5 text-xs text-slate-500 italic" x-show="inv.comment" x-cloak x-text="inv.comment"></p>
+                                        <p class="mt-1 text-xs text-slate-400" x-show="inv.edited_by" x-cloak x-text="'Edited by ' + inv.edited_by"></p>
                                         <div class="mt-3 grid grid-cols-2 gap-2">
                                             <button type="button" @click="showReceipt(inv)" class="nb-btn nb-btn-secondary h-10">Show invoice</button>
                                             <button type="button" @click="printReceipt(inv)" class="nb-btn nb-btn-secondary h-10">Print</button>
                                             <button type="button" @click="openPayment(inv)" class="nb-btn col-span-2 h-10"
                                                     :class="isInvoiceDue(inv) ? 'nb-btn-danger-soft' : 'nb-btn-secondary'">
-                                                <span x-text="isInvoiceDue(inv) ? 'Take payment — due ' + fmt(invoiceDue(inv)) : 'Payment'"></span>
+                                                <span x-text="isInvoiceDue(inv) ? 'Take payment — due ' + fmt(invoiceDue(inv)) : (isAdmin ? 'Edit receipt' : 'Payment')"></span>
                                             </button>
                                             <button type="button" @click="openReturn(inv)" x-show="!invoiceFullyReturned(inv)" x-cloak class="nb-btn nb-btn-secondary h-10">Return items</button>
                                             <button type="button" @click="openClaim(inv)" x-show="invoiceClaimable(inv)" x-cloak class="nb-btn nb-btn-secondary h-10">Warranty</button>
@@ -1424,7 +1475,7 @@
                                                     <span class="nb-badge is-plain is-info mt-1" x-show="serialTracked(item)" x-cloak>Serial-tracked</span>
                                                 </td>
                                                 <td class="num">
-                                                    <span class="font-semibold" :class="isLowStock(item) ? 'text-red-600' : 'text-ink'" x-text="item.quantity"></span>
+                                                    <span class="font-semibold" :class="isLowStock(item) ? 'text-red-600' : 'text-ink'" x-text="qtyText(item)"></span>
                                                     <!-- Back from customers faulty: in the shop, not in stock. -->
                                                     <span class="block text-[11px] font-semibold text-red-700" x-show="faultyCount(item) > 0" x-cloak x-text="faultyCount(item) + ' faulty'"></span>
                                                     <span class="block text-[11px] font-semibold text-violet-700" x-show="supplierCount(item) > 0" x-cloak x-text="supplierCount(item) + ' at supplier'"></span>
@@ -1462,7 +1513,7 @@
                                                 <span class="nb-badge is-plain is-info mt-1" x-show="serialTracked(item)" x-cloak>Serial-tracked</span>
                                             </div>
                                             <div class="shrink-0 text-right">
-                                                <span class="nb-badge" :class="stockStatus(item).tone" x-text="item.quantity + ' in stock'"></span>
+                                                <span class="nb-badge" :class="stockStatus(item).tone" x-text="qtyText(item) + ' in stock'"></span>
                                                 <span class="block text-[11px] font-semibold text-red-700" x-show="faultyCount(item) > 0" x-cloak x-text="faultyCount(item) + ' faulty'"></span>
                                                 <span class="block text-[11px] font-semibold text-violet-700" x-show="supplierCount(item) > 0" x-cloak x-text="supplierCount(item) + ' at supplier'"></span>
                                             </div>
@@ -1531,7 +1582,7 @@
                                                     <span class="font-medium text-ink" x-text="item.item_name"></span>
                                                     <span class="block text-xs text-slate-400 tabular-nums" x-show="item.barcode" x-cloak x-text="item.barcode"></span>
                                                 </td>
-                                                <td class="num font-semibold text-red-600" x-text="item.quantity"></td>
+                                                <td class="num font-semibold text-red-600" x-text="qtyText(item)"></td>
                                                 <td class="num" x-text="fmt(item.selling_price)"></td>
                                                 <td><span class="nb-badge" :class="stockStatus(item).tone" x-text="stockStatus(item).label"></span></td>
                                                 <td>
@@ -2623,7 +2674,7 @@
                                             <span class="inv-item-serial" x-text="claimText(c)"></span>
                                         </template>
                                     </td>
-                                    <td class="col-qty tabular-nums" x-text="l.quantity"></td>
+                                    <td class="col-qty tabular-nums" x-text="qtyText(l)"></td>
                                     <td class="col-rate tabular-nums" x-text="fmtNum(unitPrice(l))"></td>
                                     <td class="col-amount tabular-nums" x-text="fmtNum(l.total_price)"></td>
                                 </tr>
@@ -2653,6 +2704,10 @@
                                 <span>Sub Total</span>
                                 <span class="tabular-nums" x-text="fmtNum(invoiceTotal(currentReceipt))"></span>
                             </p>
+                            <p class="inv-total-line" x-show="invoiceRoundOff(currentReceipt) > 0" x-cloak>
+                                <span>Discount</span>
+                                <span class="tabular-nums" x-text="'−' + fmtNum(invoiceRoundOff(currentReceipt))"></span>
+                            </p>
                             <p class="inv-total-line" x-show="invoiceHasReturns(currentReceipt)" x-cloak>
                                 <span>Less Returns</span>
                                 <span class="tabular-nums" x-text="'−' + fmtNum(invoiceReturned(currentReceipt))"></span>
@@ -2665,15 +2720,47 @@
                                 <span>Refunded</span>
                                 <span class="tabular-nums" x-text="fmt(invoiceRefunded(currentReceipt))"></span>
                             </p>
-                            <!-- Only on receipts that track payment; see the stamp above. -->
-                            <p class="inv-total-line" x-show="invoiceTracksPayment(currentReceipt)" x-cloak>
-                                <span>Paid<span x-show="paymentMethodLabel(currentReceipt)" x-text="` (${paymentMethodLabel(currentReceipt)})`"></span></span>
-                                <span class="tabular-nums" x-text="fmt(invoicePaid(currentReceipt))"></span>
-                            </p>
-                            <p class="inv-total-line is-due" x-show="isInvoiceDue(currentReceipt)" x-cloak>
-                                <span>Due</span>
-                                <span class="tabular-nums" x-text="fmt(invoiceDue(currentReceipt))"></span>
-                            </p>
+                            <!-- Receipts from before running balances: Paid / Due, as they
+                                 were printed. Only on receipts that track payment; see the
+                                 stamp above. -->
+                            <template x-if="!invoiceShowsBalance(currentReceipt)">
+                                <div>
+                                    <p class="inv-total-line" x-show="invoiceTracksPayment(currentReceipt)" x-cloak>
+                                        <span>Paid<span x-show="paymentMethodLabel(currentReceipt)" x-text="` (${paymentMethodLabel(currentReceipt)})`"></span></span>
+                                        <span class="tabular-nums" x-text="fmt(invoicePaid(currentReceipt))"></span>
+                                    </p>
+                                    <p class="inv-total-line is-due" x-show="isInvoiceDue(currentReceipt)" x-cloak>
+                                        <span>Due</span>
+                                        <span class="tabular-nums" x-text="fmt(invoiceDue(currentReceipt))"></span>
+                                    </p>
+                                </div>
+                            </template>
+                            <!-- The customer's running balance: what this receipt leaves owing,
+                                 and what they owed on earlier receipts when it was issued. -->
+                            <template x-if="invoiceShowsBalance(currentReceipt)">
+                                <div>
+                                    <p class="inv-total-line">
+                                        <span>Received<span x-show="paymentMethodLabel(currentReceipt)" x-text="` (${paymentMethodLabel(currentReceipt)})`"></span></span>
+                                        <span class="tabular-nums" x-text="fmt(invoiceReceived(currentReceipt))"></span>
+                                    </p>
+                                    <p class="inv-total-line" :class="isInvoiceDue(currentReceipt) && 'is-due'">
+                                        <span>Balance</span>
+                                        <span class="tabular-nums" x-text="fmt(invoiceDue(currentReceipt))"></span>
+                                    </p>
+                                    <template x-if="invoicePreviousDue(currentReceipt) > 0">
+                                        <div>
+                                            <p class="inv-total-line">
+                                                <span>Previous Balance</span>
+                                                <span class="tabular-nums" x-text="fmt(invoicePreviousDue(currentReceipt))"></span>
+                                            </p>
+                                            <p class="inv-total-line is-grand" :class="invoiceCurrentBalance(currentReceipt) > 0 && 'is-due'">
+                                                <span>Current Balance</span>
+                                                <span class="tabular-nums" x-text="fmt(invoiceCurrentBalance(currentReceipt))"></span>
+                                            </p>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
                         </div>
                     </div>
 
@@ -2709,6 +2796,8 @@
                         class="nb-btn nb-btn-secondary nb-btn-lg order-3 sm:order-1">Warranty claim</button>
                 <button @click="openReturn(currentReceipt)" x-show="currentReceipt.id && !invoiceFullyReturned(currentReceipt)" x-cloak
                         class="nb-btn nb-btn-secondary nb-btn-lg order-3 sm:order-1">Return items</button>
+                <button @click="openPayment(currentReceipt)" x-show="currentReceipt.id && isAdmin" x-cloak
+                        class="nb-btn nb-btn-secondary nb-btn-lg order-3 sm:order-1">Edit receipt</button>
                 <button @click="printReceipt()" class="nb-btn nb-btn-primary nb-btn-lg order-1 sm:order-2">Print / Save as PDF</button>
             </div>
 
@@ -2767,11 +2856,21 @@
 
                 <fieldset class="space-y-4">
                 <legend class="nb-section-title">Stock &amp; pricing</legend>
-                <div class="grid grid-cols-2 gap-4">
+                <div class="grid grid-cols-2 gap-4 sm:grid-cols-3">
+                    <!-- How it is counted. Cable is sold by the meter, in fractions;
+                         a product with serials is always pieces. -->
                     <div>
-                        <label for="prod-qty" class="nb-label nb-req">In stock</label>
+                        <label for="prod-unit" class="nb-label">Sold by</label>
+                        <select id="prod-unit" x-model="product.unit" :disabled="productSerialMode" class="nb-input">
+                            <template x-for="u in units" :key="'pu-' + u.id">
+                                <option :value="u.id" x-text="u.label" :selected="(product.unit || 'pcs') === u.id"></option>
+                            </template>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="prod-qty" class="nb-label nb-req" x-text="product.unit === 'meter' ? 'In stock (m)' : 'In stock'"></label>
                         <!-- Read-only once serial-tracked: the count is the serials below. -->
-                        <input id="prod-qty" type="number" min="0" step="1" x-model="product.quantity" placeholder="0"
+                        <input id="prod-qty" type="number" min="0" :step="product.unit === 'meter' ? '0.01' : '1'" x-model="product.quantity" placeholder="0"
                                :readonly="productSerialMode" class="nb-input tabular-nums" required>
                         <p class="nb-hint text-blue-700" x-show="productSerialMode" x-cloak>= serials in stock</p>
                     </div>
@@ -2846,11 +2945,11 @@
                     </div>
                     <div class="border-t border-slate-200 pt-1.5 space-y-1 text-xs">
                         <div class="flex items-baseline justify-between text-slate-600">
-                            <span>Total buying (<span class="tabular-nums" x-text="productQty"></span> pcs)</span>
+                            <span>Total buying (<span class="tabular-nums" x-text="productQty"></span> <span x-text="product.unit === 'meter' ? 'm' : 'pcs'"></span>)</span>
                             <span class="tabular-nums font-semibold" x-text="fmt(productTotalCost)"></span>
                         </div>
                         <div class="flex items-baseline justify-between text-slate-600">
-                            <span>Total selling (<span class="tabular-nums" x-text="productQty"></span> pcs)</span>
+                            <span>Total selling (<span class="tabular-nums" x-text="productQty"></span> <span x-text="product.unit === 'meter' ? 'm' : 'pcs'"></span>)</span>
                             <span class="tabular-nums font-semibold" x-text="fmt(productTotalSale)"></span>
                         </div>
                         <div class="flex items-baseline justify-between">
@@ -2989,20 +3088,20 @@
                             <li class="p-3 flex flex-wrap items-center gap-x-3 gap-y-2" :class="Number(row.qty) > 0 ? 'bg-amber-50/60' : ''">
                                 <label class="flex min-w-0 flex-1 basis-52 items-start gap-2.5 cursor-pointer">
                                     <!-- One unit left: a tick box. More: the quantity below. -->
-                                    <input type="checkbox" class="mt-1 h-4 w-4 accent-amber-600" x-show="row.left === 1"
+                                    <input type="checkbox" class="mt-1 h-4 w-4 accent-amber-600" x-show="row.tick"
                                            :checked="Number(row.qty) > 0" @change="row.qty = $event.target.checked ? 1 : 0">
                                     <span class="min-w-0">
                                         <span class="block text-sm font-semibold text-slate-800" x-text="row.line.item_name"></span>
                                         <span class="block text-xs text-slate-500 tabular-nums break-all" x-show="row.line.serial_no" x-text="row.line.serial_no"></span>
                                         <span class="block text-xs text-slate-500 tabular-nums">
-                                            Sold <span x-text="row.line.quantity"></span> × <span x-text="fmt(unitPrice(row.line))"></span>
+                                            Sold <span x-text="qtyText(row.line)"></span> × <span x-text="fmt(unitPrice(row.line))"></span>
                                             <span x-show="row.line.returned_qty > 0" x-cloak x-text="'· ' + row.line.returned_qty + ' already back'"></span>
                                         </span>
                                     </span>
                                 </label>
-                                <div class="flex items-center gap-2" x-show="row.left > 1">
-                                    <label class="text-xs text-slate-500" :for="'ret-qty-' + row.line.id">Qty</label>
-                                    <input type="number" min="0" :max="row.left" step="1" inputmode="numeric" :id="'ret-qty-' + row.line.id"
+                                <div class="flex items-center gap-2" x-show="!row.tick">
+                                    <label class="text-xs text-slate-500" :for="'ret-qty-' + row.line.id" x-text="row.line.unit === 'meter' ? 'Meters' : 'Qty'"></label>
+                                    <input type="number" min="0" :max="row.left" :step="row.line.unit === 'meter' ? '0.01' : '1'" inputmode="decimal" :id="'ret-qty-' + row.line.id"
                                            x-model.number="row.qty"
                                            class="nb-input w-20 tabular-nums">
                                     <span class="text-xs text-slate-500 tabular-nums" x-text="'of ' + row.left"></span>
@@ -3302,6 +3401,8 @@
                     <span>Paid</span>
                     <span class="text-xs font-semibold tabular-nums" x-show="isInvoiceDue(actionsMenu.inv)" x-text="'Due ' + fmt(invoiceDue(actionsMenu.inv))"></span>
                 </button>
+                <button type="button" role="menuitem" @click="runMenuAction('openPayment')" x-show="isAdmin"
+                        class="nb-menu-item">Edit receipt</button>
                 <button type="button" role="menuitem" @click="runMenuAction('openReturn')" x-show="!invoiceFullyReturned(actionsMenu.inv)"
                         class="nb-menu-item">Return</button>
                 <button type="button" role="menuitem" @click="runMenuAction('openClaim')" x-show="invoiceClaimable(actionsMenu.inv)"
@@ -3417,11 +3518,11 @@
          DUE receipt and settles it from there — so it has to sit above it. -->
     <div id="payment-modal" x-show="isPaymentOpen" x-cloak x-transition.opacity
          class="no-print fixed inset-0 bg-slate-900/55 z-[60] flex items-center justify-center p-4 overflow-y-auto"
-         role="dialog" aria-modal="true" aria-label="Payment" @keydown.escape.window="closePayment()">
+         role="dialog" aria-modal="true" :aria-label="paymentDraft.edit ? 'Edit money receipt' : 'Payment'" @keydown.escape.window="closePayment()">
         <div class="nb-pop bg-white w-full sm:max-w-md rounded-xl shadow-2xl p-5 sm:p-6">
             <div class="flex items-start justify-between gap-3 mb-4">
                 <div>
-                    <h2 class="text-lg font-semibold text-ink">Payment</h2>
+                    <h2 class="text-lg font-semibold text-ink" x-text="paymentDraft.edit ? 'Edit money receipt' : 'Payment'"></h2>
                     <p class="text-xs text-slate-500">
                         Invoice <span class="tabular-nums font-semibold" x-text="'#' + (paymentDraft.id ?? '')"></span>
                         · <span x-text="paymentDraft.customer_name || 'Walk-in'"></span>
@@ -3432,11 +3533,13 @@
             </div>
 
             <!-- Total and Due are read-only. The invoice's lines are what set the
-                 total, and this dialog deliberately cannot touch them. -->
+                 total, and this dialog deliberately cannot touch them — a wrong
+                 item comes off through Return. The admin's round-off moves the
+                 total as it is typed. -->
             <div class="grid grid-cols-2 gap-3 rounded-[14px] border border-[#dcefe2] bg-linear-160 from-green-50 to-white p-3.5">
                 <div>
                     <p class="nb-stat-label">Total</p>
-                    <p class="text-base font-bold text-slate-800 tabular-nums" x-text="fmt(paymentDraft.total)"></p>
+                    <p class="text-base font-bold text-slate-800 tabular-nums" x-text="fmt(paymentTotal)"></p>
                 </div>
                 <div>
                     <p class="nb-stat-label">Due</p>
@@ -3446,6 +3549,41 @@
             </div>
 
             <form @submit.prevent="submitPayment()" class="mt-4 space-y-4">
+                <!-- Admin only: the rest of the receipt. Staff never see these, and
+                     the server refuses them from staff too. -->
+                <template x-if="paymentDraft.edit">
+                    <div class="space-y-3.5">
+                        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <div>
+                                <label for="edit-customer" class="nb-label">Customer name</label>
+                                <input id="edit-customer" type="text" x-model="paymentDraft.customer_name" @keydown.enter.prevent class="nb-input">
+                            </div>
+                            <div>
+                                <label for="edit-contact" class="nb-label">Contact no.</label>
+                                <input id="edit-contact" type="tel" inputmode="tel" x-model="paymentDraft.customer_contact" @keydown.enter.prevent class="nb-input">
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <div>
+                                <label for="edit-method" class="nb-label">Payment method</label>
+                                <select id="edit-method" x-model="paymentDraft.payment_method" class="nb-input">
+                                    <template x-for="m in paymentMethods" :key="'em-' + m.id">
+                                        <option :value="m.id" x-text="m.label" :selected="paymentDraft.payment_method === m.id"></option>
+                                    </template>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="edit-discount" class="nb-label">Discount</label>
+                                <input id="edit-discount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0"
+                                       x-model="paymentDraft.discount" @keydown.enter.prevent class="nb-input tabular-nums">
+                            </div>
+                        </div>
+                        <div>
+                            <label for="edit-comment" class="nb-label">Comment <span class="nb-opt">(not printed)</span></label>
+                            <input id="edit-comment" type="text" x-model="paymentDraft.comment" @keydown.enter.prevent class="nb-input">
+                        </div>
+                    </div>
+                </template>
                 <div>
                     <label for="payment-paid" class="nb-label">Paid</label>
                     <input id="payment-paid" type="number" min="0" step="0.01" inputmode="decimal"
@@ -3453,14 +3591,23 @@
                            class="nb-input" required>
                     <!-- The whole point of the dialog in one press: the customer came
                          back and cleared the balance. -->
-                    <button type="button" @click="markFullyPaid()"
-                            class="nb-btn nb-btn-secondary mt-2 w-full">
-                        Mark fully paid
-                    </button>
+                    <div class="mt-2 grid gap-2" :class="paymentDraft.edit ? 'grid-cols-2' : 'grid-cols-1'">
+                        <button type="button" @click="markFullyPaid()"
+                                class="nb-btn nb-btn-secondary w-full">
+                            Mark fully paid
+                        </button>
+                        <!-- The customer paid a little less than owed and the shop lets
+                             the rest go: the remaining due becomes discount. -->
+                        <button type="button" @click="forgiveRest()" x-show="paymentDraft.edit" x-cloak :disabled="paymentDue <= 0"
+                                class="nb-btn nb-btn-secondary w-full" title="Turn the remaining due into discount">
+                            Settle — forgive the rest
+                        </button>
+                    </div>
                 </div>
 
                 <p class="text-xs text-slate-500">
                     Once the full amount is paid, the money receipt becomes a <strong>PAID</strong> one.
+                    <span x-show="!paymentDraft.edit">Only the admin can lower a payment or give a discount after the sale.</span>
                 </p>
 
                 <p class="nb-note is-danger"

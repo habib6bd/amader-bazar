@@ -24,6 +24,28 @@ const PAYMENT_METHODS = [
   { id: 'card', label: 'Card' },
 ];
 
+/* How a product is counted. The ids must match UNITS in server.js. A piece is
+   always whole; a meter of cable can be 2.5 or 0.75, to two decimals. */
+const UNITS = [
+  { id: 'pcs', label: 'Piece', short: 'pcs' },
+  { id: 'meter', label: 'Meter', short: 'm' },
+];
+
+function unitId(value) {
+  return value === 'meter' ? 'meter' : 'pcs';
+}
+
+// The same rule as validQty() in server.js: a valid quantity, or null.
+function validQty(value, unit) {
+  const n = Number(value);
+  if (value === '' || !Number.isFinite(n) || n <= 0) return null;
+  if (unitId(unit) !== 'meter') return Number.isInteger(n) ? n : null;
+  const r = Math.round(n * 100) / 100;
+  return Math.abs(r - n) < 1e-9 ? r : null;
+}
+
+const round2 = (n) => Math.round(n * 100) / 100;
+
 // Local calendar date as YYYY-MM-DD. Deliberately not toISOString(), which is
 // UTC — in Bangladesh (UTC+6) that returns yesterday's date until 6am.
 function todayLocal() {
@@ -304,6 +326,8 @@ function blankSale() {
     comment: '',
     paid_amount: '',
     payment_method: 'cash',
+    // The round-off, 1010 → 1000. Blank is none.
+    discount: '',
   };
 }
 
@@ -436,6 +460,7 @@ function blankDealer() {
     cost_price: '',
     selling_price: '',
     warranty_months: '',
+    unit: 'pcs',
     date: todayLocal(),
   };
 }
@@ -455,6 +480,7 @@ function blankProduct() {
     cost_price: '',
     selling_price: '',
     warranty_months: 0,
+    unit: 'pcs',
   };
 }
 
@@ -592,6 +618,7 @@ function shopApp() {
 
     sale: blankSale(),
     paymentMethods: PAYMENT_METHODS,
+    units: UNITS,
     // The invoice being built: [{ key, item_name, quantity, unit_price, serial_no }].
     cart: [],
     line: blankLine(),
@@ -705,7 +732,7 @@ function shopApp() {
     /* Recording a payment against an invoice already issued. `paymentDraft`
        holds a copy, never the live invoice — see openPayment(). */
     isPaymentOpen: false,
-    paymentDraft: { id: null, total: 0, refunded: 0, paid_amount: '' },
+    paymentDraft: { id: null, edit: false, base: 0, discount: '', refunded: 0, paid_amount: '', minPaid: 0 },
     paymentError: '',
     savingPayment: false,
 
@@ -1005,18 +1032,89 @@ function shopApp() {
       return this.cart.reduce((sum, l) => sum + this.lineTotal(l), 0);
     },
 
+    // Pieces only: meters of cable are not pieces, and are counted apart.
     get cartPieces() {
-      return this.cart.reduce((sum, l) => sum + (Number(l.quantity) || 0), 0);
+      return this.cart.filter((l) => unitId(l.unit) === 'pcs').reduce((sum, l) => sum + (Number(l.quantity) || 0), 0);
+    },
+
+    get cartMeters() {
+      return round2(this.cart.filter((l) => unitId(l.unit) === 'meter').reduce((sum, l) => sum + (Number(l.quantity) || 0), 0));
+    },
+
+    // "3 pcs", "3 pcs · 12.5 m", "12.5 m" — for the cart header and total card.
+    get cartCountText() {
+      const parts = [];
+      if (this.cartPieces || !this.cartMeters) parts.push(`${this.cartPieces} pcs`);
+      if (this.cartMeters) parts.push(`${this.fmtQty(this.cartMeters)} m`);
+      return parts.join(' · ');
+    },
+
+    // A quantity as printed: whole numbers bare, meters to at most 2 decimals.
+    fmtQty(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v)) return '';
+      return String(round2(v));
+    },
+
+    // "2.5 m" for a meter line, the bare number for pieces.
+    qtyText(row) {
+      return unitId(row?.unit) === 'meter' ? `${this.fmtQty(row.quantity)} m` : this.fmtQty(row?.quantity);
+    },
+
+    unitOfName(name) {
+      return unitId(this.productByName(name)?.unit);
+    },
+
+    /* --------------------------------------------- the sale's money
+
+       Total is what the lines come to; the round-off comes off it to give the
+       payable. What the customer hands over may be more than the payable when
+       they are clearing older dues as well — the server applies the extra to
+       their oldest receipts. */
+    get saleRoundOff() {
+      const d = Number(this.sale.discount);
+      return this.sale.discount === '' || !Number.isFinite(d) || d < 0 ? 0 : Math.min(d, this.cartTotal);
+    },
+
+    get salePayable() {
+      return round2(Math.max(0, this.cartTotal - this.saleRoundOff));
+    },
+
+    // Knocks the odd taka off: 1010 → 1000, 605 → 600, 1234 → 1230.
+    roundOffSale() {
+      const off = round2(this.cartTotal % 10);
+      this.sale.discount = off > 0 ? off : '';
+    },
+
+    // What the customer hands over now. Blank is the payable, in full.
+    get saleReceived() {
+      if (this.sale.paid_amount === '') return this.salePayable;
+      const paid = Number(this.sale.paid_amount);
+      return Number.isFinite(paid) && paid >= 0 ? paid : 0;
     },
 
     /* What the customer would still owe on the invoice being built. The
        shopkeeper types only what was handed over; the due follows from it, and
        is shown before the receipt is printed rather than after. */
     get saleDue() {
-      if (this.sale.paid_amount === '') return 0;
-      const paid = Number(this.sale.paid_amount);
-      if (!Number.isFinite(paid)) return 0;
-      return Math.max(0, this.cartTotal - paid);
+      return Math.max(0, round2(this.salePayable - this.saleReceived));
+    },
+
+    /* What this customer owes on earlier receipts, found the way the Customers
+       page and the server find them: by phone if one is typed, else by name.
+       0 for a walk-in, or a customer with nothing owing. */
+    get salePreviousDue() {
+      const contact = String(this.sale.customer_contact || '').trim();
+      const name = String(this.sale.customer_name || '').trim();
+      const key = contact ? `c:${contact}` : name ? `n:${name.toLowerCase()}` : null;
+      if (!key) return 0;
+      const row = this.customers.find((c) => c.key === key);
+      return row && row.due > PAID_EPSILON ? round2(row.due) : 0;
+    },
+
+    // The customer's whole balance once this sale is saved.
+    get saleCurrentBalance() {
+      return Math.max(0, round2(this.salePreviousDue + this.salePayable - this.saleReceived));
     },
 
     /* ------------------------------------------------------------- warranty */
@@ -1227,7 +1325,7 @@ function shopApp() {
 
     // Today's sales less today's returns, whichever day those were sold.
     get todaysRevenue() {
-      return this.todaysSales.reduce((sum, inv) => sum + this.invoiceTotal(inv), 0) - this.todaysReturns;
+      return this.todaysSales.reduce((sum, inv) => sum + this.invoiceTotal(inv) - this.invoiceRoundOff(inv), 0) - this.todaysReturns;
     },
 
     get todaysReturns() {
@@ -1266,8 +1364,17 @@ function shopApp() {
       return (inv?.returns || []).length > 0;
     },
 
+    /* Less the receipt's round-off (1010 → 1000), clamped at zero like the
+       server's moneyOf(): once everything is back, the round-off is void too. */
     invoiceNet(inv) {
-      return this.invoiceTotal(inv) - this.invoiceReturned(inv);
+      return Math.max(0, this.invoiceTotal(inv) - this.invoiceReturned(inv) - Number(inv?.discount || 0));
+    },
+
+    /* The round-off actually taken off this receipt — its discount, except on
+       a receipt returned down below it. Every revenue and profit sum takes
+       this off, so a 1010 sale rounded to 1000 counts as 1000 everywhere. */
+    invoiceRoundOff(inv) {
+      return this.invoiceTotal(inv) - this.invoiceReturned(inv) - this.invoiceNet(inv);
     },
 
     // Units on a line not yet returned.
@@ -1363,11 +1470,12 @@ function shopApp() {
       const known = (inv?.lines || []).map((l) => this.saleProfit(l)).filter((p) => p !== null);
       if (!known.length) return null;
       const back = (inv.returns || []).reduce((sum, r) => sum + this.returnProfitOf(r.lines), 0);
-      return known.reduce((a, b) => a + b, 0) - back;
+      return known.reduce((a, b) => a + b, 0) - back - this.invoiceRoundOff(inv);
     },
 
+    // Below-list-price on the lines, plus the receipt's round-off.
     invoiceDiscount(inv) {
-      return (inv?.lines || []).reduce((sum, l) => sum + this.saleDiscount(l), 0);
+      return (inv?.lines || []).reduce((sum, l) => sum + this.saleDiscount(l), 0) + this.invoiceRoundOff(inv);
     },
 
     /* ---------------------------------------------------- due / paid money
@@ -1388,7 +1496,7 @@ function shopApp() {
     // Everything the customer has handed over, refunds not taken off. This is
     // what paid_amount stores, and what the payment endpoint takes.
     invoicePaidIn(inv) {
-      return this.invoiceTracksPayment(inv) ? Number(inv.paid_amount) : this.invoiceTotal(inv);
+      return this.invoiceTracksPayment(inv) ? Number(inv.paid_amount) : this.invoiceTotal(inv) - Number(inv?.discount || 0);
     },
 
     // What the shop has kept: paid in, less refunds.
@@ -1405,6 +1513,32 @@ function shopApp() {
     // taka must not sit in the Due list forever because of them.
     isInvoiceDue(inv) {
       return this.invoiceDue(inv) > PAID_EPSILON;
+    },
+
+    /* ------------------------------------------- the customer's running balance
+
+       Receipts issued since previous balances were tracked carry a snapshot of
+       what the customer owed on earlier receipts that day (previous_due), and
+       how much of the money handed over went to those (applied_to_previous).
+       Older receipts have previous_due NULL and print the old Paid / Due. */
+    invoiceShowsBalance(inv) {
+      return inv?.previous_due !== null && inv?.previous_due !== undefined;
+    },
+
+    invoicePreviousDue(inv) {
+      return Number(inv?.previous_due || 0);
+    },
+
+    // Everything taken at the counter for this receipt: what stayed on it,
+    // plus what went to the customer's older receipts.
+    invoiceReceived(inv) {
+      return this.invoicePaid(inv) + Number(inv?.applied_to_previous || 0);
+    },
+
+    // Previous balance, less what this sale paid off, plus this receipt's own
+    // due as it stands now — collecting this receipt later brings it down.
+    invoiceCurrentBalance(inv) {
+      return Math.max(0, round2(this.invoicePreviousDue(inv) - Number(inv?.applied_to_previous || 0) + this.invoiceDue(inv)));
     },
 
     /* The one-word state of an invoice for the status column. An invoice from
@@ -1437,7 +1571,8 @@ function shopApp() {
 
     get totalRevenue() {
       return this.sales.reduce((sum, s) => sum + Number(s.total_price || 0), 0)
-        - this.returnLines.reduce((sum, rl) => sum + Number(rl.amount || 0), 0);
+        - this.returnLines.reduce((sum, rl) => sum + Number(rl.amount || 0), 0)
+        - this.invoices.reduce((sum, inv) => sum + this.invoiceRoundOff(inv), 0);
     },
 
     get dealerSpend() {
@@ -1574,16 +1709,19 @@ function shopApp() {
     // Totals for whatever the filter currently shows — the answer to "how much
     // did I sell on this day".
     get rangeRevenue() {
-      return this.filteredLines.reduce((sum, l) => sum + Number(l.total_price || 0), 0);
+      return this.filteredLines.reduce((sum, l) => sum + Number(l.total_price || 0), 0)
+        - this.filteredInvoices.reduce((sum, inv) => sum + this.invoiceRoundOff(inv), 0);
     },
 
     // Less the profit on anything returned in the range — see filteredReturns.
     get rangeProfit() {
-      return this.profitOf(this.filteredLines) - this.filteredReturns.reduce((sum, r) => sum + this.returnProfitOf(r.lines), 0);
+      return this.profitOf(this.filteredLines) - this.filteredReturns.reduce((sum, r) => sum + this.returnProfitOf(r.lines), 0)
+        - this.filteredInvoices.reduce((sum, inv) => sum + this.invoiceRoundOff(inv), 0);
     },
 
     get rangeDiscount() {
-      return this.filteredLines.reduce((sum, l) => sum + this.saleDiscount(l), 0);
+      return this.filteredLines.reduce((sum, l) => sum + this.saleDiscount(l), 0)
+        + this.filteredInvoices.reduce((sum, inv) => sum + this.invoiceRoundOff(inv), 0);
     },
 
     // What the shop is still owed over this range. Summed over invoices, not
@@ -1689,7 +1827,8 @@ function shopApp() {
 
     // Profit on every sale ever, less what returns took back.
     get totalSalesProfit() {
-      return this.profitOf(this.sales) - this.returnProfitOf(this.returnLines);
+      return this.profitOf(this.sales) - this.returnProfitOf(this.returnLines)
+        - this.invoices.reduce((sum, inv) => sum + this.invoiceRoundOff(inv), 0);
     },
 
     // Softly flags a head that sounds like stock buying, which belongs in Dealer
@@ -1829,8 +1968,8 @@ function shopApp() {
       for (const inv of this.filteredInvoices) {
         const r = day(inv.date);
         r.invoices += 1;
-        r.sold += this.invoiceTotal(inv);
-        r.profit += this.profitOf(inv.lines);
+        r.sold += this.invoiceTotal(inv) - this.invoiceRoundOff(inv);
+        r.profit += this.profitOf(inv.lines) - this.invoiceRoundOff(inv);
         r.discount += this.invoiceDiscount(inv);
         r.due += this.invoiceDue(inv);
       }
@@ -1897,7 +2036,7 @@ function shopApp() {
       for (const inv of this.invoices) {
         const d = byDate.get(inv.date);
         if (d) {
-          d.sold += this.invoiceTotal(inv);
+          d.sold += this.invoiceTotal(inv) - this.invoiceRoundOff(inv);
           d.invoices += 1;
         }
       }
@@ -2303,7 +2442,7 @@ function shopApp() {
       const tracked = this.serialTracked(this.productByName(name));
       const existing = !tracked && this.cart.find((l) => l.item_name === name && !l.serial_no);
       if (existing) {
-        existing.quantity = (Number(existing.quantity) || 0) + Number(quantity);
+        existing.quantity = round2((Number(existing.quantity) || 0) + Number(quantity));
         return existing;
       }
       this.cartSeq += 1;
@@ -2312,6 +2451,7 @@ function shopApp() {
         item_name: name,
         quantity: tracked ? 1 : Number(quantity),
         unit_price,
+        unit: this.unitOfName(name),
         serial_no: '',
         tracked,
         serial_override: false,
@@ -2393,8 +2533,11 @@ function shopApp() {
         this.notify('Enter or scan an item first.', 'error');
         return false;
       }
-      if (!Number.isInteger(qty) || qty < 1) {
-        this.notify('Quantity must be a whole number, one or more.', 'error');
+      const unit = this.unitOfName(name);
+      if (validQty(qty, unit) === null) {
+        this.notify(unit === 'meter'
+          ? 'Meters must be more than zero, at most two decimals (e.g. 2.5).'
+          : 'Quantity must be a whole number, one or more.', 'error');
         return false;
       }
       if (this.line.unit_price === '' || !Number.isFinite(price) || price < 0) {
@@ -2498,10 +2641,20 @@ function shopApp() {
       for (const [i, l] of this.cart.entries()) {
         const qty = Number(l.quantity);
         const price = Number(l.unit_price);
-        if (!Number.isInteger(qty) || qty < 1 || l.unit_price === '' || !Number.isFinite(price) || price < 0) {
+        if (validQty(qty, l.unit) === null || l.unit_price === '' || !Number.isFinite(price) || price < 0) {
           this.notify(`Check item ${i + 1} (${l.item_name}): quantity and price.`, 'error');
           return;
         }
+      }
+      if (this.sale.discount !== '' && !(Number(this.sale.discount) >= 0 && Number(this.sale.discount) <= this.cartTotal + PAID_EPSILON)) {
+        this.notify('Discount must be zero or more, and no more than the total.', 'error');
+        return;
+      }
+      if (this.saleReceived > this.salePayable + this.salePreviousDue + PAID_EPSILON) {
+        this.notify(this.salePreviousDue > 0
+          ? `Received cannot be more than ${this.fmt(this.salePayable + this.salePreviousDue)} — this sale plus the previous due.`
+          : `Paid cannot be more than the total, ${this.fmt(this.salePayable)}.`, 'error');
+        return;
       }
 
       this.savingSale = true;
@@ -2520,12 +2673,14 @@ function shopApp() {
             // Blank means paid in full, so send the total rather than null —
             // null would record the invoice as untracked and print no label,
             // and a cash sale deserves its PAID receipt.
-            paid_amount: this.sale.paid_amount === '' ? this.cartTotal : Number(this.sale.paid_amount),
+            paid_amount: this.saleReceived,
+            discount: this.saleRoundOff,
             payment_method: this.sale.payment_method,
             items: this.cart.map((l) => ({
               item_name: l.item_name,
               quantity: Number(l.quantity),
-              total_price: this.lineTotal(l),
+              total_price: round2(this.lineTotal(l)),
+              unit: unitId(l.unit),
               // Blank for the goods that carry no serial, which is most of them.
               serial_no: String(l.serial_no || '').trim(),
               serial_override: Boolean(l.serial_override),
@@ -2568,7 +2723,7 @@ function shopApp() {
         const res = await fetch('/api/dealer', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(this.dealer),
+          body: JSON.stringify({ ...this.dealer, unit: this.dealerUnit }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Could not save the purchase.');
@@ -2871,6 +3026,11 @@ function shopApp() {
       return this.productByName(this.dealer.item_name);
     },
 
+    // A restock keeps the product's own unit; only a new product picks one.
+    get dealerUnit() {
+      return this.dealerProduct ? unitId(this.dealerProduct.unit) : unitId(this.dealer.unit);
+    },
+
     // Serial mode: the product is already tracked, or this batch has begun
     // scanning serials into it — scanning into the serial box is the switch.
     get dealerTracked() {
@@ -3126,14 +3286,27 @@ function shopApp() {
        kept paid — the net total, refunds already taken off — because that is
        what the shopkeeper is looking at on the receipt. `refunded` is added back
        on save, since paid_amount stores everything handed over. */
+    /* Staff get the payment dialog: what was paid, collected upward only.
+       The admin gets the same dialog as the receipt editor — customer, method,
+       comment, round-off and paid — saved through PUT /api/invoices/:id.
+
+       `base` is the lines less returns, before the round-off, so the total
+       follows the discount as it is typed. */
     openPayment(inv) {
       const cents = (n) => Math.round(n * 100) / 100;
+      const discount = Number(inv.discount || 0);
       this.paymentDraft = {
         id: inv.id,
-        customer_name: inv.customer_name,
-        total: cents(this.invoiceNet(inv)),
+        edit: this.isAdmin,
+        customer_name: inv.customer_name || '',
+        customer_contact: inv.customer_contact || '',
+        comment: inv.comment || '',
+        payment_method: inv.payment_method || 'cash',
+        base: cents(this.invoiceTotal(inv) - this.invoiceReturned(inv)),
+        discount: discount > 0 ? cents(discount) : '',
         refunded: this.invoiceRefunded(inv),
         paid_amount: cents(this.invoicePaid(inv)),
+        minPaid: cents(this.invoicePaid(inv)),
       };
       this.paymentError = '';
       this.isPaymentOpen = true;
@@ -3144,31 +3317,66 @@ function shopApp() {
       this.paymentError = '';
     },
 
+    get paymentDiscount() {
+      const d = Number(this.paymentDraft.discount);
+      return this.paymentDraft.discount === '' || !Number.isFinite(d) || d < 0 ? 0 : d;
+    },
+
+    get paymentTotal() {
+      return Math.max(0, round2(Number(this.paymentDraft.base || 0) - this.paymentDiscount));
+    },
+
     // The one-click settle: the customer came back and cleared the balance.
     markFullyPaid() {
-      this.paymentDraft.paid_amount = this.paymentDraft.total;
+      this.paymentDraft.paid_amount = this.paymentTotal;
+    },
+
+    /* The customer paid what they paid, and the shop lets the rest go: the
+       remaining due becomes round-off, and the receipt reads settled. */
+    forgiveRest() {
+      const due = this.paymentDue;
+      if (due <= PAID_EPSILON) return;
+      this.paymentDraft.discount = round2(this.paymentDiscount + due);
     },
 
     get paymentDue() {
       const paid = Number(this.paymentDraft.paid_amount);
-      if (!Number.isFinite(paid)) return this.paymentDraft.total;
-      return Math.max(0, this.paymentDraft.total - paid);
+      if (!Number.isFinite(paid)) return this.paymentTotal;
+      return Math.max(0, round2(this.paymentTotal - paid));
     },
 
     async submitPayment() {
       if (this.savingPayment) return;
+      const d = this.paymentDraft;
+      // Said here rather than as a 403 after the trip: staff collect, they
+      // do not take back.
+      if (!d.edit && Number(d.paid_amount) < d.minPaid - PAID_EPSILON) {
+        this.paymentError = 'Only the admin can reduce a payment.';
+        return;
+      }
       this.savingPayment = true;
       this.paymentError = '';
+      // paid_amount stores everything handed over, refunds included.
+      const paidIn = String(d.paid_amount).trim() === '' ? '' : Number(d.paid_amount) + Number(d.refunded || 0);
       try {
-        const res = await fetch(`/api/invoices/${this.paymentDraft.id}/payment`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            paid_amount: String(this.paymentDraft.paid_amount).trim() === ''
-              ? ''
-              : Number(this.paymentDraft.paid_amount) + Number(this.paymentDraft.refunded || 0),
-          }),
-        });
+        const res = d.edit
+          ? await fetch(`/api/invoices/${d.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              customer_name: d.customer_name,
+              customer_contact: d.customer_contact,
+              comment: d.comment,
+              payment_method: d.payment_method,
+              discount: this.paymentDiscount,
+              paid_amount: paidIn,
+            }),
+          })
+          : await fetch(`/api/invoices/${d.id}/payment`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paid_amount: paidIn }),
+          });
         // Left open on failure so the reason is readable where it was typed.
         if (!res.ok) {
           this.paymentError = await this.describeFailure(res, 'Could not save the payment.');
@@ -3187,7 +3395,7 @@ function shopApp() {
         }
 
         this.closePayment();
-        this.notify('Payment updated.');
+        this.notify(d.edit ? 'Money receipt updated.' : 'Payment updated.');
       } catch (err) {
         this.paymentError = 'Connection error. Try again.';
       } finally {
@@ -3209,7 +3417,9 @@ function shopApp() {
           line,
           // Not what is in the shop on an open warranty claim — the server
           // refuses that until the claim is settled.
-          left: this.lineWithCustomer(line),
+          left: round2(this.lineWithCustomer(line)),
+          // A single piece is a tick box; anything else, meters included, a figure.
+          tick: round2(this.lineWithCustomer(line)) === 1 && unitId(line.unit) === 'pcs',
           qty: saleId != null && Number(line.id) === Number(saleId) ? 1 : 0,
           condition: 'good',
         }))
@@ -3241,7 +3451,7 @@ function shopApp() {
       const qty = Number(row.qty) || 0;
       if (qty <= 0) return 0;
       const price = Number(row.line.total_price || 0);
-      const amount = qty >= this.lineLeft(row.line)
+      const amount = qty >= this.lineLeft(row.line) - 1e-9
         ? price - Number(row.line.returned_amount || 0)
         : (price * qty) / Number(row.line.quantity || 1);
       return Math.round(amount * 100) / 100;
@@ -3251,8 +3461,11 @@ function shopApp() {
       return (this.returnDraft?.rows || []).reduce((sum, r) => sum + this.returnRowAmount(r), 0);
     },
 
+    // Clamped like invoiceNet(): with everything back, the round-off is void.
     get returnNewNet() {
-      return this.returnDraft ? this.invoiceNet(this.returnDraft.invoice) - this.returnAmount : 0;
+      if (!this.returnDraft) return 0;
+      const inv = this.returnDraft.invoice;
+      return Math.max(0, this.invoiceTotal(inv) - this.invoiceReturned(inv) - Number(inv.discount || 0) - this.returnAmount);
     },
 
     get returnRefund() {
@@ -3294,9 +3507,11 @@ function shopApp() {
         dlg.error = 'Tick or enter what came back.';
         return;
       }
-      const bad = chosen.find((r) => !Number.isInteger(Number(r.qty)) || Number(r.qty) > r.left);
+      const bad = chosen.find((r) => validQty(r.qty, r.line.unit) === null || Number(r.qty) > r.left + 1e-9);
       if (bad) {
-        dlg.error = `${bad.line.item_name}: return a whole number, at most ${bad.left}.`;
+        dlg.error = unitId(bad.line.unit) === 'meter'
+          ? `${bad.line.item_name}: return at most ${bad.left} m, to two decimals.`
+          : `${bad.line.item_name}: return a whole number, at most ${bad.left}.`;
         return;
       }
       dlg.saving = true;
@@ -3941,6 +4156,7 @@ function shopApp() {
               cost_price: this.product.cost_price,
               selling_price: this.product.selling_price,
               warranty_months: this.product.warranty_months,
+              unit: unitId(this.product.unit),
               // Serials scanned before the product existed, registered with it.
               ...(editing ? {} : { serials: this.productSerials.map((u) => u.serial_no) }),
             }),

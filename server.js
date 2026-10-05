@@ -299,6 +299,32 @@ async function migrate() {
      existed, and prints no name. */
   await addColumnIfMissing('invoices', 'sold_by', 'TEXT');
 
+  /* How a product is counted: 'pcs' (whole pieces) or 'meter' (cable and the
+     like, sold in fractions — 2.5 m). The quantity columns keep their INTEGER
+     affinity: SQLite stores 2.5 in them as a REAL rather than truncating it, so
+     no table has to be rebuilt. sales.unit is a snapshot like warranty_months;
+     NULL is a line from before units and reads as pieces. */
+  await addColumnIfMissing('inventory', 'unit', "TEXT NOT NULL DEFAULT 'pcs'");
+  await addColumnIfMissing('sales', 'unit', 'TEXT');
+
+  /* A round-off taken off the whole receipt — 1010 becomes 1000. Separate from
+     the per-line "sold below list price" discount, which lives in the lines'
+     own prices. Net = lines − returns − discount. See invoiceMoney(). */
+  await addColumnIfMissing('invoices', 'discount', 'REAL NOT NULL DEFAULT 0');
+
+  // Who last corrected the receipt through PUT /api/invoices/:id, and when.
+  // Shown in the history, never printed.
+  await addColumnIfMissing('invoices', 'edited_by', 'TEXT');
+  await addColumnIfMissing('invoices', 'edited_at', 'TEXT');
+
+  /* What the customer already owed on earlier receipts when this one was
+     issued, and how much of the money handed over at this sale went to those
+     older receipts. Both are snapshots, so a reprint matches the paper in the
+     customer's hand. previous_due NULL is a receipt from before this existed
+     and prints the old Paid / Due lines. */
+  await addColumnIfMissing('invoices', 'previous_due', 'REAL');
+  await addColumnIfMissing('invoices', 'applied_to_previous', 'REAL NOT NULL DEFAULT 0');
+
   await linkLegacySales();
 }
 
@@ -382,7 +408,7 @@ async function linkLegacySales() {
    need, since each awaited statement completes before the next is issued. */
 /* Bump whenever setup() or migrate() gains a step. A database already at this
    version skips the whole migration on boot. */
-const SCHEMA_VERSION = '2026-09-30-sold-by';
+const SCHEMA_VERSION = '2026-10-06-units-discount-balance';
 
 // One read instead of ~20 statements, several of which take a write lock even
 // when they end up changing nothing. On Vercel every cold start runs this, each
@@ -423,7 +449,8 @@ async function setup() {
     track_serial INTEGER NOT NULL DEFAULT 0,
     pre_serial_quantity INTEGER,
     defective_quantity INTEGER NOT NULL DEFAULT 0,
-    supplier_quantity INTEGER NOT NULL DEFAULT 0
+    supplier_quantity INTEGER NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT 'pcs'
   )`);
 
   // `sale_time` rather than `time`, because TIME is an SQL function name.
@@ -446,7 +473,8 @@ async function setup() {
     invoice_id INTEGER,
     line_no INTEGER,
     serial_no TEXT,
-    returned_date TEXT
+    returned_date TEXT,
+    unit TEXT
   )`);
 
   // One row per money receipt. Its lines live in `sales`, joined by
@@ -464,7 +492,12 @@ async function setup() {
     comment TEXT,
     paid_amount REAL,
     payment_method TEXT,
-    sold_by TEXT
+    sold_by TEXT,
+    discount REAL NOT NULL DEFAULT 0,
+    edited_by TEXT,
+    edited_at TEXT,
+    previous_due REAL,
+    applied_to_previous REAL NOT NULL DEFAULT 0
   )`);
 
   await run(`CREATE TABLE IF NOT EXISTS dealer_purchases (
@@ -1017,6 +1050,28 @@ function validatePaymentMethod(value) {
   return { payment_method: method };
 }
 
+/* How a product is counted. Must match UNITS in app.js. A piece is always
+   whole; a meter of cable can be cut at 2.5 or 0.75, to the centimetre. */
+const UNITS = ['pcs', 'meter'];
+
+function normalizeUnit(value) {
+  return value === 'meter' ? 'meter' : 'pcs';
+}
+
+// A valid quantity of `unit`, or null. Meters are kept to two decimals so a
+// float like 0.1 + 0.2 never reaches the stock count.
+function validQty(value, unit) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (unit !== 'meter') return Number.isInteger(n) ? n : null;
+  const r = Math.round(n * 100) / 100;
+  return Math.abs(r - n) < 1e-9 ? r : null;
+}
+
+function qtyRule(unit) {
+  return unit === 'meter' ? 'meters must be more than zero, at most two decimals' : 'quantity must be a whole number, one or more';
+}
+
 /* ---------------------------------------------------------------------------
    Shared plumbing for the routes that write several rows at once.
    --------------------------------------------------------------------------- */
@@ -1204,19 +1259,23 @@ async function upsertPurchasedProduct(q, body, addQty) {
     throw new Refusal(400, 'Warranty must be a whole number of months between 0 and 600.');
   }
 
+  // A restock keeps the product's unit unless the form names one.
+  const unit = body.unit === undefined || body.unit === '' ? normalizeUnit(existing?.unit) : normalizeUnit(body.unit);
+  if (addQty && validQty(addQty, unit) === null) throw new Refusal(400, `Quantity: ${qtyRule(unit)}.`);
+
   if (existing) {
     await q.run(
       `UPDATE inventory
           SET quantity = quantity + ?, cost_price = ?, selling_price = ?,
-              warranty_months = ?, barcode = COALESCE(?, barcode)
+              warranty_months = ?, barcode = COALESCE(?, barcode), unit = ?
         WHERE id = ?`,
-      [addQty, cost, sell, warranty, code, existing.id]
+      [addQty, cost, sell, warranty, code, unit, existing.id]
     );
   } else {
     await q.run(
-      `INSERT INTO inventory (item_name, quantity, cost_price, selling_price, barcode, warranty_months)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [name, addQty, cost, sell, code, warranty]
+      `INSERT INTO inventory (item_name, quantity, cost_price, selling_price, barcode, warranty_months, unit)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [name, addQty, cost, sell, code, warranty, unit]
     );
   }
   return { product: await q.get(`SELECT * FROM inventory WHERE item_name = ?`, [name]), cost };
@@ -1256,8 +1315,10 @@ app.post('/api/sales', async (req, res) => {
     const total_price = Number(raw?.total_price);
     const n = i + 1;
     if (!item_name) return res.status(400).json({ error: `Item ${n}: name is required.` });
-    if (!Number.isInteger(quantity) || quantity < 1) {
-      return res.status(400).json({ error: `Item ${n} (${item_name}): quantity must be a whole number, one or more.` });
+    // Only "a positive number" here: whether 2.5 is allowed depends on the
+    // product's unit, which is checked in the transaction once it is known.
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return res.status(400).json({ error: `Item ${n} (${item_name}): quantity must be more than zero.` });
     }
     if (!Number.isFinite(total_price) || total_price < 0) {
       return res.status(400).json({ error: `Item ${n} (${item_name}): amount must be a number, zero or more.` });
@@ -1276,7 +1337,11 @@ app.post('/api/sales', async (req, res) => {
     // a unit the shop had before it started scanning serials in.
     const serial_override = raw?.serial_override === true;
 
-    items.push({ item_name, quantity, total_price, serial_no, serial_override });
+    // Only used for an item that is not in inventory; a known product's own
+    // unit always wins.
+    const unit = normalizeUnit(raw?.unit);
+
+    items.push({ item_name, quantity, total_price, serial_no, serial_override, unit });
   }
 
   /* One serial identifies one piece, so the same one twice on a single invoice
@@ -1300,8 +1365,22 @@ app.post('/api/sales', async (req, res) => {
   // Validated against the invoice's own total, which is only known now that
   // every line has been parsed.
   const invoiceTotal = items.reduce((sum, item) => sum + item.total_price, 0);
-  const paid = validatePaidAmount(body.paid_amount, invoiceTotal);
-  if (paid.error) return res.status(400).json({ error: paid.error });
+
+  // The round-off, 1010 → 1000. Anyone at the till may give it.
+  const discount = body.discount == null || String(body.discount).trim() === '' ? 0 : Number(body.discount);
+  if (!Number.isFinite(discount) || discount < 0) {
+    return res.status(400).json({ error: 'Discount must be a number, zero or more.' });
+  }
+  if (discount > invoiceTotal + PAID_EPSILON) {
+    return res.status(400).json({ error: `Discount cannot be more than the invoice total (${invoiceTotal.toFixed(2)}).` });
+  }
+  const payable = round2(invoiceTotal - discount);
+
+  /* What the customer handed over. It may be more than this invoice when they
+     are also paying off earlier dues — that ceiling is only known inside the
+     transaction, so here it is checked as a number and nothing more. */
+  const received = validatePaidAmount(body.paid_amount, Infinity);
+  if (received.error) return res.status(400).json({ error: received.error });
   const method = validatePaymentMethod(body.payment_method);
   if (method.error) return res.status(400).json({ error: method.error });
 
@@ -1312,12 +1391,44 @@ app.post('/api/sales', async (req, res) => {
   try {
     const invoiceId = await inWriteTx(async (q) => {
       const time = nowLocalTime();
+
+      /* The customer's earlier receipts still owing money, read before this
+         one exists. Their total is printed as Previous Balance. Money handed
+         over beyond this invoice pays them off, oldest first. */
+      const owing = (await customerInvoices(q, customer_name, customer_contact)).filter((m) => m.due > PAID_EPSILON);
+      const previousDue = round2(owing.reduce((sum, m) => sum + m.due, 0));
+
+      let paidHere = received.paid_amount;
+      let extra = 0;
+      if (paidHere !== null) {
+        if (paidHere > payable + previousDue + PAID_EPSILON) {
+          throw new Refusal(
+            400,
+            previousDue > 0
+              ? `Received cannot be more than this invoice (${payable.toFixed(2)}) plus the previous due (${previousDue.toFixed(2)}).`
+              : `Paid amount cannot be more than the invoice total (${payable.toFixed(2)}).`
+          );
+        }
+        extra = Math.max(0, round2(paidHere - payable));
+        paidHere = Math.min(paidHere, payable);
+      }
+
+      let applied = 0;
+      for (const m of owing) {
+        if (extra - applied <= PAID_EPSILON) break;
+        const give = round2(Math.min(m.due, extra - applied));
+        await q.run(`UPDATE invoices SET paid_amount = ? WHERE id = ?`, [round2(m.paidIn + give), m.id]);
+        applied = round2(applied + give);
+      }
+
       const invoice = await q.run(
-        `INSERT INTO invoices (customer_name, customer_contact, date, sale_time, comment, paid_amount, payment_method, sold_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO invoices (customer_name, customer_contact, date, sale_time, comment, paid_amount, payment_method, sold_by,
+                               discount, previous_due, applied_to_previous)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         // sold_by comes from the session, never the request: the till cannot
         // put someone else's name on a sale.
-        [customer_name, customer_contact, date, time, comment, paid.paid_amount, method.payment_method, displayName(req.user)]
+        [customer_name, customer_contact, date, time, comment, paidHere, method.payment_method, displayName(req.user),
+          round2(discount), previousDue, applied]
       );
       const invoiceId = invoice.lastID;
 
@@ -1334,11 +1445,16 @@ app.post('/api/sales', async (req, res) => {
            excludes the line from profit, which is right — the shop cannot cost, or
            honour a warranty on, something it has no record of. */
         const product = await q.get(
-          `SELECT id, item_name, cost_price, selling_price, warranty_months, track_serial
+          `SELECT id, item_name, cost_price, selling_price, warranty_months, track_serial, unit
              FROM inventory WHERE item_name = ?`,
           [item.item_name]
         );
         const tracked = Boolean(product && Number(product.track_serial) === 1);
+
+        const unit = product ? normalizeUnit(product.unit) : item.unit;
+        const quantity = validQty(item.quantity, unit);
+        if (quantity === null) throw new Refusal(400, `Item ${n} (${item.item_name}): ${qtyRule(unit)}.`);
+        item.quantity = quantity;
 
         /* A serial-tracked unit has to be one the shop actually holds. Checked
            before the line is written so the refusal can say exactly why.
@@ -1373,8 +1489,8 @@ app.post('/api/sales', async (req, res) => {
         const line = await q.run(
           `INSERT INTO sales (invoice_id, line_no, customer_name, customer_contact, item_name,
                               quantity, total_price, date, sale_time,
-                              warranty_months, cost_price, list_price, serial_no)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                              warranty_months, cost_price, list_price, serial_no, unit)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             invoiceId,
             n,
@@ -1389,6 +1505,7 @@ app.post('/api/sales', async (req, res) => {
             product ? product.cost_price : null,
             product ? product.selling_price : null,
             serialCode,
+            unit,
           ]
         );
 
@@ -1444,8 +1561,10 @@ app.post('/api/dealer', requireAdmin, async (req, res) => {
 
   if (!dealer) return res.status(400).json({ error: 'Dealer name is required.' });
   if (!String(body.item_name ?? '').trim()) return res.status(400).json({ error: 'Item name is required.' });
-  if (!Number.isInteger(qty) || qty <= 0) {
-    return res.status(400).json({ error: 'Quantity must be a whole number, one or more.' });
+  // Whole or fractional depends on the product's unit — checked against it in
+  // upsertPurchasedProduct().
+  if (!Number.isFinite(qty) || qty <= 0) {
+    return res.status(400).json({ error: 'Quantity must be more than zero.' });
   }
 
   // A page cached from before per-unit prices still posts total_cost and no
@@ -1519,6 +1638,11 @@ app.post('/api/serials/receive', requireAdmin, async (req, res) => {
       } else {
         product = await q.get(`SELECT * FROM inventory WHERE id = ?`, [productId]);
         if (!product) throw new Refusal(404, 'That product no longer exists.');
+      }
+      // A cut length of cable has no serial, and a tracked product's stock is
+      // a count of units — the two cannot both be true.
+      if (normalizeUnit(product.unit) === 'meter') {
+        throw new Refusal(409, `${product.item_name} is sold by the meter and cannot carry serials.`);
       }
 
       const clash = serialClash(await findSerial(q, code), product, { forSale: false });
@@ -1720,20 +1844,48 @@ const round2 = (n) => Math.round(n * 100) / 100;
 
    A NULL paid_amount is an invoice from before dues were tracked, read as
    settled in full — the same reading the client gives it. */
-async function invoiceMoney(q, invoiceId) {
-  const inv = await q.get(`SELECT paid_amount FROM invoices WHERE id = ?`, [invoiceId]);
-  if (!inv) return null;
-  const sold = await q.get(`SELECT COALESCE(SUM(total_price), 0) AS n FROM sales WHERE invoice_id = ?`, [invoiceId]);
-  const back = await q.get(
-    `SELECT COALESCE(SUM(rl.amount), 0) AS n FROM return_lines rl JOIN returns r ON r.id = rl.return_id WHERE r.invoice_id = ?`,
-    [invoiceId]
-  );
-  const refunds = await q.get(`SELECT COALESCE(SUM(refund_amount), 0) AS n FROM returns WHERE invoice_id = ?`, [invoiceId]);
+// Everything invoiceMoney() needs, one row per invoice, in a single query so a
+// customer with a long history costs one round trip, not four per receipt.
+const MONEY_SQL = `
+  SELECT v.id, v.paid_amount, v.discount,
+         (SELECT COALESCE(SUM(total_price), 0) FROM sales WHERE invoice_id = v.id) AS gross,
+         (SELECT COALESCE(SUM(rl.amount), 0) FROM return_lines rl JOIN returns r ON r.id = rl.return_id
+           WHERE r.invoice_id = v.id) AS back,
+         (SELECT COALESCE(SUM(refund_amount), 0) FROM returns WHERE invoice_id = v.id) AS refunded
+    FROM invoices v`;
 
-  const gross = Number(sold.n);
-  const refunded = Number(refunds.n);
-  const paidIn = inv.paid_amount == null ? gross : Number(inv.paid_amount);
-  return { gross, refunded, net: gross - Number(back.n), paid: paidIn - refunded };
+/* The money on one MONEY_SQL row. net is clamped at zero: a fully returned
+   invoice with a round-off must not owe the customer the round-off as well.
+   paidIn is everything handed over, refunds not taken off — what paid_amount
+   stores. */
+function moneyOf(row) {
+  const gross = Number(row.gross);
+  const back = Number(row.back);
+  const discount = Number(row.discount || 0);
+  const refunded = Number(row.refunded);
+  const net = Math.max(0, gross - back - discount);
+  const paidIn = row.paid_amount == null ? gross - discount : Number(row.paid_amount);
+  const paid = paidIn - refunded;
+  return { id: Number(row.id), gross, back, discount, refunded, net, paidIn, paid, due: Math.max(0, round2(net - paid)) };
+}
+
+async function invoiceMoney(q, invoiceId) {
+  const row = await q.get(`${MONEY_SQL} WHERE v.id = ?`, [invoiceId]);
+  return row ? moneyOf(row) : null;
+}
+
+/* The earlier receipts of the customer named on a sale, oldest first, with
+   their money. Identity mirrors the Customers page (app.js, get customers): a
+   phone number is the customer whatever the name was typed as; without one,
+   the name is, among receipts that have no phone either. A walk-in with
+   neither has no history. */
+async function customerInvoices(q, name, contact) {
+  if (contact) return (await q.all(`${MONEY_SQL} WHERE v.customer_contact = ? ORDER BY v.id`, [contact])).map(moneyOf);
+  if (!name) return [];
+  return (await q.all(
+    `${MONEY_SQL} WHERE (v.customer_contact IS NULL OR v.customer_contact = '') AND v.customer_name = ? COLLATE NOCASE ORDER BY v.id`,
+    [name]
+  )).map(moneyOf);
 }
 
 /* Records one return against `invoiceId`, inside the caller's transaction.
@@ -1760,7 +1912,6 @@ async function recordReturn(q, invoiceId, rawLines, reason) {
   const seen = new Set();
   for (const raw of rawLines) {
     const saleId = Number(raw?.sale_id);
-    const quantity = Number(raw?.quantity);
     const condition = raw?.condition === 'faulty' ? 'faulty' : raw?.condition === 'good' ? 'good' : null;
     if (!Number.isInteger(saleId) || seen.has(saleId)) throw new Refusal(400, 'Each item can be listed once per return.');
     seen.add(saleId);
@@ -1773,10 +1924,11 @@ async function recordReturn(q, invoiceId, rawLines, reason) {
       `SELECT COALESCE(SUM(quantity), 0) AS qty, COALESCE(SUM(amount), 0) AS amount FROM return_lines WHERE sale_id = ?`,
       [saleId]
     );
-    const left = Number(line.quantity) - Number(prev.qty);
-    if (!Number.isInteger(quantity) || quantity < 1) {
-      throw new Refusal(400, `${line.item_name}: quantity must be a whole number, one or more.`);
-    }
+    // Rounded, since a meter line returned in pieces leaves float dust behind.
+    const left = round2(Number(line.quantity) - Number(prev.qty));
+    const unit = normalizeUnit(line.unit);
+    const quantity = validQty(raw?.quantity, unit);
+    if (quantity === null) throw new Refusal(400, `${line.item_name}: ${qtyRule(unit)}.`);
     // Units already in the shop on an open warranty claim are not the
     // customer's to return; the claim has to be settled first.
     const held = await openClaimQty(q, saleId);
@@ -1804,7 +1956,8 @@ async function recordReturn(q, invoiceId, rawLines, reason) {
   // The customer gets back exactly what they have paid beyond the new total:
   // a fully paid invoice refunds the returned amount, one with money still
   // due has the due reduced first.
-  const newNet = money.net - lines.reduce((sum, l) => sum + l.amount, 0);
+  // Clamped like moneyOf(): with everything back, the round-off is void too.
+  const newNet = Math.max(0, money.gross - money.back - money.discount - lines.reduce((sum, l) => sum + l.amount, 0));
   const over = round2(money.paid - newNet);
   const refund = over > PAID_EPSILON ? over : 0;
 
@@ -2250,9 +2403,12 @@ function validateItem(body = {}) {
   if (!item_name) return { error: 'Item name is required.' };
   if (item_name.length > 120) return { error: 'Item name is too long (max 120 characters).' };
 
+  const unit = normalizeUnit(body.unit);
+  // Zero stock is a valid product, so validQty (which wants > 0) only judges
+  // a non-zero count.
   const quantity = Number(body.quantity);
-  if (!Number.isInteger(quantity) || quantity < 0) {
-    return { error: 'Quantity must be a whole number, zero or more.' };
+  if (!(quantity === 0 || validQty(quantity, unit) !== null)) {
+    return { error: unit === 'meter' ? 'Meters in stock must be zero or more, at most two decimals.' : 'Quantity must be a whole number, zero or more.' };
   }
 
   const cost_price = Number(body.cost_price);
@@ -2278,7 +2434,7 @@ function validateItem(body = {}) {
     return { error: 'Barcode must be 4–64 letters, digits or hyphens, with no spaces.' };
   }
 
-  return { item: { item_name, quantity, cost_price, selling_price, warranty_months, barcode } };
+  return { item: { item_name, quantity: Math.round(quantity * 100) / 100, cost_price, selling_price, warranty_months, barcode, unit } };
 }
 
 // Name and barcode must each identify one product. Name uniqueness is checked
@@ -2325,17 +2481,21 @@ app.post('/api/inventory', requireAdmin, async (req, res) => {
     seen.add(code.toLowerCase());
   }
 
+  if (serials.length && item.unit === 'meter') {
+    return res.status(400).json({ error: 'A product sold by the meter cannot carry serials.' });
+  }
+
   try {
     const conflict = await findConflict(item);
     if (conflict) return res.status(409).json({ error: conflict });
 
     const id = await inWriteTx(async (q) => {
       const result = await q.run(
-        `INSERT INTO inventory (item_name, quantity, cost_price, selling_price, barcode, warranty_months)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO inventory (item_name, quantity, cost_price, selling_price, barcode, warranty_months, unit)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         // 0 rather than the typed count when serials come along: that is the
         // count an undo of every serial would fall back to.
-        [item.item_name, serials.length ? 0 : item.quantity, item.cost_price, item.selling_price, item.barcode, item.warranty_months]
+        [item.item_name, serials.length ? 0 : item.quantity, item.cost_price, item.selling_price, item.barcode, item.warranty_months, item.unit]
       );
       const product = { id: result.lastID, item_name: item.item_name };
       for (const code of serials) {
@@ -2375,9 +2535,15 @@ app.put('/api/inventory/:id', requireAdmin, async (req, res) => {
     const conflict = await findConflict(item, id);
     if (conflict) return res.status(409).json({ error: conflict });
 
+    // A page cached from before units sends none; keep what the product has.
+    if (req.body?.unit === undefined) item.unit = normalizeUnit(existing.unit);
+
     // A serial-tracked product's stock is its count of available serials, so
     // a typed quantity is ignored rather than allowed to disagree with them.
-    if (Number(existing.track_serial) === 1) item.quantity = Number(existing.quantity);
+    if (Number(existing.track_serial) === 1) {
+      item.quantity = Number(existing.quantity);
+      if (item.unit === 'meter') return res.status(409).json({ error: 'This product has serials, so it is counted in pieces.' });
+    }
 
     const oldName = existing.item_name;
     const renamed = oldName !== item.item_name;
@@ -2388,11 +2554,12 @@ app.put('/api/inventory/:id', requireAdmin, async (req, res) => {
       item.selling_price,
       item.barcode,
       item.warranty_months,
+      item.unit,
       id,
     ];
     const updateItem = `UPDATE inventory
          SET item_name = ?, quantity = ?, cost_price = ?, selling_price = ?,
-             barcode = ?, warranty_months = ?
+             barcode = ?, warranty_months = ?, unit = ?
        WHERE id = ?`;
 
     if (!renamed) {
@@ -2579,9 +2746,11 @@ app.delete('/api/expenses/:id', requireAdmin, async (req, res) => {
    issued, not a new document, so the Invoice No. the customer holds keeps
    meaning what it meant.
 
-   Nothing else on an invoice is editable here: changing the customer, the date
-   or the lines after a receipt has been handed over is a different decision,
-   and this route deliberately cannot make it.
+   Staff use this to collect a due, so for them it only goes up: lowering what
+   was recorded as paid is a correction, and corrections are the admin's — see
+   PUT /api/invoices/:id below, which can also change the customer, the
+   round-off and the method. The lines are never editable; a wrong item comes
+   off through a return, which keeps stock and serials right.
    =========================================================================== */
 app.put('/api/invoices/:id/payment', async (req, res) => {
   const id = Number(req.params.id);
@@ -2600,12 +2769,70 @@ app.put('/api/invoices/:id/payment', async (req, res) => {
     const ceiling = money.net + money.refunded;
     const { error, paid_amount } = validatePaidAmount(req.body?.paid_amount, ceiling);
     if (error) return res.status(400).json({ error });
+    if (req.user.role !== 'admin' && (paid_amount === null || paid_amount < money.paidIn - PAID_EPSILON)) {
+      return res.status(403).json({ error: 'Only the admin can reduce a payment.' });
+    }
 
     // payment_method is not touched: it is chosen once, at the sale.
     await run(`UPDATE invoices SET paid_amount = ? WHERE id = ?`, [paid_amount, id]);
     res.json({ id, paid_amount });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+/* API: Edit a money receipt — admin only.
+
+   Body: { customer_name, customer_contact, discount, paid_amount,
+           payment_method, comment }, all of them sent, as the edit dialog shows
+   them. For the customer who comes back weeks later and pays a little less
+   than they owe: the admin records what was paid and takes the rest off as a
+   discount, and the receipt reads settled.
+
+   paid_amount is on the same footing as the payment route: everything handed
+   over, refunds not taken off. previous_due and applied_to_previous are left
+   alone — they describe the day of the sale, and the paper from that day. */
+app.put('/api/invoices/:id', requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid invoice.' });
+  const body = req.body || {};
+
+  const customer_name = String(body.customer_name ?? '').trim();
+  const customer_contact = String(body.customer_contact ?? '').trim() || null;
+  const comment = String(body.comment ?? '').trim() || null;
+  const discount = String(body.discount ?? '').trim() === '' ? 0 : Number(body.discount);
+  if (!Number.isFinite(discount) || discount < 0) return res.status(400).json({ error: 'Discount must be a number, zero or more.' });
+  const method = validatePaymentMethod(body.payment_method);
+  if (method.error) return res.status(400).json({ error: method.error });
+
+  try {
+    const out = await inWriteTx(async (q) => {
+      const money = await invoiceMoney(q, id);
+      if (!money) throw new Refusal(404, 'That invoice no longer exists.');
+
+      const afterReturns = money.gross - money.back;
+      if (discount > afterReturns + PAID_EPSILON) {
+        throw new Refusal(400, `Discount cannot be more than the invoice total (${afterReturns.toFixed(2)}).`);
+      }
+      const net = Math.max(0, afterReturns - discount);
+      const paid = validatePaidAmount(body.paid_amount, net + money.refunded);
+      if (paid.error) throw new Refusal(400, paid.error);
+
+      await q.run(
+        `UPDATE invoices
+            SET customer_name = ?, customer_contact = ?, comment = ?, discount = ?, paid_amount = ?,
+                payment_method = ?, edited_by = ?, edited_at = ?
+          WHERE id = ?`,
+        [customer_name, customer_contact, comment, round2(discount), paid.paid_amount, method.payment_method,
+          displayName(req.user), `${todayLocal()} ${nowLocalTime()}`, id]
+      );
+      // The lines repeat the customer; keep them saying the same thing.
+      await q.run(`UPDATE sales SET customer_name = ?, customer_contact = ? WHERE invoice_id = ?`, [customer_name, customer_contact, id]);
+      return { id, paid_amount: paid.paid_amount, discount: round2(discount) };
+    });
+    res.json(out);
+  } catch (err) {
+    sendFailure(res, err);
   }
 });
 
