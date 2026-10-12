@@ -326,7 +326,7 @@
                                 <a href="#/reports/sales" class="nb-kpi-card is-green">
                                     <span class="nb-kpi-card-label">Today's Sales</span>
                                     <strong class="nb-kpi-card-value" x-text="fmt(todaysRevenue)"></strong>
-                                    <span class="nb-kpi-card-sub"><span x-text="todaysSales.length"></span> invoice(s)<span x-show="todaysReturns > 0" x-cloak> · returns −<span x-text="fmt(todaysReturns)"></span></span></span>
+                                    <span class="nb-kpi-card-sub"><span x-text="todaysSales.length"></span> invoice(s)<span x-show="todaysReturns > 0" x-cloak> · returns −<span x-text="fmt(todaysReturns)"></span></span><span x-show="dueCollectedToday > 0" x-cloak> · due collected <span x-text="fmt(dueCollectedToday)"></span></span></span>
                                     <span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">🛒</span>
                                 </a>
                                 <a href="#/sales" @click="setDateRange('all')" class="nb-kpi-card is-blue">
@@ -744,7 +744,19 @@
                                         <div>
                                             <label for="sale-contact" class="nb-label">Contact no. <span class="nb-opt">(optional)</span></label>
                                             <input id="sale-contact" type="tel" inputmode="tel" x-model="sale.customer_contact" placeholder="e.g. 01961350466"
-                                                   @keydown.enter.prevent class="nb-input">
+                                                   @keydown.enter.prevent @change="fillSaleCustomerName()" class="nb-input">
+                                        </div>
+                                        <!-- A known customer typed by name only. Without the phone the
+                                             sale would not find their earlier receipts, and would print
+                                             no Previous Balance. -->
+                                        <div class="nb-note" x-show="saleCustomerByName" x-cloak>
+                                            <span x-text="saleCustomerByName?.name"></span> is saved with phone
+                                            <strong class="tabular-nums" x-text="saleCustomerByName?.contact"></strong><span x-show="saleCustomerByName?.due > 0.005" x-cloak> and owes
+                                            <strong class="whitespace-nowrap tabular-nums text-red-600" x-text="fmt(saleCustomerByName?.due)"></strong></span>.
+                                            <div class="mt-2">
+                                                <button type="button" @click="sale.customer_contact = saleCustomerByName.contact"
+                                                        class="nb-btn nb-btn-sm nb-btn-secondary">Use this number</button>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -1595,6 +1607,123 @@
                                         </template>
                                     </tbody>
                                 </table>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- ================= DUE COLLECTIONS =================
+                         Money taken on dues after the receipt was issued, from the
+                         due_payments history. The same dateFrom/dateTo as the sales
+                         list, so it opens on today like the till does. -->
+                    <section x-show="page === 'collections'" x-cloak aria-labelledby="h-collections">
+                        <div class="nb-page-head">
+                            <div class="nb-page-titles">
+                                <span class="nb-page-icon nb-emoji" aria-hidden="true" x-text="pageEmoji('collections')"></span>
+                                <div>
+                                    <h1 id="h-collections" class="nb-page-title">Due Collections</h1>
+                                    <p class="nb-page-desc">Due money collected on earlier receipts — who paid, which receipt, and who took it. Payments made at the sale itself are not listed here.</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="nb-card mb-5">
+                            <div class="flex flex-wrap items-end gap-x-4 gap-y-3 p-4 sm:px-5">
+                                <div class="w-full sm:w-64">
+                                    <label for="col-search" class="nb-label">Search</label>
+                                    <div class="relative">
+                                        <span class="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-400" x-html="icon('search', 'h-4 w-4')"></span>
+                                        <input id="col-search" type="search" x-model="collectionSearch" placeholder="Customer, phone, invoice or staff…" class="nb-input pl-9">
+                                    </div>
+                                </div>
+                                <div>
+                                    <p class="nb-label">Date</p>
+                                    <div class="flex flex-wrap gap-1.5" role="group" aria-label="Date range">
+                                        <button type="button" @click="setDateRange('today')" class="nb-chip" :aria-pressed="activePreset === 'today'">Today</button>
+                                        <button type="button" @click="setDateRange('week')" class="nb-chip" :aria-pressed="activePreset === 'week'">Last 7 days</button>
+                                        <button type="button" @click="setDateRange('month')" class="nb-chip" :aria-pressed="activePreset === 'month'">Last 30 days</button>
+                                        <button type="button" @click="setDateRange('all')" class="nb-chip" :aria-pressed="activePreset === 'all'">All time</button>
+                                    </div>
+                                </div>
+                                <div class="flex items-end gap-2">
+                                    <div>
+                                        <label for="col-from" class="nb-label">From</label>
+                                        <input id="col-from" type="date" x-model="dateFrom" @change="onDateEdit()" class="nb-input w-40">
+                                    </div>
+                                    <div>
+                                        <label for="col-to" class="nb-label">To</label>
+                                        <input id="col-to" type="date" x-model="dateTo" @change="onDateEdit()" class="nb-input w-40">
+                                    </div>
+                                </div>
+                            </div>
+                            <dl class="grid grid-cols-2 gap-px overflow-hidden rounded-b-2xl border-t border-[#e5ebe7] bg-[#e5ebe7] sm:grid-cols-4">
+                                <div class="nb-stat-cell is-green"><dt class="nb-stat-label">Collected · <span x-text="rangeLabel"></span></dt><dd class="nb-stat-value text-lg text-green-700" x-text="fmt(collectionsTotal)"></dd></div>
+                                <div class="nb-stat-cell is-blue"><dt class="nb-stat-label">Payments</dt><dd class="nb-stat-value" x-text="filteredCollections.length"></dd></div>
+                                <div class="nb-stat-cell is-violet"><dt class="nb-stat-label">Customers</dt><dd class="nb-stat-value" x-text="collectionsCustomerCount"></dd></div>
+                                <div class="nb-stat-cell is-amber"><dt class="nb-stat-label">Receipts updated</dt><dd class="nb-stat-value" x-text="collectionsReceiptCount"></dd></div>
+                            </dl>
+                        </div>
+
+                        <!-- Who took how much: what each person should hand over at closing. -->
+                        <div class="mb-5 flex flex-wrap gap-2" x-show="collectionsByStaff.length" x-cloak>
+                            <template x-for="st in collectionsByStaff" :key="'cs-' + st.name">
+                                <button type="button" @click="collectionSearch = st.name" class="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs hover:border-slate-300">
+                                    <span class="text-slate-600" x-text="st.name + ' (' + st.count + ')'"></span>
+                                    <span class="font-semibold text-green-700 tabular-nums" x-text="fmt(st.amount)"></span>
+                                </button>
+                            </template>
+                        </div>
+
+                        <div class="nb-card">
+                            <div class="nb-empty" x-show="!loading && !filteredCollections.length" x-cloak>
+                                <span class="nb-empty-icon" x-html="icon('banknotes')"></span>
+                                <p class="nb-empty-title" x-text="duePayments.length ? 'No collection matches' : 'No due collected yet'"></p>
+                                <p class="nb-empty-desc" x-text="duePayments.length ? 'Try another search or date range.' : 'Payments taken on a due receipt appear here.'"></p>
+                                <div class="mt-3 flex gap-2">
+                                    <button type="button" @click="setDateRange('all')" x-show="duePayments.length && activePreset !== 'all'" x-cloak class="nb-btn nb-btn-sm nb-btn-secondary">Show all time</button>
+                                    <button type="button" @click="collectionSearch = ''" x-show="collectionSearch" x-cloak class="nb-btn nb-btn-sm nb-btn-ghost">Clear search</button>
+                                </div>
+                            </div>
+                            <div class="nb-table-wrap hidden md:block" x-show="filteredCollections.length" x-cloak>
+                                <table class="nb-table">
+                                    <thead><tr><th>Date</th><th>Invoice</th><th>Customer</th><th>Phone</th><th>How</th><th class="num">Amount</th><th class="num">Due after</th><th>Collected by</th></tr></thead>
+                                    <tbody>
+                                        <template x-for="p in filteredCollections" :key="'col-' + p.id">
+                                            <tr>
+                                                <td class="whitespace-nowrap text-slate-500 tabular-nums" x-text="fmtDate(p.date) + (p.time ? ' · ' + p.time : '')"></td>
+                                                <td><button type="button" @click="showReceiptById(p.invoice_id)" class="font-semibold text-ink tabular-nums hover:underline" x-text="'#' + p.invoice_id"></button></td>
+                                                <td class="font-medium text-ink" x-text="p.customer_name || 'Walk-in'"></td>
+                                                <td class="tabular-nums text-slate-600" x-text="p.customer_contact || '—'"></td>
+                                                <td class="text-slate-600">
+                                                    <span x-text="paymentKindLabel(p)"></span>
+                                                    <span class="block text-xs text-slate-500" x-show="p.note" x-cloak x-text="p.note"></span>
+                                                </td>
+                                                <td class="num font-semibold" :class="Number(p.amount) < 0 ? 'text-red-600' : 'text-green-700'" x-text="fmt(p.amount)"></td>
+                                                <td class="num" :class="Number(p.due_after) > 0.005 ? 'text-red-600' : 'text-slate-400'" x-text="Number(p.due_after) > 0.005 ? fmt(p.due_after) : 'Paid'"></td>
+                                                <td class="text-slate-600" x-text="p.collected_by || '—'"></td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                    <tfoot>
+                                        <tr><td colspan="5" class="text-right">Total</td><td class="num text-green-700" x-text="fmt(collectionsTotal)"></td><td colspan="2"></td></tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                            <div class="space-y-3 p-3 md:hidden" x-show="filteredCollections.length" x-cloak>
+                                <template x-for="p in filteredCollections" :key="'mcol-' + p.id">
+                                    <button type="button" @click="showReceiptById(p.invoice_id)" class="nb-mcard block w-full text-left">
+                                        <div class="flex items-start justify-between gap-3">
+                                            <div class="min-w-0">
+                                                <p class="font-semibold text-ink" x-text="'#' + p.invoice_id + ' · ' + (p.customer_name || 'Walk-in')"></p>
+                                                <p class="text-xs text-slate-500 tabular-nums" x-text="[p.customer_contact, fmtDate(p.date) + (p.time ? ' ' + p.time : ''), p.collected_by].filter(Boolean).join(' · ')"></p>
+                                                <p class="text-xs text-slate-500" x-text="paymentKindLabel(p)"></p>
+                                            </div>
+                                            <div class="shrink-0 text-right">
+                                                <p class="font-semibold tabular-nums" :class="Number(p.amount) < 0 ? 'text-red-600' : 'text-green-700'" x-text="fmt(p.amount)"></p>
+                                                <p class="text-xs tabular-nums" :class="Number(p.due_after) > 0.005 ? 'text-red-600' : 'text-slate-400'" x-text="Number(p.due_after) > 0.005 ? 'Due ' + fmt(p.due_after) : 'Paid'"></p>
+                                            </div>
+                                        </div>
+                                    </button>
+                                </template>
+                                <p class="px-1 text-right text-sm font-semibold text-ink">Total <span class="tabular-nums text-green-700" x-text="fmt(collectionsTotal)"></span></p>
                             </div>
                         </div>
                     </section>
@@ -2764,6 +2893,40 @@
                         </div>
                     </div>
 
+                    <!-- Payments taken on this receipt after the sale, oldest first —
+                         printed too, so the customer's copy shows what they paid when.
+                         Only receipts that have any. -->
+                    <template x-if="invoicePayments(currentReceipt).length">
+                        <div>
+                            <p class="inv-payments-title">Payment history</p>
+                            <table class="inv-table">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Details</th>
+                                        <th class="col-money">Paid</th>
+                                        <th class="col-money">Due after</th>
+                                        <th>Received by</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="p in invoicePayments(currentReceipt)" :key="'pay-' + p.id">
+                                        <tr>
+                                            <td class="whitespace-nowrap tabular-nums" x-text="fmtDate(p.date) + (p.time ? ' ' + p.time : '')"></td>
+                                            <td>
+                                                <span x-text="paymentKindLabel(p)"></span>
+                                                <span class="inv-item-warranty" x-show="p.note" x-text="p.note"></span>
+                                            </td>
+                                            <td class="col-money tabular-nums" x-text="fmt(p.amount)"></td>
+                                            <td class="col-money tabular-nums" x-text="fmt(p.due_after)"></td>
+                                            <td x-text="p.collected_by || '—'"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </template>
+
                     <!-- Terms | signature -->
                     <div class="inv-split inv-sign">
                         <div>
@@ -3542,7 +3705,7 @@
                     <p class="text-base font-bold text-slate-800 tabular-nums" x-text="fmt(paymentTotal)"></p>
                 </div>
                 <div>
-                    <p class="nb-stat-label">Due</p>
+                    <p class="nb-stat-label" x-text="paymentDraft.edit ? 'Due' : 'Due after this payment'"></p>
                     <p class="text-base font-bold tabular-nums"
                        :class="paymentDue > 0 ? 'text-red-600' : 'text-green-700'" x-text="fmt(paymentDue)"></p>
                 </div>
@@ -3585,10 +3748,30 @@
                     </div>
                 </template>
                 <div>
-                    <label for="payment-paid" class="nb-label">Paid</label>
-                    <input id="payment-paid" type="number" min="0" step="0.01" inputmode="decimal"
-                           x-model="paymentDraft.paid_amount" @keydown.enter.prevent
-                           class="nb-input" required>
+                    <!-- Staff type what was handed over just now; it is added to what
+                         was paid before and saved as one line of the receipt's payment
+                         history. The admin edits the paid total itself. -->
+                    <template x-if="!paymentDraft.edit">
+                        <div>
+                            <label for="payment-amount" class="nb-label">Amount received now</label>
+                            <input id="payment-amount" type="number" min="0.01" step="0.01" inputmode="decimal"
+                                   :max="paymentDraft.dueNow" placeholder="0"
+                                   x-model="paymentDraft.amount" @keydown.enter.prevent
+                                   class="nb-input tabular-nums" required>
+                            <p class="mt-1 text-xs text-slate-500">
+                                Paid before <span class="tabular-nums" x-text="fmt(paymentDraft.paidBefore)"></span>
+                                · due before this payment <span class="tabular-nums" x-text="fmt(paymentDraft.dueNow)"></span>
+                            </p>
+                        </div>
+                    </template>
+                    <template x-if="paymentDraft.edit">
+                        <div>
+                            <label for="payment-paid" class="nb-label">Paid</label>
+                            <input id="payment-paid" type="number" min="0" step="0.01" inputmode="decimal"
+                                   x-model="paymentDraft.paid_amount" @keydown.enter.prevent
+                                   class="nb-input" required>
+                        </div>
+                    </template>
                     <!-- The whole point of the dialog in one press: the customer came
                          back and cleared the balance. -->
                     <div class="mt-2 grid gap-2" :class="paymentDraft.edit ? 'grid-cols-2' : 'grid-cols-1'">
@@ -3622,6 +3805,47 @@
                     </button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- ================= NO PHONE NUMBER =================
+         Before a sale is saved without a contact number. Without one the
+         customer's earlier dues are not found, and this receipt's due will
+         not carry forward to their next one. -->
+    <div id="phone-alert-modal" x-show="isPhoneAlertOpen" x-cloak x-transition.opacity
+         class="no-print fixed inset-0 bg-slate-900/55 z-[60] flex items-center justify-center p-4 overflow-y-auto"
+         role="alertdialog" aria-modal="true" aria-labelledby="phone-alert-title" @keydown.escape.window="isPhoneAlertOpen && phoneAlertAddNumber()">
+        <div class="nb-pop bg-white w-full sm:max-w-md rounded-xl shadow-2xl p-5 sm:p-6">
+            <div class="flex items-start gap-3">
+                <span class="nb-emoji text-2xl leading-none" aria-hidden="true">📞</span>
+                <div class="min-w-0">
+                    <h2 id="phone-alert-title" class="text-lg font-semibold text-ink">No contact number</h2>
+                    <p class="mt-1 text-sm text-slate-600">
+                        Please add the customer's number. Without it, their <strong>previous due</strong> is not
+                        added to this receipt, and any due left on this receipt will not carry forward to their next one.
+                    </p>
+                </div>
+            </div>
+            <!-- The name typed belongs to a customer the shop has a number for. -->
+            <div class="nb-note is-danger mt-4" x-show="saleCustomerByName" x-cloak>
+                <span x-text="saleCustomerByName?.name"></span> is saved with phone
+                <strong class="tabular-nums" x-text="saleCustomerByName?.contact"></strong><span x-show="saleCustomerByName?.due > 0.005" x-cloak>
+                and owes <strong class="whitespace-nowrap tabular-nums" x-text="fmt(saleCustomerByName?.due)"></strong></span>.
+            </div>
+            <div class="mt-5 flex flex-col gap-2.5">
+                <button type="button" x-show="saleCustomerByName" x-cloak @click="phoneAlertUseMatch()"
+                        class="nb-btn nb-btn-primary nb-btn-lg w-full">
+                    Use <span class="tabular-nums" x-text="saleCustomerByName?.contact"></span>
+                </button>
+                <button type="button" @click="phoneAlertAddNumber()"
+                        class="nb-btn nb-btn-lg w-full" :class="saleCustomerByName ? 'nb-btn-secondary' : 'nb-btn-primary'">
+                    Add number
+                </button>
+                <button type="button" @click="phoneAlertSaveAnyway()"
+                        class="nb-btn nb-btn-ghost nb-btn-lg w-full">
+                    Save without number
+                </button>
+            </div>
         </div>
     </div>
 

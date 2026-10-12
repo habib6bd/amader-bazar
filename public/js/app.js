@@ -186,6 +186,7 @@ const PAGES = {
   dashboard: { hash: '', title: 'Dashboard' },
   sale: { hash: 'sales/new', title: 'New Sale', group: 'sales' },
   sales: { hash: 'sales', title: 'Sales History', group: 'sales' },
+  collections: { hash: 'sales/collections', title: 'Due Collections', group: 'sales' },
   // adminOnly: staff are sent to the dashboard, and the sidebar leaves it out.
   purchase: { hash: 'purchases/new', title: 'New Purchase', group: 'purchases', adminOnly: true },
   purchases: { hash: 'purchases', title: 'Purchase History', group: 'purchases' },
@@ -218,7 +219,7 @@ function pageFromHash(hash) {
    glyph the menu shows (drawn by the system's emoji font, nothing to load). */
 const NAV = [
   { page: 'dashboard', label: 'Dashboard', emoji: '🏠' },
-  { group: 'sales', label: 'Sales', emoji: '🛒', children: ['sale', 'sales'] },
+  { group: 'sales', label: 'Sales', emoji: '🛒', children: ['sale', 'sales', 'collections'] },
   { group: 'purchases', label: 'Purchases', emoji: '🚚', children: ['purchase', 'purchases'] },
   { group: 'stock', label: 'Products & Stock', emoji: '📦', children: ['products', 'lowstock'] },
   { page: 'customers', label: 'Customers', emoji: '👥' },
@@ -235,6 +236,7 @@ const NAV = [
 // thing — see pageEmoji(). Everything else takes its sidebar emoji.
 const PAGE_EMOJI = {
   sales: '🧾',
+  collections: '💵',
   purchases: '📋',
   lowstock: '⚠️',
   rsales: '📈',
@@ -614,6 +616,8 @@ function shopApp() {
     // Filters on the derived Customers and Suppliers pages.
     customerSearch: '',
     customerDueOnly: false,
+    // Due Collections page: search over customer, phone, receipt and staff.
+    collectionSearch: '',
     supplierSearch: '',
 
     sale: blankSale(),
@@ -646,6 +650,9 @@ function shopApp() {
     // supplier — see the stock_movements table in server.js.
     movements: [],
     faultyUnits: [],
+    /* Money collected on dues after the receipt was issued, newest first, as
+       the server sends it — see the due_payments table in server.js. */
+    duePayments: [],
     /* The faulty-stock dialog: { row, to, qty, party, note, newSerial,
        productId, error, saving } or null. `row` is a faultyQueue entry, or
        null when marking shelf stock faulty, where productId picks the product. */
@@ -732,7 +739,9 @@ function shopApp() {
     /* Recording a payment against an invoice already issued. `paymentDraft`
        holds a copy, never the live invoice — see openPayment(). */
     isPaymentOpen: false,
-    paymentDraft: { id: null, edit: false, base: 0, discount: '', refunded: 0, paid_amount: '', minPaid: 0 },
+    // Asked before saving a sale with no contact number — see submitSale().
+    isPhoneAlertOpen: false,
+    paymentDraft: { id: null, edit: false, base: 0, discount: '', refunded: 0, paid_amount: '', amount: '', paidBefore: 0, dueNow: 0 },
     paymentError: '',
     savingPayment: false,
 
@@ -1110,6 +1119,52 @@ function shopApp() {
       if (!key) return 0;
       const row = this.customers.find((c) => c.key === key);
       return row && row.due > PAID_EPSILON ? round2(row.due) : 0;
+    },
+
+    /* A name typed with no phone that belongs to exactly one customer who has
+       a phone — on any of their receipts, under that name. The sale form
+       offers the number, because without it the sale is a stranger's and
+       finds none of their dues. null when there is a phone, no name, or the
+       name is shared by several customers. */
+    get saleCustomerByName() {
+      const name = String(this.sale.customer_name || '').trim().toLowerCase();
+      if (!name || String(this.sale.customer_contact || '').trim()) return null;
+      const contacts = new Set();
+      for (const inv of this.invoices) {
+        const contact = String(inv.customer_contact || '').trim();
+        if (contact && String(inv.customer_name || '').trim().toLowerCase() === name) contacts.add(contact);
+      }
+      if (contacts.size !== 1) return null;
+      const [contact] = contacts;
+      return this.customers.find((c) => c.key === `c:${contact}`) || null;
+    },
+
+    // The phone alert's three ways out.
+    phoneAlertAddNumber() {
+      this.isPhoneAlertOpen = false;
+      this.$nextTick(() => document.getElementById('sale-contact')?.focus());
+    },
+
+    // Back to the form with the number filled, so the previous due shows
+    // before anything is saved — the Paid box now means something else.
+    phoneAlertUseMatch() {
+      const match = this.saleCustomerByName;
+      if (match) this.sale.customer_contact = match.contact;
+      this.isPhoneAlertOpen = false;
+    },
+
+    phoneAlertSaveAnyway() {
+      this.isPhoneAlertOpen = false;
+      this.submitSale({ withoutPhone: true });
+    },
+
+    // A phone typed for a customer the shop knows, with the name left blank:
+    // the name from their latest receipt.
+    fillSaleCustomerName() {
+      if (String(this.sale.customer_name || '').trim()) return;
+      const contact = String(this.sale.customer_contact || '').trim();
+      const row = contact && this.customers.find((c) => c.key === `c:${contact}`);
+      if (row?.name) this.sale.customer_name = row.name;
     },
 
     // The customer's whole balance once this sale is saved.
@@ -1539,6 +1594,81 @@ function shopApp() {
     // due as it stands now — collecting this receipt later brings it down.
     invoiceCurrentBalance(inv) {
       return Math.max(0, round2(this.invoicePreviousDue(inv) - Number(inv?.applied_to_previous || 0) + this.invoiceDue(inv)));
+    },
+
+    /* ------------------------------------------------- payments on dues
+
+       Every change to a receipt's money after the sale, one due_payments row
+       each — see server.js. Rows are never edited or deleted, so a
+       correction shows as its own line. */
+
+    // A receipt's payments after the sale, oldest first.
+    invoicePayments(inv) {
+      const id = Number(inv?.id);
+      return this.duePayments.filter((p) => Number(p.invoice_id) === id).reverse();
+    },
+
+    // How a payment came in, in a word or two.
+    paymentKindLabel(p) {
+      if (p.kind === 'sale_overpay') return `With sale #${p.source_invoice_id}`;
+      if (p.kind === 'admin_edit') {
+        if (Number(p.amount) < -PAID_EPSILON) return 'Payment reduced';
+        return Number(p.due_after) < Number(p.due_before) ? 'Due written off' : 'Adjusted';
+      }
+      return 'Collected';
+    },
+
+    // The Due Collections page: the payments in the shared date range,
+    // searched by customer, phone, receipt number or who collected.
+    get filteredCollections() {
+      const q = this.collectionSearch.trim().toLowerCase().replace(/^#/, '');
+      return this.duePayments.filter((p) => {
+        if (!this.inDateRange(p)) return false;
+        if (!q) return true;
+        return [p.customer_name, p.customer_contact, String(p.invoice_id), p.collected_by]
+          .some((v) => String(v || '').toLowerCase().includes(q));
+      });
+    },
+
+    // Corrections are negative, so this is the money actually kept.
+    get collectionsTotal() {
+      return round2(this.filteredCollections.reduce((sum, p) => sum + Number(p.amount), 0));
+    },
+
+    get collectionsReceiptCount() {
+      return new Set(this.filteredCollections.map((p) => Number(p.invoice_id))).size;
+    },
+
+    // Same customer key as the Customers page: phone, else name.
+    get collectionsCustomerCount() {
+      return new Set(this.filteredCollections.map((p) => {
+        const contact = String(p.customer_contact || '').trim();
+        return contact ? `c:${contact}` : `n:${String(p.customer_name || '').trim().toLowerCase()}`;
+      })).size;
+    },
+
+    // Who collected how much in the range, biggest first — for closing the till.
+    get collectionsByStaff() {
+      const byName = new Map();
+      for (const p of this.filteredCollections) {
+        const name = p.collected_by || '—';
+        const row = byName.get(name) || { name, amount: 0, count: 0 };
+        row.amount = round2(row.amount + Number(p.amount));
+        row.count += 1;
+        byName.set(name, row);
+      }
+      return [...byName.values()].sort((a, b) => b.amount - a.amount);
+    },
+
+    get dueCollectedToday() {
+      const today = todayLocal();
+      return round2(this.duePayments.filter((p) => p.date === today).reduce((sum, p) => sum + Number(p.amount), 0));
+    },
+
+    showReceiptById(id) {
+      const inv = this.invoices.find((i) => Number(i.id) === Number(id));
+      if (inv) this.showReceipt(inv);
+      else this.notify(`Invoice #${id} is not in the list.`, 'error');
     },
 
     /* The one-word state of an invoice for the status column. An invoice from
@@ -2397,6 +2527,7 @@ function shopApp() {
         this.claims = data.warranty_claims || [];
         this.movements = data.stock_movements || [];
         this.faultyUnits = data.faulty_units || [];
+        this.duePayments = data.due_payments || [];
         this.invoices = buildInvoices(data.invoices || [], this.sales, this.returns, this.returnLines, this.claims);
         this.purchases = data.purchases || [];
         this.expenses = data.expenses || [];
@@ -2610,7 +2741,9 @@ function shopApp() {
       return stock !== null && stock <= 0;
     },
 
-    async submitSale() {
+    // The form calls this with its submit event; only the phone alert's
+    // "Save without number" passes { withoutPhone: true }.
+    async submitSale(opts) {
       if (this.savingSale) return;
 
       // An item typed into the row but not yet added is almost certainly meant
@@ -2654,6 +2787,15 @@ function shopApp() {
         this.notify(this.salePreviousDue > 0
           ? `Received cannot be more than ${this.fmt(this.salePayable + this.salePreviousDue)} — this sale plus the previous due.`
           : `Paid cannot be more than the total, ${this.fmt(this.salePayable)}.`, 'error');
+        return;
+      }
+
+      /* No phone, no history: the sale cannot find the customer's earlier
+         dues, prints no Previous Balance, and its own due will not carry to
+         their next receipt — how receipt #221 lost 6,585. Ask once per save;
+         a walk-in who gives no number is still one click away. */
+      if (!String(this.sale.customer_contact || '').trim() && opts?.withoutPhone !== true) {
+        this.isPhoneAlertOpen = true;
         return;
       }
 
@@ -3306,7 +3448,10 @@ function shopApp() {
         discount: discount > 0 ? cents(discount) : '',
         refunded: this.invoiceRefunded(inv),
         paid_amount: cents(this.invoicePaid(inv)),
-        minPaid: cents(this.invoicePaid(inv)),
+        // Staff: what is handed over now, on top of paidBefore.
+        amount: '',
+        paidBefore: cents(this.invoicePaid(inv)),
+        dueNow: cents(this.invoiceDue(inv)),
       };
       this.paymentError = '';
       this.isPaymentOpen = true;
@@ -3328,7 +3473,8 @@ function shopApp() {
 
     // The one-click settle: the customer came back and cleared the balance.
     markFullyPaid() {
-      this.paymentDraft.paid_amount = this.paymentTotal;
+      if (this.paymentDraft.edit) this.paymentDraft.paid_amount = this.paymentTotal;
+      else this.paymentDraft.amount = this.paymentDraft.dueNow;
     },
 
     /* The customer paid what they paid, and the shop lets the rest go: the
@@ -3340,6 +3486,10 @@ function shopApp() {
     },
 
     get paymentDue() {
+      if (!this.paymentDraft.edit) {
+        const amount = Number(this.paymentDraft.amount);
+        return Math.max(0, round2(this.paymentDraft.dueNow - (Number.isFinite(amount) && amount > 0 ? amount : 0)));
+      }
       const paid = Number(this.paymentDraft.paid_amount);
       if (!Number.isFinite(paid)) return this.paymentTotal;
       return Math.max(0, round2(this.paymentTotal - paid));
@@ -3348,11 +3498,18 @@ function shopApp() {
     async submitPayment() {
       if (this.savingPayment) return;
       const d = this.paymentDraft;
-      // Said here rather than as a 403 after the trip: staff collect, they
-      // do not take back.
-      if (!d.edit && Number(d.paid_amount) < d.minPaid - PAID_EPSILON) {
-        this.paymentError = 'Only the admin can reduce a payment.';
-        return;
+      // Said here rather than after the trip: staff collect money in, and
+      // no more than is owed.
+      if (!d.edit) {
+        const amount = Number(d.amount);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          this.paymentError = 'Enter the amount received now.';
+          return;
+        }
+        if (amount > d.dueNow + PAID_EPSILON) {
+          this.paymentError = `Amount received cannot be more than the due, ${this.fmt(d.dueNow)}.`;
+          return;
+        }
       }
       this.savingPayment = true;
       this.paymentError = '';
@@ -3375,7 +3532,7 @@ function shopApp() {
           : await fetch(`/api/invoices/${d.id}/payment`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ paid_amount: paidIn }),
+            body: JSON.stringify({ amount: Number(d.amount) }),
           });
         // Left open on failure so the reason is readable where it was typed.
         if (!res.ok) {

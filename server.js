@@ -325,6 +325,38 @@ async function migrate() {
   await addColumnIfMissing('invoices', 'previous_due', 'REAL');
   await addColumnIfMissing('invoices', 'applied_to_previous', 'REAL NOT NULL DEFAULT 0');
 
+  /* Every taka collected against a due after the receipt was issued, one row
+     per receipt it went to. Append-only: nothing updates or deletes a row, so a
+     correction is a new row (an admin_edit with a negative amount), never a
+     changed one. The money paid at the sale itself is the receipt's own and is
+     not here.
+
+     kind: 'collect'      — taken on the receipt through the Collect dialog
+           'sale_overpay' — handed over at a later sale (source_invoice_id)
+                            beyond that sale's bill, clearing this receipt
+           'admin_edit'   — the admin changed the paid figure in Edit receipt
+
+     The customer is a snapshot, like the receipt's: the daily collections
+     list must still say who paid if the receipt is renamed later. due_before
+     and due_after are this receipt's due either side of the payment. */
+  await run(`CREATE TABLE IF NOT EXISTS due_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL,
+    customer_name TEXT,
+    customer_contact TEXT,
+    amount REAL NOT NULL,
+    due_before REAL NOT NULL,
+    due_after REAL NOT NULL,
+    kind TEXT NOT NULL,
+    source_invoice_id INTEGER,
+    collected_by TEXT,
+    date TEXT NOT NULL,
+    time TEXT,
+    note TEXT
+  )`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_due_payments_date ON due_payments(date)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_due_payments_invoice ON due_payments(invoice_id)`);
+
   await linkLegacySales();
 }
 
@@ -408,7 +440,7 @@ async function linkLegacySales() {
    need, since each awaited statement completes before the next is issued. */
 /* Bump whenever setup() or migrate() gains a step. A database already at this
    version skips the whole migration on boot. */
-const SCHEMA_VERSION = '2026-10-06-units-discount-balance';
+const SCHEMA_VERSION = '2026-10-13-due-payments';
 
 // One read instead of ~20 statements, several of which take a write lock even
 // when they end up changing nothing. On Vercel every cold start runs this, each
@@ -972,7 +1004,7 @@ app.get('/api/data', async (req, res) => {
     // The destructure order must match the Promise.all order exactly; getting it
     // wrong is the one silent way to break this — inventory would arrive as
     // expenses and every figure on the dashboard would be nonsense.
-    const [inventory, invoices, sales, purchases, expenses, returns, returnLines, claims, movements, faultyUnits] = await Promise.all([
+    const [inventory, invoices, sales, purchases, expenses, returns, returnLines, claims, movements, faultyUnits, duePayments] = await Promise.all([
       // defective_serials is the faulty count of a serial-tracked product, the
       // counterpart of defective_quantity for goods without serials.
       all(`SELECT i.*,
@@ -998,10 +1030,14 @@ app.get('/api/data', async (req, res) => {
              FROM product_serials ps LEFT JOIN inventory i ON i.id = ps.product_id
             WHERE ps.status IN ('defective', 'at_supplier')
             ORDER BY ps.id`),
+      // Payments on dues, newest first — each receipt's history and the
+      // daily collections list read them.
+      all('SELECT * FROM due_payments ORDER BY id DESC'),
     ]);
     res.json({
       inventory, invoices, sales, purchases, expenses, returns,
       return_lines: returnLines, warranty_claims: claims, stock_movements: movements, faulty_units: faultyUnits,
+      due_payments: duePayments,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1413,11 +1449,14 @@ app.post('/api/sales', async (req, res) => {
         paidHere = Math.min(paidHere, payable);
       }
 
+      // How much of the extra the older receipts can take, oldest first. Paid
+      // to them below, once this invoice exists for the history to point at.
+      const plan = [];
       let applied = 0;
       for (const m of owing) {
         if (extra - applied <= PAID_EPSILON) break;
         const give = round2(Math.min(m.due, extra - applied));
-        await q.run(`UPDATE invoices SET paid_amount = ? WHERE id = ?`, [round2(m.paidIn + give), m.id]);
+        plan.push({ m, give });
         applied = round2(applied + give);
       }
 
@@ -1431,6 +1470,14 @@ app.post('/api/sales', async (req, res) => {
           round2(discount), previousDue, applied]
       );
       const invoiceId = invoice.lastID;
+
+      for (const { m, give } of plan) {
+        await q.run(`UPDATE invoices SET paid_amount = ? WHERE id = ?`, [round2(m.paidIn + give), m.id]);
+        await recordDuePayment(q, {
+          invoiceId: m.id, amount: give, dueBefore: m.due, dueAfter: m.due - give,
+          kind: 'sale_overpay', sourceInvoiceId: invoiceId, user: req.user,
+        });
+      }
 
       for (const [i, item] of items.entries()) {
         const n = i + 1;
@@ -1886,6 +1933,28 @@ async function customerInvoices(q, name, contact) {
     `${MONEY_SQL} WHERE (v.customer_contact IS NULL OR v.customer_contact = '') AND v.customer_name = ? COLLATE NOCASE ORDER BY v.id`,
     [name]
   )).map(moneyOf);
+}
+
+// Who customerInvoices() would take a receipt to belong to, as one string —
+// the same key the Customers page builds. null is a walk-in.
+function customerKey(name, contact) {
+  const c = String(contact ?? '').trim();
+  const n = String(name ?? '').trim();
+  return c ? `c:${c}` : n ? `n:${n.toLowerCase()}` : null;
+}
+
+/* Appends one due_payments row, inside the caller's transaction — the same one
+   that moved paid_amount, so the history and the receipt cannot disagree.
+   Takes the customer from the receipt as it stands. */
+async function recordDuePayment(q, { invoiceId, amount, dueBefore, dueAfter, kind, sourceInvoiceId = null, user, note = null }) {
+  const inv = await q.get(`SELECT customer_name, customer_contact FROM invoices WHERE id = ?`, [invoiceId]);
+  await q.run(
+    `INSERT INTO due_payments (invoice_id, customer_name, customer_contact, amount, due_before, due_after, kind,
+                               source_invoice_id, collected_by, date, time, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [invoiceId, inv?.customer_name ?? null, inv?.customer_contact ?? null, round2(amount), round2(dueBefore), round2(dueAfter),
+      kind, sourceInvoiceId, displayName(user), todayLocal(), nowLocalTime(), note]
+  );
 }
 
 /* Records one return against `invoiceId`, inside the caller's transaction.
@@ -2755,31 +2824,76 @@ app.delete('/api/expenses/:id', requireAdmin, async (req, res) => {
 app.put('/api/invoices/:id/payment', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid invoice.' });
+  const body = req.body || {};
 
   try {
-    // Summed from the lines and returns, never taken from the request: the
-    // client's idea of the total is exactly what the ceiling below has to be
-    // checked against.
-    const money = await invoiceMoney({ get }, id);
-    if (!money) return res.status(404).json({ error: 'That invoice no longer exists.' });
+    const out = await inWriteTx(async (q) => {
+      // Summed from the lines and returns, never taken from the request: the
+      // client's idea of the total is exactly what the ceiling below has to be
+      // checked against.
+      const money = await invoiceMoney(q, id);
+      if (!money) throw new Refusal(404, 'That invoice no longer exists.');
 
-    /* paid_amount is everything the customer has handed over, refunds not
-       taken off — so after a return its ceiling is the new total plus what
-       was already given back. The client sends it on that footing. */
-    const ceiling = money.net + money.refunded;
-    const { error, paid_amount } = validatePaidAmount(req.body?.paid_amount, ceiling);
-    if (error) return res.status(400).json({ error });
-    if (req.user.role !== 'admin' && (paid_amount === null || paid_amount < money.paidIn - PAID_EPSILON)) {
-      return res.status(403).json({ error: 'Only the admin can reduce a payment.' });
-    }
+      let paid_amount;
+      if (body.amount !== undefined) {
+        /* What the customer handed over just now — the Collect dialog. It goes
+           on top of what was already paid, and cannot be more than is owed. */
+        const amount = Number(body.amount);
+        if (!Number.isFinite(amount) || amount <= 0) throw new Refusal(400, 'Amount received must be more than zero.');
+        if (amount > money.due + PAID_EPSILON) {
+          throw new Refusal(400, `Amount received cannot be more than the due (${money.due.toFixed(2)}).`);
+        }
+        paid_amount = round2(money.paidIn + amount);
+      } else {
+        /* A page cached from before amounts sends the new paid total instead.
+           paid_amount is everything the customer has handed over, refunds not
+           taken off — so after a return its ceiling is the new total plus what
+           was already given back. */
+        const v = validatePaidAmount(body.paid_amount, money.net + money.refunded);
+        if (v.error) throw new Refusal(400, v.error);
+        paid_amount = v.paid_amount;
+      }
+      if (req.user.role !== 'admin' && (paid_amount === null || paid_amount < money.paidIn - PAID_EPSILON)) {
+        throw new Refusal(403, 'Only the admin can reduce a payment.');
+      }
 
-    // payment_method is not touched: it is chosen once, at the sale.
-    await run(`UPDATE invoices SET paid_amount = ? WHERE id = ?`, [paid_amount, id]);
-    res.json({ id, paid_amount });
+      // payment_method is not touched: it is chosen once, at the sale.
+      await q.run(`UPDATE invoices SET paid_amount = ? WHERE id = ?`, [paid_amount, id]);
+      await recordMoneyChange(q, id, money, req.user);
+      return { id, paid_amount };
+    });
+    res.json(out);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendFailure(res, err);
   }
 });
+
+/* Writes the due_payments row for a receipt whose money was just changed in
+   place: `before` is its invoiceMoney() read before the UPDATE. Money taken in
+   is a 'collect'; anything the admin lowered, or moved through the round-off,
+   is an 'admin_edit' — written even when no money changed hands, so a due
+   that was forgiven still says who forgave it. Nothing is written when
+   neither the paid figure nor the due moved. */
+async function recordMoneyChange(q, id, before, user, kind = null) {
+  const after = await invoiceMoney(q, id);
+  const amount = round2(after.paidIn - before.paidIn);
+  const dueMoved = Math.abs(after.due - before.due) > PAID_EPSILON;
+  if (Math.abs(amount) <= PAID_EPSILON && !dueMoved) return;
+
+  const notes = [];
+  if (Math.abs(after.discount - before.discount) > PAID_EPSILON) {
+    notes.push(`Round-off ${before.discount.toFixed(2)} → ${after.discount.toFixed(2)}`);
+  }
+  await recordDuePayment(q, {
+    invoiceId: id,
+    amount,
+    dueBefore: before.due,
+    dueAfter: after.due,
+    kind: kind || (amount > PAID_EPSILON ? 'collect' : 'admin_edit'),
+    user,
+    note: notes.join('; ') || null,
+  });
+}
 
 /* API: Edit a money receipt — admin only.
 
@@ -2790,8 +2904,13 @@ app.put('/api/invoices/:id/payment', async (req, res) => {
    discount, and the receipt reads settled.
 
    paid_amount is on the same footing as the payment route: everything handed
-   over, refunds not taken off. previous_due and applied_to_previous are left
-   alone — they describe the day of the sale, and the paper from that day. */
+   over, refunds not taken off. previous_due and applied_to_previous describe
+   the day of the sale and are left alone — unless the edit makes it a
+   different customer's receipt. That is how a receipt saved without the phone
+   gets its phone added afterwards, and the Previous Balance it was issued with
+   (none, for a stranger) belongs to nobody then: it is worked out again from
+   that customer's earlier receipts. A receipt whose money already cleared the
+   old customer's dues cannot change hands — that would need those undoing. */
 app.put('/api/invoices/:id', requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid invoice.' });
@@ -2809,6 +2928,23 @@ app.put('/api/invoices/:id', requireAdmin, async (req, res) => {
     const out = await inWriteTx(async (q) => {
       const money = await invoiceMoney(q, id);
       if (!money) throw new Refusal(404, 'That invoice no longer exists.');
+      const was = await q.get(
+        `SELECT customer_name, customer_contact, previous_due, applied_to_previous FROM invoices WHERE id = ?`, [id]
+      );
+
+      let previousDue = was.previous_due;
+      if (customerKey(was.customer_name, was.customer_contact) !== customerKey(customer_name, customer_contact)) {
+        if (Number(was.applied_to_previous) > PAID_EPSILON) {
+          throw new Refusal(409,
+            `This receipt's payment cleared ${Number(was.applied_to_previous).toFixed(2)} of the customer's older dues, ` +
+            'so it cannot be moved to another customer.');
+        }
+        // A receipt from before running balances keeps printing Paid / Due.
+        if (previousDue !== null) {
+          const earlier = (await customerInvoices(q, customer_name, customer_contact)).filter((m) => m.id < id);
+          previousDue = round2(earlier.reduce((sum, m) => sum + m.due, 0));
+        }
+      }
 
       const afterReturns = money.gross - money.back;
       if (discount > afterReturns + PAID_EPSILON) {
@@ -2821,14 +2957,15 @@ app.put('/api/invoices/:id', requireAdmin, async (req, res) => {
       await q.run(
         `UPDATE invoices
             SET customer_name = ?, customer_contact = ?, comment = ?, discount = ?, paid_amount = ?,
-                payment_method = ?, edited_by = ?, edited_at = ?
+                payment_method = ?, edited_by = ?, edited_at = ?, previous_due = ?
           WHERE id = ?`,
         [customer_name, customer_contact, comment, round2(discount), paid.paid_amount, method.payment_method,
-          displayName(req.user), `${todayLocal()} ${nowLocalTime()}`, id]
+          displayName(req.user), `${todayLocal()} ${nowLocalTime()}`, previousDue, id]
       );
       // The lines repeat the customer; keep them saying the same thing.
       await q.run(`UPDATE sales SET customer_name = ?, customer_contact = ? WHERE invoice_id = ?`, [customer_name, customer_contact, id]);
-      return { id, paid_amount: paid.paid_amount, discount: round2(discount) };
+      await recordMoneyChange(q, id, money, req.user);
+      return { id, paid_amount: paid.paid_amount, discount: round2(discount), previous_due: previousDue };
     });
     res.json(out);
   } catch (err) {

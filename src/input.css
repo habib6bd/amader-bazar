@@ -1068,6 +1068,22 @@
   text-align: right;
 }
 
+/* The receipt's payment history: a second, smaller table under the totals. */
+.inv-payments-title {
+  padding: 0.5rem 0.75rem 0.3rem;
+  border-top: 1px solid var(--inv-line);
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--inv-muted);
+}
+
+.inv-table .col-money {
+  text-align: right;
+  white-space: nowrap;
+}
+
 /* Warranty under the item name. A sub-line rather than a sixth column, because
    the column widths above are fixed percentages and "Item name" is the only one
    holding prose — it is the column a new one would squeeze. */
