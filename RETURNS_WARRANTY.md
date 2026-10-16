@@ -51,9 +51,20 @@ happened to it since.
 | At Supplier | ❌ | ❌ | **At supplier** — "n at supplier" on the product row |
 | Written off | ❌ | ❌ | **Written off** — the only place that counts as a loss |
 | Exchanged | ❌ | ❌ | The supplier swapped this unit for a new one |
+| Returned to dealer | ❌ | ❌ | **Returned to dealer**: unsold stock sent back for a refund or credit |
 
 The till refuses to sell any serial that is not **In Stock** and says where it
 actually is.
+
+**Return to dealer** (admin only) takes unsold stock out of **In Stock** and
+sends it back to the dealer: from **↩️ Return to dealer** on the Products or
+Faulty page, **Return to dealer** in a product's menu, or **To dealer** on an
+available serial. It needs the dealer's name and can be dated in the past.
+The buying price × quantity comes off the purchase total and that supplier's
+spend, and the return is listed on Purchase History. It is not a loss, so
+sales, profit and net profit don't change. Use this rather than editing a
+product's quantity down, which leaves no record and keeps the purchase total
+too high.
 
 Goods with no serial (cables, etc.) track the same states as plain counts on
 the product: `quantity` (in stock), `defective_quantity` (faulty),

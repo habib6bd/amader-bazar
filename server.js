@@ -564,10 +564,11 @@ async function setup() {
 
      status is 'available' (on the shelf, counted in stock), 'sold' (with a
      customer), 'defective' (faulty — in the shop but not sellable),
-     'at_supplier' (sent to the dealer for repair), 'written_off' (a loss) or
-     'exchanged' (the supplier gave a different unit in its place). Only
+     'at_supplier' (sent to the dealer for repair), 'written_off' (a loss),
+     'exchanged' (the supplier gave a different unit in its place) or
+     'returned_to_dealer' (sent back unsold, for a refund or credit). Only
      'available' counts as stock. Everything else about a unit lives in
-     serial_events; the moves between the last four are in stock_movements.
+     serial_events; the moves between the last five are in stock_movements.
 
      purchase_id is the dealer batch it arrived on, NULL when it was scanned in
      from the product screen (stock the shop already had). sale_id/invoice_id
@@ -671,10 +672,13 @@ async function setup() {
      for goods without them (quantity n). Returns and warranty claims record
      their own moves in their own tables; these are the ones made by hand.
 
-     States: 'stock' | 'defective' | 'supplier' | 'written_off'. A move to
-     'written_off' is the one place stock becomes a loss, valued at cost_price —
-     the product's buying price when it was written off — on the day it
-     happened. party is the supplier a unit was sent to. */
+     States: 'stock' | 'defective' | 'supplier' | 'written_off' | 'dealer_return'.
+     A move to 'written_off' is the one place stock becomes a loss, valued at
+     cost_price — the product's buying price when it was written off — on the
+     day it happened. A move to 'dealer_return' is unwanted stock sent back to
+     the dealer for a refund or credit: not a loss, but it takes cost_price ×
+     quantity off what was spent on purchases. party is the supplier a unit was
+     sent to, or the dealer it was returned to. */
   await run(`CREATE TABLE IF NOT EXISTS stock_movements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id INTEGER,
@@ -1188,6 +1192,7 @@ const SERIAL_STATUS_TEXT = {
   at_supplier: 'at the supplier for repair',
   written_off: 'written off',
   exchanged: 'exchanged by the supplier for another unit',
+  returned_to_dealer: 'returned to the dealer',
 };
 
 /* Why this serial cannot be taken in / sold as `product`, or null if it can.
@@ -1228,10 +1233,10 @@ async function syncSerialStock(q, productId) {
   );
 }
 
-async function logSerialEvent(q, { serial_id, event, invoice_id = null, purchase_id = null, note = null }) {
+async function logSerialEvent(q, { serial_id, event, invoice_id = null, purchase_id = null, note = null, date = todayLocal() }) {
   await q.run(
     `INSERT INTO serial_events (serial_id, event, date, time, invoice_id, purchase_id, note) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [serial_id, event, todayLocal(), nowLocalTime(), invoice_id, purchase_id, note]
+    [serial_id, event, date, nowLocalTime(), invoice_id, purchase_id, note]
   );
 }
 
@@ -1821,7 +1826,7 @@ app.get('/api/serials', async (req, res) => {
     where.push(`ps.product_id = ?`);
     args.push(Number(req.query.product_id));
   }
-  if (['available', 'sold', 'defective', 'at_supplier', 'written_off', 'exchanged'].includes(req.query.status)) {
+  if (['available', 'sold', 'defective', 'at_supplier', 'written_off', 'exchanged', 'returned_to_dealer'].includes(req.query.status)) {
     where.push(`ps.status = ?`);
     args.push(req.query.status);
   }
@@ -2346,7 +2351,10 @@ app.post('/api/warranty-claims/:id/resolve', async (req, res) => {
    =========================================================================== */
 
 // A serial's status for each state, and back.
-const STATE_STATUS = { stock: 'available', defective: 'defective', supplier: 'at_supplier', written_off: 'written_off' };
+const STATE_STATUS = {
+  stock: 'available', defective: 'defective', supplier: 'at_supplier', written_off: 'written_off',
+  dealer_return: 'returned_to_dealer',
+};
 const STATUS_STATE = { available: 'stock', defective: 'defective', at_supplier: 'supplier' };
 
 // The moves the shop can make, and the serial event each one writes.
@@ -2358,6 +2366,7 @@ const MOVES = {
   'supplier>stock': 'back_from_supplier',
   'supplier>defective': 'back_from_supplier_faulty',
   'supplier>written_off': 'written_off',
+  'stock>dealer_return': 'returned_to_dealer',
 };
 
 // The inventory column holding each state's count, for goods without serials.
@@ -2371,13 +2380,26 @@ const STATE_COLUMN = { stock: 'quantity', defective: 'defective_quantity', suppl
 
    new_serial_no is for a supplier that sends back a different unit: the new
    one is received into stock and the old one is marked 'exchanged', which is
-   not a loss — the shop is whole again. */
+   not a loss — the shop is whole again.
+
+   A return to the dealer names the dealer as party, and may carry a date: a
+   return made before this screen existed is recorded on the day it really
+   happened. Never a future one. */
 app.post('/api/stock-movements', requireAdmin, async (req, res) => {
   const body = req.body || {};
   const to = String(body.to_state ?? '');
   const party = String(body.party ?? '').trim().slice(0, 80) || null;
   const note = String(body.note ?? '').trim().slice(0, 200) || null;
   const newCode = String(body.new_serial_no ?? '').trim() || null;
+  const rawDate = String(body.date ?? '').trim();
+  if (to === 'dealer_return') {
+    if (!party) return res.status(400).json({ error: 'Dealer name is required.' });
+    if (rawDate && (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate) || Number.isNaN(Date.parse(rawDate)))) {
+      return res.status(400).json({ error: 'Date must be a real calendar date.' });
+    }
+    if (rawDate > todayLocal()) return res.status(400).json({ error: 'A return cannot be dated in the future.' });
+  }
+  const date = (to === 'dealer_return' && rawDate) || todayLocal();
   try {
     const movement = await inWriteTx(async (q) => {
       let product;
@@ -2395,8 +2417,12 @@ app.post('/api/stock-movements', requireAdmin, async (req, res) => {
         product = await q.get(`SELECT * FROM inventory WHERE id = ?`, [Number(body.product_id)]);
         if (!product) throw new Refusal(404, 'That product no longer exists.');
         from = String(body.from_state ?? '');
-        quantity = Number(body.quantity);
-        if (!Number.isInteger(quantity) || quantity < 1) throw new Refusal(400, 'Quantity must be a whole number, one or more.');
+        const unitOf = normalizeUnit(product.unit);
+        quantity = validQty(body.quantity, unitOf);
+        if (quantity === null) {
+          const rule = qtyRule(unitOf);
+          throw new Refusal(400, `${rule[0].toUpperCase()}${rule.slice(1)}.`);
+        }
         // A tracked product's stock is its serials; moving a count in or out of
         // it by hand would be undone at the next count.
         if (Number(product.track_serial) === 1 && (from === 'stock' || to === 'stock')) {
@@ -2421,7 +2447,7 @@ app.post('/api/stock-movements', requireAdmin, async (req, res) => {
           await logSerialEvent(q, { serial_id: unit.id, event: 'exchanged', note: [`Supplier gave ${newCode} in its place`, note].filter(Boolean).join(' — ') });
         } else {
           await q.run(`UPDATE product_serials SET status = ? WHERE id = ?`, [STATE_STATUS[to], unit.id]);
-          await logSerialEvent(q, { serial_id: unit.id, event: MOVES[key], note: [party, note].filter(Boolean).join(' — ') || null });
+          await logSerialEvent(q, { serial_id: unit.id, event: MOVES[key], note: [party, note].filter(Boolean).join(' — ') || null, date });
         }
         await syncSerialStock(q, unit.product_id);
       } else {
@@ -2446,7 +2472,7 @@ app.post('/api/stock-movements', requireAdmin, async (req, res) => {
           product?.id ?? null, itemName, unit?.id ?? null, unit?.serial_no ?? null, quantity, from, to,
           product ? product.cost_price : null, party,
           [newCode ? `Exchanged for ${newCode}` : null, note].filter(Boolean).join(' — ') || null,
-          todayLocal(), nowLocalTime(),
+          date, nowLocalTime(),
         ]
       );
       return q.get(`SELECT * FROM stock_movements WHERE id = ?`, [r.lastID]);

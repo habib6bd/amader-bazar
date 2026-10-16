@@ -1393,6 +1393,50 @@
                                 </button>
                             </div>
                         </div>
+
+                        <!-- Unsold stock sent back for a refund or credit. Each one comes off
+                             the purchase total; none of it touches sales or profit. -->
+                        <div class="nb-card mt-5" x-show="!loading && filteredDealerReturns.length" x-cloak>
+                            <div class="nb-card-head">
+                                <h2 class="font-semibold text-ink">↩️ Returned to dealers</h2>
+                                <p class="text-sm text-slate-500">
+                                    Total <span class="font-semibold text-ink tabular-nums" x-text="fmt(filteredDealerReturns.reduce((s, m) => s + dealerReturnValue(m), 0))"></span>
+                                    · Net bought <span class="font-semibold text-ink tabular-nums" x-text="fmt(filteredPurchases.reduce((s, p) => s + Number(p.total_cost || 0), 0) - filteredDealerReturns.reduce((s, m) => s + dealerReturnValue(m), 0))"></span>
+                                </p>
+                            </div>
+                            <div class="nb-table-wrap hidden md:block">
+                                <table class="nb-table">
+                                    <thead><tr><th>Date</th><th>Dealer</th><th>Item</th><th class="num">Qty</th><th class="num">Value</th><th>Note</th></tr></thead>
+                                    <tbody>
+                                        <template x-for="m in filteredDealerReturns" :key="'dr-' + m.id">
+                                            <tr>
+                                                <td class="whitespace-nowrap text-slate-500" x-text="fmtDate(m.date)"></td>
+                                                <td class="font-medium text-ink" x-text="m.party"></td>
+                                                <td><span x-text="m.item_name"></span><span class="text-xs text-slate-500" x-show="m.serial_no" x-text="' — ' + m.serial_no"></span></td>
+                                                <td class="num" x-text="m.quantity"></td>
+                                                <td class="num font-semibold text-ink" x-text="'−' + fmt(dealerReturnValue(m))"></td>
+                                                <td class="text-slate-500" x-text="m.note || '—'"></td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div class="space-y-3 p-3 md:hidden">
+                                <template x-for="m in filteredDealerReturns" :key="'mdr-' + m.id">
+                                    <div class="nb-mcard">
+                                        <div class="flex items-start justify-between gap-3">
+                                            <p class="font-semibold text-ink" x-text="m.party"></p>
+                                            <p class="shrink-0 text-xs text-slate-500" x-text="fmtDate(m.date)"></p>
+                                        </div>
+                                        <div class="mt-2 flex items-baseline justify-between gap-3 text-sm">
+                                            <p class="text-slate-600 break-all"><span x-text="m.item_name"></span> <span class="text-slate-400">×</span> <span class="tabular-nums" x-text="m.quantity"></span><span class="text-xs text-slate-500" x-show="m.serial_no" x-text="' — ' + m.serial_no"></span></p>
+                                            <p class="font-semibold text-ink tabular-nums" x-text="'−' + fmt(dealerReturnValue(m))"></p>
+                                        </div>
+                                        <p class="mt-1 text-xs text-slate-500" x-show="m.note" x-text="m.note"></p>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
                     </section>
 
                     <!-- ================= PRODUCTS ================= -->
@@ -1407,6 +1451,7 @@
                             </div>
                             <div class="flex flex-wrap gap-2">
                                 <button type="button" x-show="isAdmin" @click="openMarkFaulty()" class="nb-btn nb-btn-secondary">Mark stock faulty</button>
+                                <button type="button" x-show="isAdmin" @click="openReturnToDealer()" class="nb-btn nb-btn-secondary">↩️ Return to dealer</button>
                                 <button type="button" x-show="isAdmin" @click="openAddProduct()" class="nb-btn nb-btn-primary"><span x-html="icon('plus', 'h-4 w-4')"></span>Add Product</button>
                             </div>
                         </div>
@@ -1816,7 +1861,7 @@
                         <div class="mb-5 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
                             <div class="nb-kpi-card is-compact is-blue"><span class="nb-kpi-card-label">Suppliers</span><strong class="nb-kpi-card-value" x-text="suppliers.length"></strong><span class="nb-kpi-card-sub">Dealers bought from</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">🏭</span></div>
                             <div class="nb-kpi-card is-compact is-teal"><span class="nb-kpi-card-label">Purchases</span><strong class="nb-kpi-card-value" x-text="purchases.length"></strong><span class="nb-kpi-card-sub">Stock deliveries recorded</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">🚚</span></div>
-                            <div class="nb-kpi-card is-compact col-span-2 lg:col-span-1 is-amber"><span class="nb-kpi-card-label">Total bought</span><strong class="nb-kpi-card-value" x-text="fmt(dealerSpend)"></strong><span class="nb-kpi-card-sub">At buying price</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">💵</span></div>
+                            <div class="nb-kpi-card is-compact col-span-2 lg:col-span-1 is-amber"><span class="nb-kpi-card-label">Total bought</span><strong class="nb-kpi-card-value" x-text="fmt(dealerSpend)"></strong><span class="nb-kpi-card-sub" x-text="totalDealerReturns ? 'At buying price, less ' + fmt(totalDealerReturns) + ' returned' : 'At buying price'"></span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">💵</span></div>
                         </div>
                         <div class="nb-card">
                             <div class="nb-card-head">
@@ -1839,7 +1884,7 @@
                                                 <td class="font-medium text-ink" x-text="s.name"></td>
                                                 <td class="num" x-text="s.batches"></td>
                                                 <td class="num" x-text="s.items"></td>
-                                                <td class="num" x-text="s.units"></td>
+                                                <td class="num"><span x-text="s.units"></span><span class="block text-xs text-slate-500" x-show="s.returned" x-cloak x-text="s.returned + ' returned'"></span></td>
                                                 <td class="num font-semibold text-ink" x-text="fmt(s.spend)"></td>
                                                 <td class="whitespace-nowrap text-slate-500" x-text="fmtDate(s.last)"></td>
                                                 <td class="text-right"><button type="button" @click="openSupplierPurchases(s)" class="nb-btn nb-btn-sm nb-btn-secondary">View purchases</button></td>
@@ -2190,6 +2235,7 @@
                                                         <button type="button" @click="openClaimForSerial(row)" x-show="row.status === 'sold'" x-cloak class="nb-btn nb-btn-sm nb-btn-secondary">Warranty</button>
                                                         <button type="button" @click="openReturnForSerial(row)" x-show="row.status === 'sold'" x-cloak class="nb-btn nb-btn-sm nb-btn-secondary">Return</button>
                                                         <button type="button" @click="openMarkFaulty(row)" x-show="row.status === 'available'" x-cloak class="nb-btn nb-btn-sm nb-btn-danger-soft">Faulty</button>
+                                                        <button type="button" @click="openReturnToDealer(row)" x-show="isAdmin && row.status === 'available'" x-cloak class="nb-btn nb-btn-sm nb-btn-secondary">To dealer</button>
                                                         <button type="button" @click="openSerialAction(row, 'remove')" x-show="row.status === 'available'" x-cloak class="nb-btn nb-btn-sm nb-btn-danger-soft">Remove</button>
                                                     </div>
                                                 </td>
@@ -2217,6 +2263,7 @@
                                             <button type="button" @click="openClaimForSerial(row)" x-show="row.status === 'sold'" x-cloak class="nb-btn nb-btn-sm nb-btn-secondary">Warranty</button>
                                             <button type="button" @click="openReturnForSerial(row)" x-show="row.status === 'sold'" x-cloak class="nb-btn nb-btn-sm nb-btn-secondary">Return</button>
                                             <button type="button" @click="openMarkFaulty(row)" x-show="row.status === 'available'" x-cloak class="nb-btn nb-btn-sm nb-btn-danger-soft">Faulty</button>
+                                            <button type="button" @click="openReturnToDealer(row)" x-show="isAdmin && row.status === 'available'" x-cloak class="nb-btn nb-btn-sm nb-btn-secondary">To dealer</button>
                                             <button type="button" @click="openSerialAction(row, 'remove')" x-show="row.status === 'available'" x-cloak class="nb-btn nb-btn-sm nb-btn-danger-soft">Remove</button>
                                         </div>
                                     </li>
@@ -2333,7 +2380,10 @@
                                     <p class="nb-page-desc">Returns and warranty units that came in faulty wait here: send them to the supplier, put them back in stock, or write them off.</p>
                                 </div>
                             </div>
-                            <button type="button" x-show="isAdmin" @click="openMarkFaulty()" class="nb-btn nb-btn-secondary">Mark stock faulty</button>
+                            <div class="flex flex-wrap gap-2">
+                                <button type="button" x-show="isAdmin" @click="openMarkFaulty()" class="nb-btn nb-btn-secondary">Mark stock faulty</button>
+                                <button type="button" x-show="isAdmin" @click="openReturnToDealer()" class="nb-btn nb-btn-secondary">↩️ Return to dealer</button>
+                            </div>
                         </div>
                         <div class="mb-5 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
                             <div class="nb-kpi-card is-compact" :class="faultyInShop.length ? 'is-red' : 'is-teal'"><span class="nb-kpi-card-label">Faulty in shop</span><strong class="nb-kpi-card-value" x-text="faultyInShop.length"></strong><span class="nb-kpi-card-sub">Waiting for a decision</span><span class="nb-kpi-card-icon nb-emoji" aria-hidden="true">🛠️</span></div>
@@ -3486,19 +3536,19 @@
                                 <option :value="String(i.id)" x-text="i.item_name + ' (' + i.quantity + ' in stock)'"></option>
                             </template>
                         </select>
-                        <p class="mt-1 text-xs text-slate-500">For a serial-tracked product, use <strong>Faulty</strong> on the unit in the Serial list.</p>
+                        <p class="mt-1 text-xs text-slate-500">For a serial-tracked product, use <strong x-text="moveDraft.to === 'dealer_return' ? 'To dealer' : 'Faulty'"></strong> on the unit in the Serial list.</p>
                     </div>
 
                     <div x-show="!moveDraft.row?.serialId">
                         <label for="move-qty" class="nb-label">
                             Quantity <span class="nb-opt" x-text="'(at most ' + moveMax + ')'"></span>
                         </label>
-                        <input id="move-qty" type="number" min="1" :max="moveMax" step="1" x-model.number="moveDraft.qty"
+                        <input id="move-qty" type="number" :min="moveIsMeter ? 0.01 : 1" :max="moveMax" :step="moveIsMeter ? 0.01 : 1" x-model.number="moveDraft.qty"
                                class="nb-input w-28 tabular-nums">
                     </div>
 
-                    <div x-show="moveDraft.to === 'supplier'">
-                        <label for="move-party" class="nb-label">Supplier</label>
+                    <div x-show="moveDraft.to === 'supplier' || moveDraft.to === 'dealer_return'">
+                        <label for="move-party" class="nb-label" x-text="moveDraft.to === 'dealer_return' ? 'Dealer' : 'Supplier'"></label>
                         <input id="move-party" type="text" list="move-suppliers" x-model="moveDraft.party" maxlength="80"
                                class="nb-input">
                         <datalist id="move-suppliers">
@@ -3518,6 +3568,13 @@
                                class="nb-input">
                     </div>
 
+                    <!-- A return made before this screen existed goes on the day it really happened. -->
+                    <div x-show="moveDraft.to === 'dealer_return'" x-cloak>
+                        <label for="move-date" class="nb-label">Date returned</label>
+                        <input id="move-date" type="date" x-model="moveDraft.date" :max="today()"
+                               class="nb-input w-44">
+                    </div>
+
                     <div>
                         <label for="move-note" class="nb-label">Note <span class="nb-opt">(optional)</span></label>
                         <input id="move-note" type="text" x-model="moveDraft.note" maxlength="200"
@@ -3528,6 +3585,9 @@
                         This is a loss of <strong x-text="fmt(moveLoss)"></strong> at the buying price, taken off today's profit. It cannot be undone.
                     </p>
                     <p class="text-xs text-slate-500" x-show="moveDraft.to === 'stock'" x-cloak>It goes back into stock and can be sold again.</p>
+                    <p class="nb-note is-info" x-show="moveDraft.to === 'dealer_return'" x-cloak>
+                        It leaves stock, and the purchase total goes down by <strong x-text="fmt(moveRefund)"></strong> at the buying price. Sales and profit are not affected.
+                    </p>
 
                     <p class="nb-note is-danger"
                        x-show="moveDraft.error" x-cloak x-text="moveDraft.error"></p>
@@ -3590,6 +3650,8 @@
                 <button type="button" role="menuitem" class="nb-menu-item" @click="runProductMenu('openSerialsFor')" x-show="serialTracked(productMenu.item)">View serials</button>
                 <button type="button" role="menuitem" class="nb-menu-item" @click="runProductMenu('markFaulty')"
                         x-show="isAdmin && !serialTracked(productMenu.item) && Number(productMenu.item.quantity) > 0">Mark faulty</button>
+                <button type="button" role="menuitem" class="nb-menu-item" @click="runProductMenu('returnToDealer')"
+                        x-show="isAdmin && !serialTracked(productMenu.item) && Number(productMenu.item.quantity) > 0">Return to dealer</button>
                 <div class="my-1 border-t border-slate-100" x-show="isAdmin"></div>
                 <button type="button" role="menuitem" class="nb-menu-item text-red-700 hover:bg-red-50" x-show="isAdmin" @click="runProductMenu('delete')">Delete…</button>
             </div>

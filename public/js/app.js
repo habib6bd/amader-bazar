@@ -1482,9 +1482,10 @@ function shopApp() {
       if (name === 'delete') {
         this.openEditProduct(item);
         this.confirmDelete = true;
-      } else if (name === 'markFaulty') {
+      } else if (name === 'markFaulty' || name === 'returnToDealer') {
         // Counted goods only; the dialog's product picker starts on this one.
-        this.openMarkFaulty();
+        if (name === 'markFaulty') this.openMarkFaulty();
+        else this.openReturnToDealer();
         this.moveDraft.productId = String(item.id);
       } else {
         this[name](item);
@@ -1705,8 +1706,35 @@ function shopApp() {
         - this.invoices.reduce((sum, inv) => sum + this.invoiceRoundOff(inv), 0);
     },
 
+    // What was bought, less what went back to the dealer for a refund or
+    // credit. A return to the dealer is not a loss, so it never reaches profit.
     get dealerSpend() {
-      return this.purchases.reduce((sum, p) => sum + Number(p.total_cost || 0), 0);
+      return this.purchases.reduce((sum, p) => sum + Number(p.total_cost || 0), 0) - this.totalDealerReturns;
+    },
+
+    // Stock sent back to the dealer, valued at the buying price snapshotted on
+    // the move.
+    dealerReturnValue(m) {
+      if (m?.to_state !== 'dealer_return' || m.cost_price == null || m.cost_price === '') return 0;
+      return Number(m.cost_price) * Number(m.quantity || 0);
+    },
+
+    // Newest first, for the list on the Purchase History page.
+    get dealerReturns() {
+      return this.movements.filter((m) => m.to_state === 'dealer_return').reverse();
+    },
+
+    // The returns the Purchase History search matches, by dealer or item.
+    get filteredDealerReturns() {
+      const q = this.dealerSearch.trim().toLowerCase();
+      if (!q) return this.dealerReturns;
+      return this.dealerReturns.filter(
+        (m) => String(m.party || '').toLowerCase().includes(q) || String(m.item_name || '').toLowerCase().includes(q)
+      );
+    },
+
+    get totalDealerReturns() {
+      return this.dealerReturns.reduce((sum, m) => sum + this.dealerReturnValue(m), 0);
     },
 
     get lowStockItems() {
@@ -2057,7 +2085,7 @@ function shopApp() {
         const key = name.toLowerCase();
         let row = byKey.get(key);
         if (!row) {
-          row = { key, name, batches: 0, units: 0, spend: 0, last: '', items: new Set() };
+          row = { key, name, batches: 0, units: 0, returned: 0, spend: 0, last: '', items: new Set() };
           byKey.set(key, row);
         }
         row.batches += 1;
@@ -2065,6 +2093,13 @@ function shopApp() {
         row.spend += Number(p.total_cost || 0);
         if (p.item_name) row.items.add(p.item_name);
         if ((p.date || '') >= row.last) row.last = p.date || '';
+      }
+      // A return comes off the spend of the dealer it went back to.
+      for (const m of this.dealerReturns) {
+        const row = byKey.get(String(m.party || '').trim().toLowerCase());
+        if (!row) continue;
+        row.returned += Number(m.quantity || 0);
+        row.spend -= this.dealerReturnValue(m);
       }
       return [...byKey.values()]
         .map((r) => ({ ...r, items: r.items.size }))
@@ -3090,6 +3125,7 @@ function shopApp() {
             at_supplier: 'is at the supplier',
             written_off: 'was written off',
             exchanged: 'was exchanged by the supplier',
+            returned_to_dealer: 'was returned to the dealer',
           }[found.status] || 'is not in stock';
           this.scanFailed(`${found.serial_no} ${where} — not for sale.`);
           return;
@@ -3909,7 +3945,7 @@ function shopApp() {
     serialStatusLabel(status) {
       return {
         available: 'Available', sold: 'Sold', defective: 'Faulty', at_supplier: 'At supplier',
-        written_off: 'Written off', exchanged: 'Exchanged',
+        written_off: 'Written off', exchanged: 'Exchanged', returned_to_dealer: 'Returned to dealer',
       }[status] || status;
     },
 
@@ -3997,7 +4033,9 @@ function shopApp() {
     },
 
     moveStateLabel(state) {
-      return { stock: 'Stock', defective: 'Faulty', supplier: 'At supplier', written_off: 'Written off' }[state] || state;
+      return {
+        stock: 'Stock', defective: 'Faulty', supplier: 'At supplier', written_off: 'Written off', dealer_return: 'Returned to dealer',
+      }[state] || state;
     },
 
     // What a move is called on its button and in the dialog title.
@@ -4010,6 +4048,7 @@ function shopApp() {
         'supplier>defective': 'Back, still faulty',
         'defective>written_off': 'Write off',
         'supplier>written_off': 'Write off',
+        'stock>dealer_return': 'Return to dealer',
       }[`${from}>${to}`] || 'Move';
     },
 
@@ -4021,7 +4060,7 @@ function shopApp() {
     openMove(row, to) {
       this.moveDraft = {
         row, to, qty: row ? row.qty : 1, party: '', note: '', newSerial: '', exchange: false,
-        productId: '', error: '', saving: false,
+        productId: '', date: todayLocal(), error: '', saving: false,
       };
     },
 
@@ -4034,6 +4073,33 @@ function shopApp() {
         : null;
       this.openMove(row, 'defective');
       if (!row) this.moveDraft.qty = 1;
+    },
+
+    // Unwanted shelf stock going back to the dealer for a refund or credit:
+    // a serial from the serial list, or a count picked in the dialog.
+    openReturnToDealer(serialRow = null) {
+      this.openMarkFaulty(serialRow);
+      this.moveDraft.to = 'dealer_return';
+    },
+
+    // The product the dialog acts on, for its unit and buying price.
+    get moveProduct() {
+      const d = this.moveDraft;
+      if (!d) return null;
+      const id = d.row ? d.row.productId : d.productId;
+      return this.inventory.find((i) => String(i.id) === String(id)) || null;
+    },
+
+    // Cable is returned by the meter, to the centimetre.
+    get moveIsMeter() {
+      return unitId(this.moveProduct?.unit) === 'meter';
+    },
+
+    // What a return to the dealer takes off the purchase total.
+    get moveRefund() {
+      const d = this.moveDraft;
+      if (!d || d.to !== 'dealer_return') return 0;
+      return Number(this.moveProduct?.cost_price || 0) * (Number(d.qty) || 0);
     },
 
     closeMove() {
@@ -4075,8 +4141,20 @@ function shopApp() {
           d.error = 'Choose the product.';
           return;
         }
-        if (!Number.isInteger(qty) || qty < 1 || qty > this.moveMax) {
-          d.error = `Enter a whole number from 1 to ${this.moveMax}.`;
+        if (validQty(qty, this.moveProduct?.unit) === null || qty > this.moveMax) {
+          d.error = this.moveIsMeter
+            ? `Enter meters more than 0, at most ${this.moveMax}, to two decimals.`
+            : `Enter a whole number from 1 to ${this.moveMax}.`;
+          return;
+        }
+      }
+      if (d.to === 'dealer_return') {
+        if (!String(d.party).trim()) {
+          d.error = 'Enter the dealer it is going back to.';
+          return;
+        }
+        if (!d.date || d.date > todayLocal()) {
+          d.error = 'Choose the day it went back — not a future one.';
           return;
         }
       }
@@ -4091,8 +4169,8 @@ function shopApp() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(serialId
-            ? { serial_id: serialId, to_state: d.to, party: d.party, note: d.note, new_serial_no: d.exchange ? String(d.newSerial).trim() : '' }
-            : { product_id: productId, from_state: this.moveFrom, to_state: d.to, quantity: qty, party: d.party, note: d.note }),
+            ? { serial_id: serialId, to_state: d.to, party: d.party, note: d.note, date: d.date, new_serial_no: d.exchange ? String(d.newSerial).trim() : '' }
+            : { product_id: productId, from_state: this.moveFrom, to_state: d.to, quantity: qty, party: d.party, note: d.note, date: d.date }),
         });
         if (!res.ok) throw new Error(await this.describeFailure(res, 'Could not save the move.'));
         const label = this.moveActionLabel(this.moveFrom, d.to);
@@ -4445,6 +4523,7 @@ function shopApp() {
         back_from_supplier_faulty: 'Back from supplier, still faulty',
         written_off: 'Written off',
         exchanged: 'Exchanged by the supplier',
+        returned_to_dealer: 'Returned to the dealer',
       }[e.event];
       if (plain) return plain + note;
       return e.event;
